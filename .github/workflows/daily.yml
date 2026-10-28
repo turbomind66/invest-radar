@@ -1,6 +1,6 @@
 name: daily-update
 
-# 每个交易日收盘后自动抓取 → 提交 docs/ → 部署到 GitHub Pages。
+# 每个交易日收盘后自动抓取 → 提交 docs/ → Pages（deploy from branch）自动发布。
 # 北京时间 = UTC+8，故 08:20 UTC = 16:20 北京。
 
 on:
@@ -10,21 +10,16 @@ on:
   workflow_dispatch:           # 支持手动触发（页面右上角按钮即跳到这里）
 
 concurrency:
-  group: pages
+  group: daily-update
   cancel-in-progress: false
 
 permissions:
-  contents: write              # 提交 docs/ 的变更
-  pages: write                 # 部署 Pages
-  id-token: write              # OIDC，Pages 部署必需
+  contents: write              # 提交 docs/ 变更
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -47,17 +42,3 @@ jobs:
           BJDATE=$(TZ=Asia/Shanghai date +%Y-%m-%d)
           git commit -m "data: 更新 ${BJDATE} 国家队动向快照"
           git push
-
-      - name: 配置 Pages
-        uses: actions/configure-pages@v5
-        with:
-          enablement: true      # 未开通时自动开通（首次运行生效）
-
-      - name: 打包静态站
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs
-
-      - name: 部署到 Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
