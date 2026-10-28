@@ -5,8 +5,10 @@
 > **Zero-dependency** Python dashboard tracking China's "national team" (Central Huijin / CSF) A-share buying via broad-based ETF main-capital net inflow. No `pip install` required — standard library only.
 
 [![CI](https://github.com/turbomind66/ashare-national-team-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/turbomind66/ashare-national-team-tracker/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/turbomind66/ashare-national-team-tracker?color=orange&label=release)](https://github.com/turbomind66/ashare-national-team-tracker/releases)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Zero Dependency](https://img.shields.io/badge/dependencies-0-brightgreen)](#快速开始)
 
 ---
 
@@ -131,6 +133,12 @@ node tests/test_frontend.js
 3. **历史接口的 `beg` / `end` 日期格式必须统一无横杠**（`%Y%m%d`），混用带横杠格式会被静默忽略并返回空。
 4. **本地 `127.0.0.1` 请求可能被系统代理劫持**（表现为 404 / Bad request syntax），写本地 HTTP 脚本时要绕过代理（`NO_PROXY` 或 `ProxyHandler({})`）。
 5. **盘前打开页面**：当天数据尚未生成，默认自动回退到最近一个有效数据日并在页面标注原因，避免首屏一片 `—`。
+
+## 更新日志
+
+完整版本说明见 [Releases](https://github.com/turbomind66/ashare-national-team-tracker/releases)。
+
+- **v1.0.0** — 首个可用版本：自动抓取归档、历史回补、日期/类别/基金三维筛选、容错降级。
 
 ## 免责声明
 
