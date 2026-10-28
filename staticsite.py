@@ -215,9 +215,9 @@ def build_static_payload(path: str = db.DB_PATH, window_days: int = None) -> dic
         "news": news,
         "shares": shares,
         "history_full": history_full,
-        # 疑似护盘/压盘模块：只带最近 3 个有分时的日期（分时点较密，控制体积）
+        # 疑似护盘/压盘模块：带最近 10 个有分时的日期（上限控制体积；库里存的是全量）
         "intraday": {d: intraday.build_view(d, path)
-                     for d in db.get_intraday_dates(path)[-3:]},
+                     for d in db.get_intraday_dates(path)[-10:]},
         "cats": db.get_cats(path),
         "funds": db.get_funds(path),
         "actions_url": ACTIONS_URL,
@@ -299,12 +299,25 @@ def main():
         # + 重算各日信号（收盘后有大单净额，可把"疑似"升级为"已印证"）
         try:
             tgt = target_date().strftime("%Y-%m-%d")
-            n, funds, ds_list = intraday.archive(tgt)
+            # backup=True：顺带试东财 1 分钟 K 备选源（上游恢复可回补更早的分时）
+            n, funds, ds_list = intraday.archive(tgt, backup=True)
             sig_n = 0
             for ds in ds_list:
                 sig_n += len(intraday.detect(ds))
             print("[intraday] 分时归档 %d 行 / %d 只 / %d 天；信号 %d 条" % (
                 n, funds, len(ds_list), sig_n))
+            # 缺口检测：某天没抓到且已滑出上游窗口 → 永久缺失，明确告知
+            gap = intraday.gap_dates()
+            db.set_meta("intraday_gap", ",".join(gap) if gap else "", path)
+            if gap:
+                print("[intraday] ⚠ 分时历史有缺口（已无法回补）：%s" % ", ".join(gap))
+            # 缺口并入同步状态（页面时间戳条可见）；幂等：先去掉旧提示再追加
+            base = db.get_meta("last_sync", "", path)
+            if "；⚠ 分时缺口" in base:
+                base = base.split("；⚠ 分时缺口")[0]
+            if gap:
+                base += "；⚠ 分时缺口 %d 天（%s）" % (len(gap), ",".join(gap[:5]))
+            db.set_meta("last_sync", base, path)
             intraday.notify_stub(None)
         except Exception as e:
             print("[intraday] 分时抓取失败（不影响主流程）：%s" % e)

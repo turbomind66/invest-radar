@@ -12,6 +12,7 @@
 
 告警通道（邮件 / 飞书等）在本模块留了配置位 notify_*，当前不启用推送。
 """
+import datetime
 import json
 import ssl
 import time
@@ -33,6 +34,9 @@ DROP_TH = -0.5        # 压盘：价格相对当日均价跌破该百分比
 NEAR_VWAP = -0.2      # 护盘：价格相对当日均价不低于该百分比（没被砸下去）
 
 # 告警通道预留（暂不启用；后续接邮件/飞书时只改这里）
+# 东财 1 分钟 K 备选源可用性（None=未探测 / True=可用 / False=本次运行不可用）
+_EM_MINUTE_OK = None
+
 NOTIFY = {
     "enabled": False,
     "channel": "",        # "email" / "feishu" / "wecom"
@@ -62,11 +66,20 @@ def _tencent_symbol(code: str) -> str:
     return ("sh" if code[0] in "56" else "sz") + code
 
 
+def _norm_date(s):
+    """把 20261028 / 2026-10-28 统一成 2026-10-28。"""
+    s = str(s or "").strip()
+    if len(s) == 8 and s.isdigit():
+        return "%s-%s-%s" % (s[:4], s[4:6], s[6:8])
+    return s
+
+
 def fetch_minute(code: str):
-    """取某只 ETF 当日分时：返回 [(HHMM, price, 分钟增量手, 分钟增量元)]。
+    """取某只 ETF 最新分时：返回 (日期 'YYYY-MM-DD', [(HHMM, price, 分钟增量手, 分钟增量元)])。
 
     腾讯给的是**累计值**，必须差分才是每分钟增量（踩过的坑）。
     末尾 15:00 之后是集合竞价占位行（累计值不再变化），差分后自然为 0。
+    数据自带 date 字段 → 归档日期精确归属，不会把上一交易日的数据错标成今天。
     """
     sym = _tencent_symbol(code)
     txt = _get("https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=%s" % sym)
@@ -75,7 +88,7 @@ def fetch_minute(code: str):
     dat = node.get("data") or {}
     keys = [k for k in dat if k != "date"]
     if not keys:
-        return []
+        return None, []
     raw = []
     for line in dat[keys[0]]:
         p = line.split()
@@ -88,6 +101,42 @@ def fetch_minute(code: str):
     for t, pr, cv, ca in raw:
         out.append((t, pr, max(cv - pv, 0), max(ca - pa, 0)))
         pv, pa = cv, ca
+    return _norm_date(dat.get("date")), out
+
+
+def fetch_em_minute_kline(code: str, days: int = 200):
+    """备选源：东财 1 分钟 K 线 → {date: [(HHMM, price, vol手, amt元)]}。
+
+    上游该路径当前常被断（连接被重置），一旦恢复即可回补**比 5 日窗口更早**的分时。
+    失败返回空字典，不影响主流程。
+    """
+    sid = _secid_of(code)
+    beg = (datetime.date.today() - datetime.timedelta(days=days)).strftime("%Y%m%d")
+    end = datetime.date.today().strftime("%Y%m%d")
+    url = ("https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=%s"
+           "&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57"
+           "&klt=1&fqt=1&beg=%s&end=%s" % (sid, beg, end))
+    global _EM_MINUTE_OK
+    if _EM_MINUTE_OK is False:
+        return {}
+    try:
+        # 短超时、只试直连：这条路径常被断，别为每只基金白等
+        txt = _get(url, timeout=8, retries=1, proxies=(None,))
+        d = json.loads(txt)
+        _EM_MINUTE_OK = True
+    except Exception:
+        _EM_MINUTE_OK = False
+        return {}
+    out = {}
+    for ln in (d.get("data") or {}).get("klines") or []:
+        p = ln.split(",")
+        if len(p) < 7 or len(p[0]) < 16:
+            continue
+        try:
+            out.setdefault(p[0][:10], []).append(
+                (p[0][11:13] + p[0][14:16], float(p[2]), float(p[5]), float(p[6])))
+        except ValueError:
+            continue
     return out
 
 
@@ -132,39 +181,49 @@ def _diff_rows(cum_rows):
     return out
 
 
-def archive(date: str, path: str = db.DB_PATH, days: int = 5):
+def archive(date: str, path: str = db.DB_PATH, days: int = 5, backup: bool = False):
     """抓分时并归档到 intraday_minute。
 
-    1) 抓当日实时分时（分钟增量）；
-    2) 用近 N 日接口回补历史日期（含当日则跳过重复）。
+    三个来源，日期归属一律以接口自带日期为准（绝不靠猜）：
+      1) day 接口（近 N 个交易日，日期明确）→ 主力归档
+      2) minute 接口（最新分时，自带 date 字段）→ 精确归属到它自己的日期
+      3) 东财 1 分钟 K（备选源，上游恢复后可回补更早日期）
     返回 (归档分钟行数, 当日覆盖基金数, 覆盖日期集合)。
     """
     per_date = {}
     funds, dates_seen = 0, set()
     for code, name, cat in WATCHLIST:
-        # 1) 当日分时
+        # 1) day 接口：日期明确
         try:
-            mins = fetch_minute(code)
-            if mins:
-                for t, price, vol, amt in mins:
-                    per_date.setdefault(date, []).append({
-                        "code": code, "name": name, "cat": cat, "minute": t,
-                        "price": price, "vol": vol, "amount": amt})
-                funds += 1
-                dates_seen.add(date)
+            dmap = fetch_minute_days(code, days)
         except Exception:
-            pass
-        # 2) 近 N 日回补
-        if days > 0:
+            dmap = {}
+        for ds, cum in dmap.items():
+            for t, price, vol, amt in _diff_rows(cum):
+                per_date.setdefault(ds, []).append({
+                    "code": code, "name": name, "cat": cat, "minute": t,
+                    "price": price, "vol": vol, "amount": amt})
+        # 2) minute 接口：自带日期，精确归属
+        try:
+            ds_m, mins = fetch_minute(code)
+        except Exception:
+            ds_m, mins = None, []
+        if mins and ds_m:
+            for t, price, vol, amt in mins:
+                per_date.setdefault(ds_m, []).append({
+                    "code": code, "name": name, "cat": cat, "minute": t,
+                    "price": price, "vol": vol, "amount": amt})
+        # 3) 备选源：东财 1 分钟 K（只补上面没覆盖到的日期）
+        if backup:
             try:
-                for ds, cum in fetch_minute_days(code, days).items():
-                    if ds == date:
+                bmap = fetch_em_minute_kline(code)
+                for ds, rows in bmap.items():
+                    if ds in dmap or ds in per_date:
                         continue
-                    for t, price, vol, amt in _diff_rows(cum):
+                    for t, price, vol, amt in rows:
                         per_date.setdefault(ds, []).append({
                             "code": code, "name": name, "cat": cat, "minute": t,
                             "price": price, "vol": vol, "amount": amt})
-                    dates_seen.add(ds)
             except Exception:
                 pass
         time.sleep(0.05)
@@ -172,7 +231,22 @@ def archive(date: str, path: str = db.DB_PATH, days: int = 5):
     for ds, rows in per_date.items():
         db.save_intraday_rows(ds, rows, path)
         n += len(rows)
+        dates_seen.add(ds)
+    funds = len({r["code"] for r in per_date.get(date, [])})
     return n, funds, sorted(dates_seen)
+
+
+def gap_dates(path: str = db.DB_PATH):
+    """分时归档的日期缺口（已无法回补的部分）。
+
+    以**二级资金流的交易日历**为参照（那里的日期都是真实交易日，节假日不会被误报）。
+    """
+    have = set(db.get_intraday_dates(path))
+    if not have:
+        return []
+    lo = min(have)
+    cal = [d for d in db.get_dates(path) if d >= lo]
+    return [d for d in cal if d not in have]
 
 
 def detect(date: str, path: str = db.DB_PATH):
