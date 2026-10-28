@@ -4,6 +4,10 @@ import os
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.db")
 
+# 四档资金流净额（元）：主力净 = 大单净 + 超大单净（东财口径，已勾稽验证）。
+# 解决「分时图大额买入被主力净额口径对冲/拆单吞掉」的问题。
+TIER_FIELDS = ("huge_net", "big_net", "mid_net", "small_net")
+
 
 def init_db(path: str = DB_PATH):
     conn = sqlite3.connect(path)
@@ -12,8 +16,15 @@ def init_db(path: str = DB_PATH):
         """CREATE TABLE IF NOT EXISTS etf_daily(
             date TEXT, code TEXT, name TEXT, cat TEXT,
             price REAL, chg REAL, amount REAL, main_net REAL,
+            huge_net REAL, big_net REAL, mid_net REAL, small_net REAL,
             PRIMARY KEY(date, code))"""
     )
+    # 旧库迁移：补四档列（新库上面已建全，ALTER 会失败则跳过）
+    for col in TIER_FIELDS:
+        try:
+            cur.execute("ALTER TABLE etf_daily ADD COLUMN %s REAL" % col)
+        except sqlite3.OperationalError:
+            pass
     cur.execute(
         """CREATE TABLE IF NOT EXISTS news(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,9 +46,11 @@ def save_etf_daily(date: str, rows: list, path: str = DB_PATH):
     cur.execute("DELETE FROM etf_daily WHERE date=?", (date,))
     for r in rows:
         cur.execute(
-            "INSERT OR REPLACE INTO etf_daily(date,code,name,cat,price,chg,amount,main_net) VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO etf_daily(date,code,name,cat,price,chg,amount,main_net,"
+            "huge_net,big_net,mid_net,small_net) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (date, r["code"], r["name"], r["cat"], r.get("price"), r.get("chg"),
-             r.get("amount"), r.get("main_net")),
+             r.get("amount"), r.get("main_net"),
+             r.get("huge_net"), r.get("big_net"), r.get("mid_net"), r.get("small_net")),
         )
     conn.commit()
     conn.close()
@@ -122,14 +135,16 @@ def get_etf_by_date(date: str, cats=None, codes=None, path: str = DB_PATH):
     conn = _conn(path)
     extra, args = _where(cats, codes)
     rows = conn.execute(
-        "SELECT code,name,cat,price,chg,amount,main_net FROM etf_daily WHERE date=?" + extra
+        "SELECT code,name,cat,price,chg,amount,main_net,huge_net,big_net,mid_net,small_net"
+        " FROM etf_daily WHERE date=?" + extra
         + " ORDER BY (main_net IS NULL), main_net DESC",
         [date] + args,
     ).fetchall()
     conn.close()
     return [
         {"code": r[0], "name": r[1], "cat": r[2], "price": r[3], "chg": r[4],
-         "amount": r[5], "main_net": r[6]}
+         "amount": r[5], "main_net": r[6],
+         "huge_net": r[7], "big_net": r[8], "mid_net": r[9], "small_net": r[10]}
         for r in rows
     ]
 

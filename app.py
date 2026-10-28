@@ -21,7 +21,7 @@ PORT = int(os.environ.get("PORT", "5000"))
 
 
 def _summarize(rows):
-    """对一批ETF行做汇总：净买入合计/成交额/主力数据完整度/分类小计。"""
+    """对一批ETF行做汇总：净买入合计/成交额/主力数据完整度/分类小计/四档净额。"""
     total_main = sum((e["main_net"] or 0) for e in rows)
     total_amount = sum((e["amount"] or 0) for e in rows)
     has_main = sum(1 for e in rows if e["main_net"] is not None)
@@ -29,12 +29,18 @@ def _summarize(rows):
     for e in rows:
         by_cat.setdefault(e["cat"], 0.0)
         by_cat[e["cat"]] += (e["main_net"] or 0)
+    # 四档净额（超大/大/中/小单）：无任一有效值则整体为 None（前端不显示拆解行）
+    tiers = {}
+    has_tier = any(e.get(k) is not None for e in rows for k in db.TIER_FIELDS)
+    for k in db.TIER_FIELDS:
+        tiers[k] = sum((e.get(k) or 0) for e in rows) if has_tier else None
     return {
         "total_main_net": total_main,
         "total_amount": total_amount,
         "has_main": has_main,
         "missing_main": len(rows) - has_main,
         "by_cat": by_cat,
+        "tiers": tiers,
     }
 
 
@@ -104,6 +110,8 @@ def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
             "by_cat_yi": {k: round(v / 1e8, 2) for k, v in cur["by_cat"].items()},
             "full_total_main_net_yi": round(full["total_main_net"] / 1e8, 2) if full["has_main"] else None,
             "full_etf_count": len(etf_all),
+            "tier_yi": {k: (None if v is None else round(v / 1e8, 2))
+                        for k, v in cur["tiers"].items()},
         },
     }
 

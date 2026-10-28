@@ -126,13 +126,17 @@ def _get_sina(url: str, timeout: int = 15, max_try: int = 3):
 
 
 def fetch_em_main_net() -> dict:
-    """从东方财富取观察池各ETF的主力净流入（国家队代理核心指标）。"""
+    """从东方财富取观察池各ETF的资金流四档净额（国家队代理核心指标）。
+
+    返回 {code: {main_net, huge_net, big_net, mid_net, small_net}}，单位元。
+    东财口径：主力净 = 超大单净 + 大单净（f62 = f66 + f72，已勾稽验证）。
+    """
     wl_map = {c: (nm, cat) for c, nm, cat in WATCHLIST}
     found = {}
     for pn in range(1, 25):
         url = (
             "https://push2.eastmoney.com/api/qt/clist/get?pn=%d&pz=100&po=1&np=1"
-            "&fltt=2&invt=2&fid=f3&fs=b:MK0021&fields=f12,f62" % (pn,)
+            "&fltt=2&invt=2&fid=f3&fs=b:MK0021&fields=f12,f62,f66,f72,f78,f84" % (pn,)
         )
         try:
             d = json.loads(_get(url))
@@ -144,7 +148,13 @@ def fetch_em_main_net() -> dict:
         for it in diff:
             c = it.get("f12")
             if c in wl_map and c not in found:
-                found[c] = _num(it.get("f62"))
+                found[c] = {
+                    "main_net": _num(it.get("f62")),
+                    "huge_net": _num(it.get("f66")),
+                    "big_net": _num(it.get("f72")),
+                    "mid_net": _num(it.get("f78")),
+                    "small_net": _num(it.get("f84")),
+                }
         if len(found) == len(WATCHLIST):
             break
         time.sleep(0.25)
@@ -163,6 +173,7 @@ def fetch_etfs() -> (list, bool):
     result = []
     for c, nm, cat in WATCHLIST:
         s = sina.get(c, {})
+        em_row = em.get(c) or {}
         result.append({
             "code": c,
             "name": nm,
@@ -170,7 +181,11 @@ def fetch_etfs() -> (list, bool):
             "price": s.get("price"),
             "chg": s.get("chg"),
             "amount": s.get("amount", 0.0),
-            "main_net": em.get(c) if em_ok else None,
+            "main_net": em_row.get("main_net") if em_ok else None,
+            "huge_net": em_row.get("huge_net") if em_ok else None,
+            "big_net": em_row.get("big_net") if em_ok else None,
+            "mid_net": em_row.get("mid_net") if em_ok else None,
+            "small_net": em_row.get("small_net") if em_ok else None,
         })
     return result, em_ok
 
@@ -323,23 +338,24 @@ def backfill_date(date: str) -> dict:
                     break
         except Exception:
             kn = None
-        # 2) 主力资金历史：主力净流入(元)
-        mn = None
+        # 2) 资金流历史：主力净流入 + 四档净额(元)
+        #    fflow daykline 字段序：f51日期 f52主力净 f53小单净 f54中单净 f55大单净 f56超大单净
+        mn = huge = big = mid = small = None
         try:
             u_f = (
                 "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?lmt=40"
                 "&klt=101&secid=%s"
                 "&fields1=f1,f2,f3,f4"
-                "&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61" % sid
+                "&fields2=f51,f52,f53,f54,f55,f56" % sid
             )
             df = json.loads(_hist_get(u_f))
             for ln in (df.get("data") or {}).get("klines", []):
                 p = ln.split(",")
-                if p[0] == date and len(p) >= 2:
-                    mn = float(p[1])
+                if p[0] == date and len(p) >= 6:
+                    mn, small, mid, big, huge = (float(p[i]) for i in range(1, 6))
                     break
         except Exception:
-            mn = None
+            mn = huge = big = mid = small = None
         if kn is None:
             missing.append((code, name))
             continue
@@ -347,6 +363,7 @@ def backfill_date(date: str) -> dict:
         rows.append({
             "code": code, "name": name, "cat": cat,
             "price": price, "chg": chg, "amount": amount, "main_net": mn,
+            "huge_net": huge, "big_net": big, "mid_net": mid, "small_net": small,
         })
         if mn is not None:
             ok_main += 1

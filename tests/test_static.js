@@ -92,6 +92,7 @@ for (const c of cases) {
     [py.summary.etf_count, py.summary.main_cnt, py.summary.full_etf_count],
     [js.summary.etf_count, js.summary.main_cnt, js.summary.full_etf_count]);
   ok &= cmp(`[${c.name}] 分类小计`, py.summary.by_cat_yi, js.summary.by_cat_yi);
+  ok &= cmp(`[${c.name}] 四档净额`, py.summary.tier_yi, js.summary.tier_yi);
   ok &= cmp(`[${c.name}] 数据完整度标记`, [py.mainnet_ok, py.partial_main], [js.mainnet_ok, js.partial_main]);
   ok &= cmp(`[${c.name}] 信号判定`, py.signal, js.signal);
   ok &= cmp(`[${c.name}] 历史序列`,

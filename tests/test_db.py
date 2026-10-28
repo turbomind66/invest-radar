@@ -19,16 +19,25 @@ D3 = "2026-10-28"   # 模拟“盘前”当日：价格有、主力净流入缺�
 
 ROWS_D1 = [
     {"code": "510300", "name": "华泰柏瑞沪深300ETF", "cat": "沪深300",
-     "price": 4.10, "chg": -1.34, "amount": 5.8e9, "main_net": -8.61e8},
+     "price": 4.10, "chg": -1.34, "amount": 5.8e9, "main_net": -8.61e8,
+     "huge_net": -12.50e8, "big_net": 3.89e8, "mid_net": 2.10e8, "small_net": 1.20e8},
     {"code": "510310", "name": "易方达沪深300ETF", "cat": "沪深300",
-     "price": 1.90, "chg": -1.20, "amount": 1.2e9, "main_net": -1.10e8},
+     "price": 1.90, "chg": -1.20, "amount": 1.2e9, "main_net": -1.10e8,
+     "huge_net": -2.20e8, "big_net": 1.10e8, "mid_net": 0.60e8, "small_net": 0.50e8},
     {"code": "510050", "name": "华夏上证50ETF", "cat": "上证50",
-     "price": 3.10, "chg": 0.40, "amount": 2.1e9, "main_net": 1.66e8},
+     "price": 3.10, "chg": 0.40, "amount": 2.1e9, "main_net": 1.66e8,
+     "huge_net": 2.20e8, "big_net": -0.54e8, "mid_net": -0.80e8, "small_net": -0.40e8},
     {"code": "588000", "name": "华夏科创50ETF", "cat": "科创50",
-     "price": 1.10, "chg": -3.10, "amount": 3.0e9, "main_net": -14.73e8},
+     "price": 1.10, "chg": -3.10, "amount": 3.0e9, "main_net": -14.73e8,
+     "huge_net": -23.06e8, "big_net": 8.33e8, "mid_net": 11.57e8, "small_net": 2.08e8},
 ]
-ROWS_D2 = [dict(r, main_net=None) for r in ROWS_D1]     # 主力数据缺失日
-ROWS_D3 = [dict(r, main_net=None) for r in ROWS_D1]
+def _no_tier(row):
+    """模拟升级前的旧行：无四档字段（资金流缺失日四档同样缺失）。"""
+    return {k: v for k, v in row.items() if k not in db.TIER_FIELDS}
+
+
+ROWS_D2 = [_no_tier(dict(r, main_net=None)) for r in ROWS_D1]   # 主力数据缺失日（旧数据无四档）
+ROWS_D3 = [_no_tier(dict(r, main_net=None)) for r in ROWS_D1]   # 盘前当日：价格有、资金流未出
 
 
 class TestStorage(unittest.TestCase):
@@ -105,6 +114,58 @@ class TestStorage(unittest.TestCase):
         rows = db.get_etf_by_date(D2, path=self.path)
         self.assertEqual(len(rows), 4)
         self.assertTrue(all(r["main_net"] is None for r in rows))
+
+    # ---------- 四档资金流 ----------
+    def test_tier_fields_roundtrip(self):
+        """超大/大/中/小单四档净额读写不丢（分时大额买入的可见口径）。"""
+        rows = {r["code"]: r for r in db.get_etf_by_date(D1, path=self.path)}
+        r = rows["588000"]
+        self.assertAlmostEqual(r["huge_net"], -23.06e8)
+        self.assertAlmostEqual(r["big_net"], 8.33e8)
+        self.assertAlmostEqual(r["mid_net"], 11.57e8)
+        self.assertAlmostEqual(r["small_net"], 2.08e8)
+
+    def test_tier_identity_main_is_big_plus_huge(self):
+        """东财口径勾稽：主力净 = 大单净 + 超大单净。"""
+        for r in db.get_etf_by_date(D1, path=self.path):
+            self.assertAlmostEqual(r["main_net"], r["big_net"] + r["huge_net"],
+                                   msg=r["code"])
+
+    def test_tier_nulls_when_absent(self):
+        """旧数据无四档字段时返回 None（前端显示 —，不得变成 0 误导）。"""
+        rows = db.get_etf_by_date(D2, path=self.path)
+        self.assertTrue(all(r["huge_net"] is None and r["small_net"] is None for r in rows))
+
+    def test_legacy_db_migrates_tier_columns(self):
+        """旧库（无四档列）初始化后自动补列并可读写。"""
+        tmp = tempfile.mkdtemp(prefix="ntt_mig_")
+        try:
+            path = os.path.join(tmp, "legacy.db")
+            conn = __import__("sqlite3").connect(path)
+            conn.execute(
+                "CREATE TABLE etf_daily(date TEXT, code TEXT, name TEXT, cat TEXT,"
+                " price REAL, chg REAL, amount REAL, main_net REAL, PRIMARY KEY(date, code))"
+            )
+            conn.execute(
+                "INSERT INTO etf_daily VALUES('2026-10-26','510300','华泰柏瑞沪深300ETF',"
+                "'沪深300',4.10,-1.34,5.8e9,-8.61e8)"
+            )
+            conn.commit()
+            conn.close()
+            db.init_db(path)   # 触发 ALTER 迁移
+            rows = db.get_etf_by_date("2026-10-26", path=path)
+            self.assertEqual(rows[0]["main_net"], -8.61e8)
+            self.assertIsNone(rows[0]["huge_net"])
+            db.save_etf_daily("2026-10-27", [
+                {"code": "510300", "name": "华泰柏瑞沪深300ETF", "cat": "沪深300",
+                 "price": 4.1, "chg": 0.1, "amount": 1e9, "main_net": 2e8,
+                 "huge_net": 1e8, "big_net": 1e8, "mid_net": -1e8, "small_net": -1e8},
+            ], path=path)
+            r = db.get_etf_by_date("2026-10-27", path=path)[0]
+            self.assertAlmostEqual(r["huge_net"], 1e8)
+            self.assertAlmostEqual(r["small_net"], -1e8)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     # ---------- 选项 ----------
     def test_get_cats(self):

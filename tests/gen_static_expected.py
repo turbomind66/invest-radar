@@ -22,19 +22,23 @@ D1, D2, D3 = "2026-10-26", "2026-10-27", "2026-10-28"
 
 ROWS = [
     {"code": "510300", "name": "华泰柏瑞沪深300ETF", "cat": "沪深300",
-     "price": 4.10, "chg": -1.34, "amount": 5.8e9, "main_net": -8.61e8},
+     "price": 4.10, "chg": -1.34, "amount": 5.8e9, "main_net": -8.61e8,
+     "huge_net": -12.50e8, "big_net": 3.89e8, "mid_net": 2.10e8, "small_net": 1.20e8},
     {"code": "510310", "name": "易方达沪深300ETF", "cat": "沪深300",
-     "price": 1.90, "chg": -1.20, "amount": 1.2e9, "main_net": -1.10e8},
+     "price": 1.90, "chg": -1.20, "amount": 1.2e9, "main_net": -1.10e8,
+     "huge_net": -2.20e8, "big_net": 1.10e8, "mid_net": 0.60e8, "small_net": 0.50e8},
     {"code": "510050", "name": "华夏上证50ETF", "cat": "上证50",
-     "price": 3.10, "chg": 0.40, "amount": 2.1e9, "main_net": 1.66e8},
+     "price": 3.10, "chg": 0.40, "amount": 2.1e9, "main_net": 1.66e8,
+     "huge_net": 2.20e8, "big_net": -0.54e8, "mid_net": -0.80e8, "small_net": -0.40e8},
     {"code": "588000", "name": "华夏科创50ETF", "cat": "科创50",
-     "price": 1.10, "chg": -3.10, "amount": 3.0e9, "main_net": -14.73e8},
+     "price": 1.10, "chg": -3.10, "amount": 3.0e9, "main_net": -14.73e8,
+     "huge_net": -23.06e8, "big_net": 8.33e8, "mid_net": 11.57e8, "small_net": 2.08e8},
 ]
 ROWS_D2 = [
-    dict(ROWS[0], main_net=-4.20e8),
-    dict(ROWS[1], main_net=None),          # 部分缺失 → 触发 partial_main
-    dict(ROWS[2], main_net=2.05e8),
-    dict(ROWS[3], main_net=-6.00e8),
+    dict(ROWS[0], main_net=-4.20e8, huge_net=-6.10e8, big_net=1.90e8),
+    dict(ROWS[1], main_net=None, huge_net=None, big_net=None, mid_net=None, small_net=None),
+    dict(ROWS[2], main_net=2.05e8, huge_net=2.60e8, big_net=-0.55e8),
+    dict(ROWS[3], main_net=-6.00e8, huge_net=-9.10e8, big_net=3.10e8),
 ]
 ROWS_D3 = [dict(r, main_net=None) for r in ROWS]   # 盘前日：主力全缺
 

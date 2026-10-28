@@ -47,11 +47,13 @@ global.echarts = {
 };
 
 // ---------------- 桩后端数据（与真实 /api/data 结构一致）----------------
+// 四档净额满足东财勾稽：主力净 = 大单净 + 超大单净。588000 复刻 10-23 对冲场景
+// （大单 +8.33 买入 vs 超大单 -23.06 卖出 → 主力净 -14.73）。
 const RAW = [
-  { code: '510300', name: '华泰柏瑞沪深300ETF', cat: '沪深300', price: 4.123, chg: -1.34, amount: 5.848e9, main_net: -8.61e8 },
-  { code: '510310', name: '易方达沪深300ETF', cat: '沪深300', price: 1.900, chg: -1.20, amount: 1.200e9, main_net: -1.10e8 },
-  { code: '510050', name: '华夏上证50ETF', cat: '上证50', price: 3.100, chg: 0.40, amount: 2.100e9, main_net: 1.66e8 },
-  { code: '588000', name: '华夏科创50ETF', cat: '科创50', price: 1.100, chg: -3.10, amount: 3.000e9, main_net: -14.73e8 },
+  { code: '510300', name: '华泰柏瑞沪深300ETF', cat: '沪深300', price: 4.123, chg: -1.34, amount: 5.848e9, main_net: -8.61e8, huge_net: -12.50e8, big_net: 3.89e8, mid_net: 2.10e8, small_net: 1.20e8 },
+  { code: '510310', name: '易方达沪深300ETF', cat: '沪深300', price: 1.900, chg: -1.20, amount: 1.200e9, main_net: -1.10e8, huge_net: -2.20e8, big_net: 1.10e8, mid_net: 0.60e8, small_net: 0.50e8 },
+  { code: '510050', name: '华夏上证50ETF', cat: '上证50', price: 3.100, chg: 0.40, amount: 2.100e9, main_net: 1.66e8, huge_net: 2.20e8, big_net: -0.54e8, mid_net: -0.80e8, small_net: -0.40e8 },
+  { code: '588000', name: '华夏科创50ETF', cat: '科创50', price: 1.100, chg: -3.10, amount: 3.000e9, main_net: -14.73e8, huge_net: -23.06e8, big_net: 8.33e8, mid_net: 11.57e8, small_net: 2.08e8 },
 ];
 const ALL_DATES = ['2026-10-26', '2026-10-27', '2026-10-28'];
 const FULL_TOTAL_YI = +(RAW.reduce((a, e) => a + e.main_net, 0) / 1e8).toFixed(2);  // -22.78
@@ -73,6 +75,10 @@ function buildData(url) {
 
   const byCat = {};
   etf.forEach(e => { byCat[e.cat] = (byCat[e.cat] || 0) + (e.main_net || 0); });
+  // 四档净额汇总（与真实后端 _summarize 口径一致）：任一有效值都没有 → 全 null
+  const hasTier = etf.some(e => [e.huge_net, e.big_net, e.mid_net, e.small_net]
+    .some(v => v !== null && v !== undefined));
+  const tierSum = k => hasTier ? etf.reduce((a, e) => a + (e[k] || 0), 0) : null;
 
   // 与真实后端一致：筛选后无数据时 history 返回空数组
   const history = etf.length === 0 ? [] : ALL_DATES.map(d => {
@@ -104,6 +110,8 @@ function buildData(url) {
       etf_count: etf.length, main_cnt: hasMain,
       by_cat_yi: Object.fromEntries(Object.entries(byCat).map(([k, v]) => [k, +(v / 1e8).toFixed(2)])),
       full_total_main_net_yi: FULL_TOTAL_YI, full_etf_count: RAW.length,
+      tier_yi: Object.fromEntries(['huge_net', 'big_net', 'mid_net', 'small_net']
+        .map(k => [k, tierSum(k) === null ? null : +(tierSum(k) / 1e8).toFixed(2)])),
     },
     signal: total > 0 ? ['净买入', 'buy'] : ['净卖出', 'sell'],
   };
@@ -294,6 +302,44 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
     { name: '中证1000', percent: 4.7, data: { real: -2.01 } }));
   chk(tipTxt.includes('易方达 +0.17') && tipTxt.includes('南方 -2.17'),
       'tooltip 同步展开类内明细');
+
+  console.log('\n[11] 四档资金流列（回归：分时大额买入不得被主力净额口径吞掉）');
+  // 10-23 对冲场景重放：科创50 大单净 +8.33 买入 vs 超大单净 -23.06 卖出 → 主力净 -14.73。
+  // 旧版只显示 -14.73，"大额买入"无处可看；现在四档列必须把它亮出来。
+  render(buildData(''));
+  await tick(150);
+  const tblHtml = els['q_#tbl tbody'].innerHTML;
+  const tfHtml = els['q_#tbl tfoot'].innerHTML;
+  chk(tblHtml.includes('8.33'), '科创50 行可见大单净 +8.33（被对冲的大额买入）');
+  chk(tblHtml.includes('-23.06'), '科创50 行可见超大单净 -23.06（对冲来源）');
+  chk(tblHtml.includes('11.57') && tblHtml.includes('2.08'), '中单净/小单净列渲染数值');
+  // 勾稽不破：主力净 = 大单净 + 超大单净（-14.73 = 8.33 + (-23.06)）
+  chk(tblHtml.includes('-14.73'), '主力净买列仍显示 -14.73（勾稽：8.33-23.06）');
+  // 红绿语言：正值红、负值绿
+  chk(/class="num red">8\.33/.test(tblHtml), '大单净正值标红');
+  chk(/class="num green">-23\.06/.test(tblHtml), '超大单净负值标绿');
+  // 合计行：四档合计（桩件实算：超大单 -12.50-2.20+2.20-23.06=-35.56，大单 3.89+1.10-0.54+8.33=12.78）
+  chk(tfHtml.includes('-35.56') && tfHtml.includes('12.78'),
+      '合计行含四档合计（超大单 -35.56 / 大单 +12.78）');
+  // 摘要行：四档拆解 + 对冲提示（大单净>0 且主力净<0 时）
+  const sumHtml = els['f-summary'].innerHTML;
+  chk(sumHtml.includes('四档拆解') && sumHtml.includes('超大单净') && sumHtml.includes('小单净'),
+      '筛选摘要显示四档拆解行');
+  chk(sumHtml.includes('大单买入被超大单卖出对冲'),
+      '大单净为正而主力净为负时给出对冲解释');
+  // 无四档数据的旧行渲染为 —（不显示 0 误导）；摘要也不出拆解行
+  const oldBase = buildData('');
+  render({
+    ...oldBase,
+    etf: [{ code: '510050', name: '华夏上证50ETF', cat: '上证50', price: 3.1, chg: 0.4,
+            amount: 2.1e9, main_net: 1.66e8 }],
+    summary: { ...oldBase.summary,
+               tier_yi: { huge_net: null, big_net: null, mid_net: null, small_net: null } },
+  });
+  await tick(120);
+  const oldRow = els['q_#tbl tbody'].innerHTML;
+  chk((oldRow.match(/—/g) || []).length >= 4, '旧行无四档数据时显示 4 个 —');
+  chk(!els['f-summary'].innerHTML.includes('四档拆解'), '无四档数据时不显示拆解行');
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exit(fail === 0 ? 0 : 1);
