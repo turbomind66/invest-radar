@@ -2,7 +2,10 @@
 import sqlite3
 import os
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.db")
+# 数据库路径：默认应用目录下 data.db。
+# 容器化部署时用 NT_DB_PATH 指向挂载的数据卷——否则 SQLite 会写进容器可写层，重建容器即丢。
+DB_PATH = os.environ.get("NT_DB_PATH") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "data.db")
 
 # 四档资金流净额（元）：主力净 = 大单净 + 超大单净（东财口径，已勾稽验证）。
 # 解决「分时图大额买入被主力净额口径对冲/拆单吞掉」的问题。

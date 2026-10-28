@@ -1,0 +1,26 @@
+# 不进镜像的内容：减小体积、避免本地运行时数据污染镜像
+.git/
+.github/
+.gitignore
+.gitattributes
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+tests/
+dev_scripts/
+cron_trigger_setup.html
+# 本地数据库不进镜像（容器内由 docs/data.json 种子恢复 + 定时同步）
+data.db
+data.db-journal
+data.db-wal
+data.db-shm
+*.log
+*.tmp
+*.baiduyun.uploading.cfg
+README.md
+LICENSE
+docker-compose.yml
+.env
+.env.example
+deploy.sh

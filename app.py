@@ -221,8 +221,21 @@ _ensure_lock = threading.Lock()
 _last_ensure = 0.0
 
 
+def auto_enabled():
+    """是否允许本实例联网抓取。
+
+    容器化部署时 web 与 cron 是两个容器：若 web 也抓，会与定时任务重复请求、
+    并争抢同一个 SQLite 写锁。此时给 web 设 NT_AUTO_ENSURE=0，抓取交给 cron。
+    默认 1（本地 / 单容器部署行为不变）。
+    """
+    return (os.environ.get("NT_AUTO_ENSURE") or "1").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
 def auto_ensure():
     """带节流的自动补数：60 秒内只跑一次，避免筛选请求反复触发抓取。"""
+    if not auto_enabled():
+        return
     global _last_ensure
     now = time.time()
     with _ensure_lock:
@@ -302,10 +315,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def main():
     db.init_db()
-    ensure_today()
-    ensure_history()
-    t = threading.Thread(target=scheduler_loop, daemon=True)
-    t.start()
+    if auto_enabled():
+        ensure_today()
+        ensure_history()
+        t = threading.Thread(target=scheduler_loop, daemon=True)
+        t.start()
+    else:
+        print("NT_AUTO_ENSURE=0：本实例只提供展示，抓取由定时任务容器负责")
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.ThreadingTCPServer(("0.0.0.0", PORT), Handler) as httpd:
         print("国家队A股日报 running on http://0.0.0.0:%d" % PORT)

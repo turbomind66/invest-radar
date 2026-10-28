@@ -25,7 +25,9 @@ import intraday
 import fetcher
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DOCS_DIR = os.path.join(BASE, "docs")
+# 静态导出目录：默认应用目录下 docs/（GitHub Pages 直接发布它）。
+# 容器化部署可用 NT_DOCS_DIR 改到挂载卷，让导出产物也持久化。
+DOCS_DIR = os.environ.get("NT_DOCS_DIR") or os.path.join(BASE, "docs")
 TEMPLATE = os.path.join(BASE, "templates", "index.html")
 DAYS_FILE = os.path.join(DOCS_DIR, "data.json")
 

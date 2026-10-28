@@ -1,0 +1,76 @@
+# 国家队买卖A股日报 —— Docker Compose 编排
+#
+# 两个服务共用同一个镜像与同一个数据卷：
+#   ntt-web  : 看板页面 + /api/data（对外提供访问）
+#   ntt-cron : 定时抓取（完整同步 06:00/17:10，盘中逐笔采样 10:30/11:30/14:00/14:50）
+#
+# 一键启动：  docker compose up -d --build
+# 查看状态：  docker compose ps
+# 查看日志：  docker compose logs -f cron
+services:
+  web:
+    build: .
+    image: ashare-national-team-tracker:latest
+    container_name: ntt-web
+    environment:
+      APP_ROLE: web
+      TZ: ${TZ:-Asia/Shanghai}
+      PORT: ${PORT:-5000}
+      NT_DB_PATH: /app/data/data.db
+      # 抓取交给 cron 容器：避免重复请求，也避免两个容器争抢同一个 SQLite 写锁
+      NT_AUTO_ENSURE: "0"
+    ports:
+      # 宿主机端口可改，避免与服务器上已有的服务冲突
+      - "${HOST_PORT:-18080}:${PORT:-5000}"
+    volumes:
+      - ntt-data:/app/data
+    restart: unless-stopped
+    init: true
+    # 2C2G 小规格 VPS 上与其它服务共存：给容器设资源上限，避免抓取时抢占资源
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cron:
+    build: .
+    image: ashare-national-team-tracker:latest
+    container_name: ntt-cron
+    environment:
+      APP_ROLE: cron
+      TZ: ${TZ:-Asia/Shanghai}
+      NT_DB_PATH: /app/data/data.db
+      SCHED_FULL_TIMES: ${SCHED_FULL_TIMES:-06:00,17:10}
+      SCHED_TICK_TIMES: ${SCHED_TICK_TIMES:-10:30,11:30,14:00,14:50}
+      SCHED_RUN_ON_START: ${SCHED_RUN_ON_START:-1}
+      SCHED_FULL_WEEKDAY_ONLY: ${SCHED_FULL_WEEKDAY_ONLY:-1}
+      SCHED_TIMEOUT: ${SCHED_TIMEOUT:-1800}
+    volumes:
+      - ntt-data:/app/data
+    restart: unless-stopped
+    init: true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 192M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      # cron 容器不提供 HTTP 端口，覆盖掉镜像自带的 /api/status 检查
+      test: ["CMD", "true"]
+      interval: 5m
+      retries: 1
+
+volumes:
+  # 命名卷：SQLite 数据库与累积的逐笔大单都在这里，重建容器不会丢
+  ntt-data:

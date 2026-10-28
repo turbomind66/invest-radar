@@ -4,6 +4,9 @@ data.db-journal
 data.db-wal
 data.db-shm
 
+# ---- 部署配置（含本机端口等私密设置；模板 .env.example 仍需入库）----
+.env
+
 # ---- Python ----
 __pycache__/
 *.py[cod]

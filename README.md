@@ -53,17 +53,18 @@
 - **数据更新于**：页面顶部常驻一条高对比度时间戳（`数据更新于 2026-10-28 09:32 · 1 小时前`），同时标明该时间戳对应的**数据日期**；超过 3 天未更新自动转琥珀色告警，时间未知则转中性灰态。静态站托管下也能一眼判断数据是否新鲜，不必翻 JSON。
 - **零依赖**：只用 Python 标准库（`http.server` + `sqlite3` + `urllib`），单命令启动。
 
-## 两种部署形态
+## 三种部署形态
 
-同一份代码既能跑成**有后端的服务**，也能跑成**纯静态站**：
+同一份代码既能跑成**有后端的服务**、**纯静态站**，也能**用 Docker 部署到自己的服务器**：
 
-| | 服务端模式 | 静态站模式（GitHub Pages） |
-|---|---|---|
-| 启动 | `python app.py` | 无需部署，直接访问 Pages |
-| 抓取时机 | 进程内定时（16:05）+ 页面按钮即时抓取 | cron-job.org 每天 **06:00 / 17:00（北京时间）** 触发 Actions + 手动触发 |
-| 数据存储 | 本地 SQLite | 仓库内 `docs/data.json` |
-| 筛选计算 | 服务端 SQL | 浏览器本地计算 |
-| 手动刷新 | ✅ 立即抓取 | ➖ 只能触发 Actions（需等一两分钟） |
+| | 服务端模式 | 静态站模式（GitHub Pages） | Docker（自建服务器） |
+|---|---|---|---|
+| 启动 | `python app.py` | 无需部署，直接访问 Pages | `./deploy.sh` 或 `docker compose up -d` |
+| 抓取时机 | 进程内定时（16:05）+ 页面按钮即时抓取 | cron-job.org 每天 **06:00 / 17:00（北京时间）** 触发 Actions + 手动触发 | 容器内调度器：完整同步 **06:00 / 17:10** + 盘中采样 **10:30 / 11:30 / 14:00 / 14:50** |
+| 数据存储 | 本地 SQLite | 仓库内 `docs/data.json` | 挂载卷内 SQLite（重建容器不丢） |
+| 筛选计算 | 服务端 SQL | 浏览器本地计算 | 服务端 SQL |
+| 手动刷新 | ✅ 立即抓取 | ➖ 只能触发 Actions（需等一两分钟） | ✅ 一条命令即时抓取 |
+| 适合场景 | 本地看盘 | 零成本公开访问 | 数据自主可控、不受 Actions 停用影响 |
 
 静态站由 `staticsite.py` 产出：它把最近 90 个交易日的明细一次性打包成 `docs/data.json`（更早的历史留在仓库外的本地库，趋势图另用 `history_full` 全量汇总展示完整区间），并复用同一份 `templates/index.html` 注入 `window.__STATIC__` 标记，前端据此切到本地筛选。两种模式的筛选/汇总结果由测试强制保持一致（见「测试」）。
 
@@ -109,6 +110,114 @@ python app.py
 python backfill.py 2026-10-27
 ```
 
+## Docker 部署（自建服务器一键）
+
+把看板搬自己的 Debian / Ubuntu 服务器上：数据自主可控、不受 GitHub Actions 停用影响，盘中采样想加几个点就加几个点。**2 核 2G 这类小规格也能跑**（已给容器设资源上限，与其它服务共存无压力）。
+
+### 方式一：Docker Compose（推荐，两个容器各司其职）
+
+```bash
+git clone https://github.com/turbomind66/ashare-national-team-tracker.git
+cd ashare-national-team-tracker
+
+cp .env.example .env     # 按需改 HOST_PORT（默认 18080，避免与其它服务冲突）
+./deploy.sh              # 一键：检查环境 → 生成 .env → 构建 → 启动 → 自检
+```
+
+脚本跑完会打印访问地址。等价的手动命令：`docker compose up -d --build`。
+
+> 服务器还没装 Docker？`./deploy.sh --install-docker` 会自动安装（含 compose 插件）。
+> 当前用户不在 docker 组时用 `sudo ./deploy.sh`。
+
+### 方式二：纯 docker run（单容器，web + 调度合一）
+
+```bash
+docker build -t ashare-national-team-tracker:latest .
+
+docker run -d --name ntt --restart unless-stopped --init \
+  -e APP_ROLE=all -e TZ=Asia/Shanghai -e NT_DB_PATH=/app/data/data.db \
+  -p 18080:5000 \
+  -v ntt-data:/app/data \
+  --memory=320m --cpus=0.75 \
+  ashare-national-team-tracker:latest
+```
+
+也可以直接 `./deploy.sh --run`，脚本会按上面的参数起好。
+
+### 两个容器各自干什么
+
+| 容器 | 角色 | 职责 | 端口 |
+|---|---|---|---|
+| `ntt-web` | `APP_ROLE=web` | 提供看板页面与 `/api/data`（不自己抓数，避免与定时任务抢写锁） | `${HOST_PORT}` → 5000 |
+| `ntt-cron` | `APP_ROLE=cron` | 跑 `scheduler.py`：完整同步 + 盘中逐笔采样 | 无 |
+
+调度器是纯标准库实现（不装 cron），日志直接进 stdout：`docker compose logs -f cron`。
+
+### 数据存在哪、会不会丢
+
+- SQLite 在命名卷 `ntt-data`（容器内 `/app/data/data.db`），**停止、重建、升级容器都不丢**；只有 `docker volume rm` 才会删。
+- **首次启动会自动填充历史**：镜像内置 `docs/data.json` 种子，空库启动时自动恢复最近 90 个交易日并生成页面（实测恢复 90 天 × 14 只 ≈ 1260 行）。
+- ⚠️ 分时与逐笔大单**从部署当天起才开始累积**（上游只提供近 5 个交易日，更早的不可回补），跑几天后自然就完整了。
+- 备份一条命令：
+
+```bash
+docker run --rm -v ntt-data:/data -v "$PWD":/backup \
+  alpine tar czf /backup/ntt-data-$(date +%F).tgz -C /data .
+```
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `HOST_PORT` | `18080` | 宿主机映射端口，与服务器上其它服务冲突时改它 |
+| `PORT` | `5000` | 容器内监听端口 |
+| `TZ` | `Asia/Shanghai` | **不要改**：调度时间点与交易日判定都按北京时间 |
+| `NT_DB_PATH` | `/app/data/data.db` | 数据库路径，必须指向挂载卷 |
+| `APP_ROLE` | `all` | `web` / `cron` / `all`（单容器模式用 all） |
+| `NT_AUTO_ENSURE` | `1` | 展示实例是否自行抓数。Compose 模式固定 `0`（交给 cron）；单容器保持 `1` |
+| `SCHED_FULL_TIMES` | `06:00,17:10` | 完整同步时间点 |
+| `SCHED_TICK_TIMES` | `10:30,11:30,14:00,14:50` | 盘中逐笔大单采样时间点（想更密集可直接加） |
+| `SCHED_RUN_ON_START` | `1` | 启动即跑一次完整同步 |
+| `SCHED_FULL_WEEKDAY_ONLY` | `1` | 周末不跑全量同步 |
+| `SCHED_TIMEOUT` | `1800` | 单次任务超时（秒），超时自动终止，避免卡住堆积 |
+
+### 资源占用与共存
+
+- 容器上限：web `0.5 核 / 256M`，cron `0.25 核 / 192M`；抓取只在定时任务那几秒有开销，其余时间几乎不占资源。
+- 日志已配轮转（单文件 10M、保留 3 个），不会把小硬盘写满。
+- 端口默认 `18080`，服务器上已有服务占用时改 `.env` 的 `HOST_PORT` 即可。
+
+### 常用运维
+
+```bash
+docker compose ps                 # 状态
+docker compose logs -f cron       # 抓取日志
+docker compose logs -f web        # 看板日志
+docker compose run --rm -T --entrypoint python cron staticsite.py   # 立刻抓一次
+docker compose restart cron       # 重启调度
+git pull && ./deploy.sh           # 升级（重新构建并启动，数据卷保留）
+```
+
+### Nginx 反向代理（可选，配 HTTPS）
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:18080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+```
+
+### 排错速查
+
+| 现象 | 原因与处理 |
+|---|---|
+| 页面能开但没数据 | 首次同步需要几分钟，`docker compose logs -f cron` 看进度 |
+| 定时任务时间不对 | 容器时区必须为 `Asia/Shanghai`（镜像已装 `tzdata` 并设好） |
+| 重启后数据没了 | 卷没挂上；`docker volume inspect ntt-data` 确认，别把 `NT_DB_PATH` 指到容器可写层 |
+| 端口起不来 | `HOST_PORT` 被占用，换一个（脚本启动时会检测并提示） |
+| 外网打不开 | 服务器防火墙 / 云厂商安全组需放行 `HOST_PORT` |
+
 ## 数据源与口径
 
 | 数据 | 来源 | 说明 |
@@ -151,19 +260,28 @@ python backfill.py 2026-10-27
 ├── db.py                   # SQLite 存储层（快照 / 筛选查询 / 历史聚合）
 ├── fetcher.py              # 抓取层（实时行情、主力资金、历史回补、新闻）
 ├── staticsite.py           # 静态站导出（GitHub Pages：docs/data.json + index.html）
+├── scheduler.py            # 容器内定时调度器（纯标准库，Compose/Docker 部署用）
 ├── backfill.py             # 手动回补指定交易日
 ├── templates/index.html    # 仪表盘（原生 JS + ECharts），服务端/静态两种模式共用
 ├── docs/                   # Pages 产物（data.json / index.html 由 staticsite.py 生成）
+├── Dockerfile              # 容器镜像（python:3.12-slim，非 root，含 tzdata）
+├── docker-compose.yml      # web + cron 两个服务，共享数据卷
+├── docker/entrypoint.sh    # 容器入口：按 APP_ROLE 起 web / cron / 两者
+├── deploy.sh               # 服务器一键部署脚本（compose 或 docker run）
+├── .env.example            # 部署环境变量模板
 ├── tests/
 │   ├── test_db.py          # 数据层单元测试（离线）
 │   ├── test_static.py      # 静态导出测试（离线）
+│   ├── test_intraday.py    # 分时 / 逐笔模块测试（离线）
+│   ├── test_scheduler.py   # 容器调度器测试（离线，不依赖 docker）
 │   ├── test_frontend.js    # 前端渲染逻辑测试（DOM 桩件，离线）
 │   ├── test_static.js      # 双模式一致性测试（前端筛选 vs 服务端逻辑）
 │   ├── test_static_boot.js # 静态站产物启动测试（加载 docs/index.html 实跑）
 │   └── gen_static_expected.py  # 为上面的一致性测试生成服务端期望值
 ├── .github/workflows/
 │   ├── ci.yml              # 语法检查 + 全部测试
-│   └── daily.yml           # 每个交易日收盘后抓取并提交 docs/
+│   ├── daily.yml           # 每个交易日收盘后抓取并提交 docs/
+│   └── tick-sample.yml     # 盘中逐笔大单采样（cron-job.org 触发）
 ├── requirements.txt
 └── LICENSE
 ```
@@ -200,6 +318,7 @@ python staticsite.py --no-sync && node tests/test_static_boot.js
 
 完整版本说明见 [Releases](https://github.com/turbomind66/ashare-national-team-tracker/releases)。
 
+- **v1.7.0（待发布）** — 支持 Docker / Docker Compose 一键部署到自有服务器：新增 `scheduler.py`（纯标准库调度器，完整同步 06:00/17:10 + 盘中采样 10:30/11:30/14:00/14:50）、`Dockerfile`、`docker-compose.yml`（web + cron 双服务共享数据卷）、`deploy.sh` 一键脚本；数据库路径与导出目录支持环境变量（`NT_DB_PATH` / `NT_DOCS_DIR`）以便挂载数据卷持久化；展示实例可用 `NT_AUTO_ENSURE=0` 关闭自行抓取，避免与定时任务争抢 SQLite 写锁。
 - **v1.6.0** — 方案C「逐笔大额买单识别」：在分时放量（方案A）基础上钻取逐笔成交层，过滤大单（单笔 ≥ 30 万元）并按 5 分钟窗口聚合，识别「集中扫货 / 集中抛压」，与方案A 护盘窗口联动升级为「逐笔印证」；新增 `intraday_tick` 归档表 + 调度接入每日两次运行。数据源为滚动窗口，盘后仅尾盘快照，盘中多次采样可累积全天大单分布。
 - **v1.5.1** — 分时归档加固：归档日期改以接口自带日期为准（修正盘前可能错标日期的隐患）、新增缺口检测（哪天没抓到会明确报出）、导出窗口放宽到 10 天，并加入东财 1 分钟 K 备选回补源（上游恢复即可回补更早分时）。
 - **v1.5.0** — 新增独立模块「疑似护盘 / 疑似压盘」：按分钟级分时放量识别（腾讯分时接口，每交易日自动归档，窗口滑过不可回溯），四条件联合判定（单只放量 ≥3×、全池共振 ≥2× 且 ≥5 只、价格方向、收盘后大单净额印证），页面给出放量事件表与分时成交额图；告警通道已预留（邮件/飞书），暂不推送。
