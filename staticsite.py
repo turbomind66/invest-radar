@@ -16,6 +16,7 @@ GitHub Actions（收盘后定时跑），"展示"交给静态页：
 """
 import argparse
 import datetime
+import time
 import json
 import os
 
@@ -86,24 +87,27 @@ def import_from_days_file(days_file: str = DAYS_FILE, path: str = db.DB_PATH) ->
 
 
 # ---------------- 补齐缺失交易日 ----------------
-def _recent_trading_days(tgt, n: int) -> list:
+def _recent_trading_days(tgt, n: int, max_lookback: int = 260) -> list:
     """从 tgt 往回数 n 个交易日（跳过周末），返回 YYYY-MM-DD 列表（升序）。"""
     out, d = [], tgt
-    while len(out) < n and d > tgt - datetime.timedelta(days=40):
+    while len(out) < n and d > tgt - datetime.timedelta(days=max_lookback):
         if fetcher.is_trading_day(d):
             out.append(d.strftime("%Y-%m-%d"))
         d -= datetime.timedelta(days=1)
     return sorted(out)
 
 
-def sync_missing(days: int = 20, refresh_days: int = 3, path: str = db.DB_PATH) -> list:
-    """补齐缺失交易日，并**强制重刷**最近 refresh_days 个交易日。
+def sync_missing(days: int = 20, span: int = 121, path: str = db.DB_PATH) -> list:
+    """补齐缺失交易日，并**重刷/回补**最近 span 个交易日。
 
-    为什么要"强制重刷"：某一天可能"已经抓到，但统计不全"——比如抓取时
+    为什么要"重刷"：某一天可能"已经抓到，但统计不全"——比如抓取时
     上游资金流还没出数（f62 缺失），这种日期不会被"补缺失"逻辑发现，
     就会一直残缺。每天 06:00 的那次运行会用历史接口精确还原最近交易日的
     收盘价与四档资金流，把前一天统计不全的数据补齐；17:00 的那次则把
     当天连同前两天一并重刷（收盘后上游陆续出数，越晚越全）。
+
+    span 默认 121：资金流历史接口只保留最近约 121 个交易日，一次批量回补
+    只需每只基金 2 次请求（121 天约 13 秒），顺带把二级历史补到接口上限。
     """
     tgt = target_date()
     existed = set(db.get_dates(path))
@@ -121,33 +125,58 @@ def sync_missing(days: int = 20, refresh_days: int = 3, path: str = db.DB_PATH) 
             todo.append(ds)
         d += datetime.timedelta(days=1)
 
-    done = []
+    done, notes = [], []
     # 1) 完全缺失的交易日：批量精确还原
     if todo:
         try:
             res = fetcher.backfill_range(todo, path)
             if res.get("rows"):
                 done.append("补齐 %d 天/%d 行" % (res["days"], res["rows"]))
-        except Exception:
-            pass
+        except Exception as e:
+            notes.append("补齐失败(%s)" % type(e).__name__)
         # 补齐后仍无任何数据的日期 → 记为非交易日（法定节假日），下次不再白跑
         empty = [ds for ds in todo if not db.get_etf_by_date(ds, path=path)]
         if empty:
             skip |= set(empty)
             db.set_meta("non_trading", json.dumps(sorted(skip)), path)
 
-    # 2) 强制重刷最近若干个交易日（修正"已抓到但统计不全"）
-    refresh = _recent_trading_days(tgt, refresh_days)
+    # 2) 强制重刷 + 扩展历史：一次批量回补到资金流接口可得上限（约 121 个交易日）
+    #    覆盖"已抓到但统计不全"（当天及前两天），同时把二级历史补到上限
+    refresh = _recent_trading_days(tgt, span)
     if refresh:
         try:
             res = fetcher.backfill_range(refresh, path)
             if res.get("rows"):
-                done.append("重刷 %s（%d 行）" % ("/".join(refresh), res["rows"]))
-        except Exception:
-            pass
+                done.append("回补/重刷 %d 天（%d 行）" % (res["days"], res["rows"]))
+            else:
+                notes.append("回补无数据")
+            # 回补时既无行情也无资金流的日期 → 判定为非交易日（法定节假日）
+            no_kline = [x for x in (res.get("no_kline") or []) if x in refresh]
+            if no_kline:
+                skip |= set(no_kline)
+                db.set_meta("non_trading", json.dumps(sorted(skip)), path)
+        except Exception as e:
+            notes.append("回补失败(%s)" % type(e).__name__)
+
+    # 3) 当天已收盘时用实时接口校准（精确成交额 + 实时四档）；
+    #    收盘后上游资金流陆续出数，当晚不全的部分由次日 06:00 的重刷修正
+    now = bj_now()
+    if tgt == datetime.date(now.year, now.month, now.day) and now.hour >= 15:
+        try:
+            etfs, _ok = fetcher.fetch_etfs()
+            if etfs:
+                db.upsert_etf_rows(tgt.strftime("%Y-%m-%d"), etfs, path)
+                done.append("实时校准 %s（%d 只）" % (tgt.strftime("%Y-%m-%d"), len(etfs)))
+        except Exception as e:
+            notes.append("实时校准失败(%s)" % type(e).__name__)
 
     if done:
         db.set_meta("last_fetch", bj_now().strftime("%Y-%m-%d %H:%M:%S"), path)
+    # 同步状态写入 meta，页面"数据更新于"条会显示——失败不再静默
+    status = "；".join(done) if done else "无变更"
+    if notes:
+        status += "　⚠ " + "；".join(notes)
+    db.set_meta("last_sync", "%s %s" % (bj_now().strftime("%Y-%m-%d %H:%M"), status), path)
     return done
 
 
@@ -179,6 +208,7 @@ def build_static_payload(path: str = db.DB_PATH, window_days: int = None) -> dic
         "latest_date": dates[-1] if dates else None,
         "dates": dates,
         "last_fetch": db.get_meta("last_fetch", "—", path),
+        "last_sync": db.get_meta("last_sync", "—", path),
         "news_ok": db.get_meta("news_ok", "1", path) == "1",
         "days": days,
         "news": news,
@@ -248,11 +278,19 @@ def main():
         done = sync_missing(days=args.days)
         print("[sync] 补齐/重抓：%s" % (", ".join(done) if done else "无"))
         # 一级市场申赎（ETF 份额）：东财 datacenter 一次可回补整段历史
-        try:
-            sdays, hit, n = fetcher.sync_shares()
-            print("[shares] 份额回补：%d 个交易日 / %d 只基金 / %d 行" % (sdays, hit, n))
-        except Exception as e:
-            print("[shares] 份额抓取失败（不影响主流程）：%s" % e)
+        # 重试一次：偶发的写库占用（本地网盘同步/文件锁）不该让当天份额缺失
+        err = None
+        for attempt in range(2):
+            try:
+                sdays, hit, n = fetcher.sync_shares()
+                print("[shares] 份额回补：%d 个交易日 / %d 只基金 / %d 行" % (sdays, hit, n))
+                err = None
+                break
+            except Exception as e:
+                err = e
+                time.sleep(2)
+        if err:
+            print("[shares] 份额抓取失败（不影响主流程）：%s" % err)
 
     res = export(out_dir=args.out)
     print("[export] %s" % json.dumps(res, ensure_ascii=False))

@@ -98,6 +98,10 @@
   .fresh .d{font-size:12.5px;color:#3d6b55}
   .fresh .sp{flex:1 1 0;min-width:0}
   .fresh .hint{font-size:12px;color:#5b7d6b;white-space:nowrap}
+  .fresh .sync{font-size:11.5px;color:#5b7d6b;background:#eef6f1;border:1px solid #d7e8de;
+    padding:2px 9px;border-radius:20px;white-space:nowrap;max-width:52%;overflow:hidden;
+    text-overflow:ellipsis}
+  .fresh .sync.bad{color:#a33;background:#fdeeee;border-color:#f3c2c2;font-weight:700}
   /* 数据偏旧告警配色 */
   .fresh.warn{background:linear-gradient(90deg,#fff7e8,#fffdf7);border-color:#f0dcb0}
   .fresh.warn .dot{background:var(--amber);animation:none}
@@ -136,6 +140,7 @@
     <span class="d" id="fresh-data">数据日期：—</span>
     <span class="sp"></span>
     <span class="hint" id="fresh-hint">北京时间 · 每个交易日收盘后自动抓取</span>
+    <span class="sync" id="fresh-sync" title="最近一次自动同步的执行结果"></span>
   </div>
 
   <div class="note">
@@ -344,6 +349,7 @@ function computeStaticPayload(raw, date, cats, codes){
     latest_date: selDate,
     dates: dates,
     last_fetch: raw.last_fetch || "—",
+    last_sync: raw.last_sync || "—",
     news_ok: !!raw.news_ok,
     mainnet_ok: mainOk,
     partial_main: mainOk && (etf.length - cur.has_main) > 0,
@@ -636,6 +642,20 @@ function renderFresh(d){
     if(f.fallback_from) txt += `（${f.fallback_from} 尚未生成，已回退）`;
     else if(d.dates && d.dates.length && f.date !== d.dates[d.dates.length-1]) txt += "（历史）";
     dEl.textContent = txt;
+  }
+
+  // 最近一次自动同步的执行结果（失败会显式标注，不再静默）
+  const syncEl = document.getElementById("fresh-sync");
+  if(syncEl){
+    const sy = String(d.last_sync || "");
+    if(sy && sy !== "—"){
+      syncEl.textContent = "同步：" + sy.slice(sy.indexOf(" ") + 1);
+      syncEl.title = sy;
+      if(sy.indexOf("⚠") >= 0) syncEl.classList.add("bad");
+    } else {
+      syncEl.textContent = "";
+      syncEl.classList.remove("bad");
+    }
   }
 
   if(ts===null){ box.classList.add("unknown"); return; }

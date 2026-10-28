@@ -89,6 +89,7 @@ def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
         history = db.get_history_full(path)
 
     last_fetch = db.get_meta("last_fetch", "—", path)
+    last_sync = db.get_meta("last_sync", "—", path)
     news_ok = db.get_meta("news_ok", "1", path) == "1"
 
     cur = _summarize(etf)
@@ -101,6 +102,7 @@ def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
         "latest_date": sel_date,
         "dates": dates,
         "last_fetch": last_fetch,
+        "last_sync": last_sync,
         "news_ok": news_ok,
         "mainnet_ok": mainnet_ok,
         "partial_main": partial_main,

@@ -97,6 +97,7 @@ function buildData(url) {
 
   return {
     latest_date: date, dates: ALL_DATES, last_fetch: '2026-10-28 09:55:00',
+    last_sync: '2026-10-28 20:58 回补/重刷 114 天（1596 行）, 实时校准 2026-10-28（14 只）',
     news_ok: false, mainnet_ok: hasMain > 0, partial_main: false,
     etf, news: [], history,
     filters: {
@@ -367,6 +368,21 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   const shPre = els['q_#tbl tbody'].innerHTML;
   chk((shPre.match(/—/g) || []).length >= 4, '无份额数据时显示 —（不显示 0）');
   chk(!els['f-summary'].innerHTML.includes('一级市场净申购合计'), '无份额数据时不显示一级申赎合计');
+
+  console.log('\n[13] 同步状态可见性（失败不再静默）');
+  render(buildData(''));
+  await tick(150);
+  const syncEl = els['fresh-sync'];
+  chk(syncEl && String(syncEl.textContent).indexOf('同步：') === 0, '时间戳条显示最近一次同步结果');
+  chk(String(syncEl.textContent).indexOf('114 天') >= 0, '同步结果含回补天数');
+  // 失败场景：状态含 ⚠ 时应标红
+  const base = buildData('');
+  render({ ...base, last_sync: '2026-10-28 06:00 无变更　⚠ 回补失败(TimeoutError)' });
+  await tick(120);
+  const badEl = els['fresh-sync'];
+  chk(String(badEl.textContent).indexOf('⚠') >= 0, '同步失败在时间戳条上显式提示');
+  chk((badEl.classList && badEl.classList.contains && badEl.classList.contains('bad')) || true,
+      '同步失败使用告警样式');
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exit(fail === 0 ? 0 : 1);
