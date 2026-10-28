@@ -320,7 +320,7 @@ function computeStaticPayload(raw, date, cats, codes){
   const cur = sumRows(etf), full = sumRows(allRows);
   const mainOk = cur.has_main>0;
 
-  const history = dates.map(d=>{
+  const selfHistory = dates.map(d=>{
     const rows = match(rowsOfDate(raw,d));
     const s = sumRows(rows);
     // 一级市场申赎：与服务端 get_history 同口径（同筛选条件聚合）
@@ -331,6 +331,11 @@ function computeStaticPayload(raw, date, cats, codes){
             share_net_sub: sHas ? srows.reduce((a,x)=>a+(x.net_sub||0),0) : 0,
             share_cnt: srows.filter(x=>x.net_sub!==null && x.net_sub!==undefined).length};
   }).filter(h=>h.etf_count>0);
+  // 未筛选时用全量历史汇总（日期=二级资金流 ∪ 一级份额），趋势图展示完整区间；
+  // 筛选时用窗口内自算，保证与服务端口径一致
+  const isFiltered = cats.length > 0 || codes.length > 0;
+  const history = (!isFiltered && raw.history_full && raw.history_full.length)
+    ? raw.history_full : selfHistory;
 
   const byCatYi = {};
   Object.keys(cur.by_cat).forEach(k=>{ byCatYi[k] = +(cur.by_cat[k]/1e8).toFixed(2); });
@@ -723,7 +728,8 @@ function drawTrend(history){
     legend:{data:["二级主力净流入","一级市场净申购"],top:0,itemGap:16,
             textStyle:{fontSize:12,color:"#6b7a8d"}},
     grid:{left:50,right:hasShare?58:20,top:38,bottom:40},
-    xAxis:{type:"category",data:dates,axisLabel:{rotate: dates.length>10?40:0}},
+    xAxis:{type:"category",data:dates,
+      axisLabel:{rotate: dates.length>60?0:(dates.length>10?40:0)}},
     yAxis:[{type:"value",name:"亿元",axisLabel:{formatter:"{value}"}}]
       .concat(hasShare ? [{type:"value",name:"一级",axisLabel:{formatter:"{value}"},
         splitLine:{show:false}}] : []),

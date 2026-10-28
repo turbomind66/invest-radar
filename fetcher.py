@@ -46,6 +46,9 @@ WATCHLIST = [
 FIELDS = "f12,f14,f2,f3,f4,f6,f62"
 NEWS_KEYWORDS = ["国家队", "汇金", "证金", "增持", "护盘", "ETF", "中央汇金", "主力资金", "宽基"]
 
+# 东财 push2his 日K 路径可用性（None=未探测 / True=可用 / False=本次运行不可用）
+_EM_KLINE_OK = None
+
 
 def _num(v):
     try:
@@ -446,6 +449,153 @@ def backfill_date(date: str) -> dict:
     db.save_etf_daily(date, rows)
     db.save_news(date, [])  # 历史新闻无法精确还原，留空
     return {"date": date, "etf_count": len(rows), "mainnet_ok": ok_main, "missing": missing}
+
+
+def backfill_range(dates, path: str = db.DB_PATH) -> dict:
+    """批量精确还原一批已收盘交易日（价格/成交额/涨跌幅 + 四档资金流）并入库。
+
+    与 backfill_date 的区别：每只基金只发 2 次请求（一次日K、一次资金流 daykline），
+    一次拿全区间，因此上百个交易日也只需 28 次请求。
+
+    数据源与降级：
+      - 资金流四档：东财 fflow daykline（**上游只保留最近约 121 个交易日**，更早取不到）
+      - 价格/成交额：优先东财 push2his 日K（成交额精确）；该路径不可用时降级新浪日K
+        （成交额按 收盘价×成交量 估算，口径说明中有注明）
+    返回 {"days": n, "rows": n, "no_kline": [...], "no_flow": [...]}。
+    """
+    dset = sorted({d for d in (dates or []) if d})
+    if not dset:
+        return {"days": 0, "rows": 0, "no_kline": [], "no_flow": []}
+    dset = set(dset)
+    d0 = datetime.date.fromisoformat(sorted(dset)[0])
+    d1 = datetime.date.fromisoformat(sorted(dset)[-1])
+    beg = (d0 - datetime.timedelta(days=15)).strftime("%Y%m%d")
+    end = d1.strftime("%Y%m%d")
+    per_day, no_kline, no_flow = {}, set(), set()
+    for code, name, cat in WATCHLIST:
+        sid = _secid_of(code)
+        kmap = _fetch_kline_map(sid, beg, end, dset)
+        fmap = _fetch_flow_map(sid, dset)
+        for ds in dset:
+            kn = kmap.get(ds)
+            fl = fmap.get(ds)
+            if not kn:
+                no_kline.add(ds)
+                continue
+            if not fl:
+                no_flow.add(ds)
+            price, amount, chg = kn
+            mn = huge = big = mid = small = None
+            if fl:
+                mn, small, mid, big, huge = fl
+            per_day.setdefault(ds, []).append({
+                "code": code, "name": name, "cat": cat,
+                "price": price, "chg": chg, "amount": amount,
+                "main_net": mn, "huge_net": huge, "big_net": big,
+                "mid_net": mid, "small_net": small,
+            })
+        time.sleep(0.1)
+    for ds, rows in per_day.items():
+        db.upsert_etf_rows(ds, rows, path)
+    return {"days": len(per_day), "rows": sum(len(v) for v in per_day.values()),
+            "no_kline": sorted(no_kline), "no_flow": sorted(no_flow)}
+
+
+def _fetch_kline_map(sid: str, beg: str, end: str, dset) -> dict:
+    """日K：{date: (收盘价, 成交额, 涨跌幅%)}。东财优先，失败降级新浪。
+
+    东财 push2his 的 kline 路径有时整段不可用（连接被断），此时降级新浪日K，
+    成交额按 收盘价×成交量 估算；涨跌幅用新浪完整序列相邻收盘价自算。
+    """
+    global _EM_KLINE_OK
+    # 1) 东财 push2his（成交额精确）；一旦失败本次运行不再重试该路径
+    if _EM_KLINE_OK is not False:
+        try:
+            u = (
+                "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=%s"
+                "&fields1=f1,f2,f3,f4,f5,f6"
+                "&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
+                "&klt=101&fqt=1&beg=%s&end=%s" % (sid, beg, end)
+            )
+            dk = json.loads(_hist_get(u))
+            out = {}
+            for ln in (dk.get("data") or {}).get("klines", []):
+                p = ln.split(",")
+                if len(p) >= 9 and p[0] in dset:
+                    out[p[0]] = (float(p[2]), float(p[6]), float(p[8]))
+            if out:
+                _EM_KLINE_OK = True
+                return out
+            _EM_KLINE_OK = False
+        except Exception:
+            _EM_KLINE_OK = False
+    # 2) 新浪日K（成交额按 收盘价×成交量 估算）
+    try:
+        code = sid.split(".")[-1]
+        sym = ("sh" if code[0] in "56" else "sz") + code
+        u = ("https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketData.getKLineData"
+             "?symbol=%s&scale=240&ma=no&datalen=600" % sym)
+        arr = json.loads(_hist_get(u))
+        full = {}          # 完整序列（用于算涨跌幅）
+        for it in arr:
+            ds = (it.get("day") or "")[:10]
+            try:
+                full[ds] = (float(it.get("close") or 0), float(it.get("volume") or 0))
+            except Exception:
+                continue
+        ordered = sorted(full.keys())
+        out = {}
+        for i, ds in enumerate(ordered):
+            if ds not in dset:
+                continue
+            close, vol = full[ds]
+            chg = 0.0
+            if i > 0 and full[ordered[i - 1]][0]:
+                prev = full[ordered[i - 1]][0]
+                chg = round((close - prev) / prev * 100, 2)
+            out[ds] = (close, close * vol, chg)
+        return out
+    except Exception:
+        return {}
+
+
+def _fetch_flow_map(sid: str, dset) -> dict:
+    """资金流四档：{date: (主力净, 小单净, 中单净, 大单净, 超大单净)}，单位元。"""
+    try:
+        u = (
+            "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?lmt=200"
+            "&klt=101&secid=%s"
+            "&fields1=f1,f2,f3,f4"
+            "&fields2=f51,f52,f53,f54,f55,f56" % sid
+        )
+        df = json.loads(_hist_get(u))
+        out = {}
+        for ln in (df.get("data") or {}).get("klines", []):
+            p = ln.split(",")
+            if len(p) >= 6 and p[0] in dset:
+                out[p[0]] = tuple(float(p[i]) for i in range(1, 6))
+        return out
+    except Exception:
+        return {}
+
+
+def refresh_flow_only(date: str, path: str = db.DB_PATH) -> dict:
+    """只刷新某日已归档数据的资金流四档（不动价格/成交额/新闻）。
+
+    用于每日"强制重刷"：某天可能已抓到但四档不全（或上游当时没出数），
+    这里用历史资金流接口精确还原该日的四档与主力净，只更新资金流列。
+    """
+    dset = {date}
+    updates = []
+    for code, name, cat in WATCHLIST:
+        fl = _fetch_flow_map(_secid_of(code), dset).get(date)
+        if not fl:
+            continue
+        mn, small, mid, big, huge = fl
+        updates.append({"code": code, "main_net": mn, "huge_net": huge,
+                        "big_net": big, "mid_net": mid, "small_net": small})
+    n = db.update_flow_rows(date, updates, path) if updates else 0
+    return {"date": date, "updated": n, "found": len(updates)}
 
 
 if __name__ == "__main__":

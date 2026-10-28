@@ -117,5 +117,14 @@ for (const [v, exp] of TH) {
   cmp(`signalLabel(${v})`, exp, signalLabel(v));
 }
 
+// 未筛选时静态端应直接使用全量历史汇总（趋势图展示完整区间，不受导出窗口限制）
+console.log('\n=== 全量历史（未筛选） ===');
+const jsFull = computeStaticPayload(raw, null, [], []);
+cmp('未筛选 history = 全量汇总', JSON.stringify(jsFull.history), JSON.stringify(raw.history_full));
+const jsFiltered = computeStaticPayload(raw, null, ['沪深300'], []);
+const expectLen = (raw.dates || []).filter((d) =>
+  (raw.days[d] || []).some((e) => e.cat === '沪深300')).length;
+cmp('筛选后 history 只含窗口内日期', jsFiltered.history.length, expectLen);
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail === 0 ? 0 : 1);

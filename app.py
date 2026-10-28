@@ -81,7 +81,12 @@ def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
         e["chg_shares"] = s.get("chg_shares")
         e["net_sub"] = s.get("net_sub")
     news = db.get_news_by_date(sel_date, path) if sel_date else []
-    history = db.get_history(cats, codes, path)
+    # 历史序列：未筛选用全量汇总（趋势图展示完整区间，日期=二级∪一级并集）；
+    # 筛选时用窗口内聚合（与静态端浏览器自算同口径）
+    if cats or codes:
+        history = db.get_history(cats, codes, path, limit_days=db.EXPORT_WINDOW_DAYS)
+    else:
+        history = db.get_history_full(path)
 
     last_fetch = db.get_meta("last_fetch", "—", path)
     news_ok = db.get_meta("news_ok", "1", path) == "1"

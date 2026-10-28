@@ -8,6 +8,10 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.db")
 # 解决「分时图大额买入被主力净额口径对冲/拆单吞掉」的问题。
 TIER_FIELDS = ("huge_net", "big_net", "mid_net", "small_net")
 
+# 明细导出/展示窗口（交易日）：data.json 只带最近 N 天明细，更早的历史留在库里；
+# 趋势图用 get_history_full() 的全量汇总展示完整区间，避免仓库体积随天数膨胀。
+EXPORT_WINDOW_DAYS = 90
+
 
 def init_db(path: str = DB_PATH):
     conn = sqlite3.connect(path)
@@ -61,6 +65,63 @@ def save_etf_daily(date: str, rows: list, path: str = DB_PATH):
         )
     conn.commit()
     conn.close()
+
+
+def upsert_etf_rows(date: str, rows: list, path: str = DB_PATH) -> int:
+    """按行写入（UPSERT），**不删除**该日已有行，且**空值不覆盖旧值**。
+
+    与 save_etf_daily 的区别：
+      - 批量回补时若上游某天抽风，只更新抓到的行，不会把已归档的其它基金数据洗掉；
+      - COALESCE 语义：本次没取到的字段（主力净/四档/价格）保留库里已有的值，
+        避免"历史接口该日缺资金流"把实时抓到的数据覆盖成 NULL。
+    """
+    conn = _conn(path)
+    cur = conn.cursor()
+    n = 0
+    for r in rows:
+        cur.execute(
+            "INSERT INTO etf_daily(date,code,name,cat,price,chg,amount,main_net,"
+            "huge_net,big_net,mid_net,small_net) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(date, code) DO UPDATE SET"
+            " name=excluded.name, cat=excluded.cat,"
+            " price=COALESCE(excluded.price, etf_daily.price),"
+            " chg=COALESCE(excluded.chg, etf_daily.chg),"
+            " amount=COALESCE(excluded.amount, etf_daily.amount),"
+            " main_net=COALESCE(excluded.main_net, etf_daily.main_net),"
+            " huge_net=COALESCE(excluded.huge_net, etf_daily.huge_net),"
+            " big_net=COALESCE(excluded.big_net, etf_daily.big_net),"
+            " mid_net=COALESCE(excluded.mid_net, etf_daily.mid_net),"
+            " small_net=COALESCE(excluded.small_net, etf_daily.small_net)",
+            (date, r["code"], r["name"], r["cat"], r.get("price"), r.get("chg"),
+             r.get("amount"), r.get("main_net"),
+             r.get("huge_net"), r.get("big_net"), r.get("mid_net"), r.get("small_net")),
+        )
+        n += 1
+    conn.commit()
+    conn.close()
+    return n
+
+
+def update_flow_rows(date: str, rows: list, path: str = DB_PATH) -> int:
+    """只更新某日的资金流列（主力净 + 四档），不动价格/成交额/其它列。
+
+    用于每日"强制重刷"：某天可能已抓到但四档不全（或抓取时上游还没出数），
+    这里只把该日的资金流精确还原回来。返回实际更新的行数。
+    """
+    conn = _conn(path)
+    cur = conn.cursor()
+    n = 0
+    for r in rows:
+        cur.execute(
+            "UPDATE etf_daily SET main_net=?, huge_net=?, big_net=?, mid_net=?, small_net=?"
+            " WHERE date=? AND code=?",
+            (r.get("main_net"), r.get("huge_net"), r.get("big_net"),
+             r.get("mid_net"), r.get("small_net"), date, r["code"]),
+        )
+        n += cur.rowcount
+    conn.commit()
+    conn.close()
+    return n
 
 
 def save_news(date: str, rows: list, path: str = DB_PATH):
@@ -209,11 +270,12 @@ def get_news_by_date(date: str, path: str = DB_PATH):
     return [{"time": r[0], "title": r[1], "url": r[2], "src": r[3]} for r in rows]
 
 
-def get_history(cats=None, codes=None, path: str = DB_PATH):
+def get_history(cats=None, codes=None, path: str = DB_PATH, limit_days: int = 0):
     """返回每个交易日的汇总（可按类别/基金筛选）。
 
     total_main_net 只累加有值(非 NULL)的主力净流入；has_main 标记该日
     在筛选范围内是否存在有效主力数据，供前端断线显示。
+    limit_days > 0 时只保留最近若干个有数据的交易日（与静态导出窗口一致）。
     """
     conn = _conn(path)
     extra, args = _where(cats, codes)
@@ -245,6 +307,49 @@ def get_history(cats=None, codes=None, path: str = DB_PATH):
         if d in agg and ns is not None:
             agg[d]["share_net_sub"] += ns
             agg[d]["share_cnt"] += 1
+    if limit_days and len(order) > limit_days:
+        keep = set(order[-limit_days:])
+        order = [d for d in order if d in keep]
+    return [agg[d] for d in order]
+
+
+def get_history_full(path: str = DB_PATH) -> list:
+    """全量历史汇总（日期 = 二级资金流 ∪ 一级份额），供趋势图展示完整区间。
+
+    二级资金流接口只保留最近约 121 个交易日，一级份额可回补 368 个交易日，
+    这里取两者日期并集：某日只有一级数据时 total_main_net 为 None（前端断线）。
+    """
+    conn = _conn(path)
+    mrows = conn.execute(
+        "SELECT date, main_net, amount FROM etf_daily ORDER BY date"
+    ).fetchall()
+    srows = conn.execute(
+        "SELECT date, net_sub FROM etf_share WHERE net_sub IS NOT NULL ORDER BY date"
+    ).fetchall()
+    conn.close()
+    agg, order = {}, []
+    for d, mn, amt in mrows:
+        if d not in agg:
+            agg[d] = {"date": d, "total_main_net": None, "total_amount": 0.0,
+                      "by_cat": {}, "etf_count": 0, "main_cnt": 0,
+                      "share_net_sub": 0.0, "share_cnt": 0}
+            order.append(d)
+        a = agg[d]
+        a["etf_count"] += 1
+        a["total_amount"] += (amt or 0)
+        if mn is not None:
+            a["main_cnt"] += 1
+            a["total_main_net"] = (a["total_main_net"] or 0.0) + mn
+    for d, ns in srows:
+        if d not in agg:
+            agg[d] = {"date": d, "total_main_net": None, "total_amount": 0.0,
+                      "by_cat": {}, "etf_count": 0, "main_cnt": 0,
+                      "share_net_sub": 0.0, "share_cnt": 0}
+            order.append(d)
+        a = agg[d]
+        a["share_net_sub"] += ns
+        a["share_cnt"] += 1
+    order.sort()
     return [agg[d] for d in order]
 
 

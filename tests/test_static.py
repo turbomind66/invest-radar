@@ -77,6 +77,9 @@ class TestStaticExport(unittest.TestCase):
         self.assertEqual(len(p["shares"][D1]), 3)
         self.assertAlmostEqual(p["shares"][D1][0]["net_sub"], -9.69)   # 按 code 升序，首行 510050
         self.assertNotIn(D2, p["shares"])
+        # 全量历史汇总（趋势图完整区间用）
+        self.assertIn("history_full", p)
+        self.assertEqual([h["date"] for h in p["history_full"]], [D1, D2, D3])
 
     def test_payload_json_roundtrip(self):
         p = staticsite.build_static_payload(path=self.db_path)
@@ -129,6 +132,14 @@ class TestStaticExport(unittest.TestCase):
         # 体积应保持很小（Pages 直接加载，不能随天数膨胀失控）
         size = os.path.getsize(os.path.join(self.out, "data.json"))
         self.assertLess(size, 200 * 1024)
+
+    def test_export_window_truncates_days(self):
+        """超过导出窗口时只保留最近 N 天明细（控制仓库体积），全量历史仍保留。"""
+        payload = staticsite.build_static_payload(path=self.db_path, window_days=2)
+        self.assertEqual(payload["dates"], [D2, D3])
+        self.assertEqual(len(payload["history_full"]), 3)
+        # 份额数据只存在于 D1，不在窗口 [D2,D3] 内 → 不打包
+        self.assertEqual(len(payload["shares"]), 0)
 
     def test_target_date_rules(self):
         """收盘后(>=15:30)算当天；盘前/盘中/周末算上一交易日。"""

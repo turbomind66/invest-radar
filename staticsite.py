@@ -86,34 +86,63 @@ def import_from_days_file(days_file: str = DAYS_FILE, path: str = db.DB_PATH) ->
 
 
 # ---------------- 补齐缺失交易日 ----------------
-def sync_missing(days: int = 20, path: str = db.DB_PATH) -> list:
-    """把最近 days 个自然日内缺失的交易日补回，并重抓"主力数据未更新"的目标日。"""
+def _recent_trading_days(tgt, n: int) -> list:
+    """从 tgt 往回数 n 个交易日（跳过周末），返回 YYYY-MM-DD 列表（升序）。"""
+    out, d = [], tgt
+    while len(out) < n and d > tgt - datetime.timedelta(days=40):
+        if fetcher.is_trading_day(d):
+            out.append(d.strftime("%Y-%m-%d"))
+        d -= datetime.timedelta(days=1)
+    return sorted(out)
+
+
+def sync_missing(days: int = 20, refresh_days: int = 3, path: str = db.DB_PATH) -> list:
+    """补齐缺失交易日，并**强制重刷**最近 refresh_days 个交易日。
+
+    为什么要"强制重刷"：某一天可能"已经抓到，但统计不全"——比如抓取时
+    上游资金流还没出数（f62 缺失），这种日期不会被"补缺失"逻辑发现，
+    就会一直残缺。每天 06:00 的那次运行会用历史接口精确还原最近交易日的
+    收盘价与四档资金流，把前一天统计不全的数据补齐；17:00 的那次则把
+    当天连同前两天一并重刷（收盘后上游陆续出数，越晚越全）。
+    """
     tgt = target_date()
     existed = set(db.get_dates(path))
+    # 自适应识别法定节假日：某日既无行情也无资金流 → 标记为非交易日，后续不再尝试抓取
+    try:
+        skip = set(json.loads(db.get_meta("non_trading", "[]", path) or "[]"))
+    except Exception:
+        skip = set()
     start = tgt - datetime.timedelta(days=days)
     todo = []
     d = start
     while d <= tgt:
-        if fetcher.is_trading_day(d) and d.strftime("%Y-%m-%d") not in existed:
-            todo.append(d.strftime("%Y-%m-%d"))
+        ds = d.strftime("%Y-%m-%d")
+        if fetcher.is_trading_day(d) and ds not in existed and ds not in skip:
+            todo.append(ds)
         d += datetime.timedelta(days=1)
 
     done = []
-    for ds in todo:
+    # 1) 完全缺失的交易日：批量精确还原
+    if todo:
         try:
-            res = fetcher.backfill_date(ds)
-            if res.get("etf_count"):
-                done.append(ds)
+            res = fetcher.backfill_range(todo, path)
+            if res.get("rows"):
+                done.append("补齐 %d 天/%d 行" % (res["days"], res["rows"]))
         except Exception:
-            continue
+            pass
+        # 补齐后仍无任何数据的日期 → 记为非交易日（法定节假日），下次不再白跑
+        empty = [ds for ds in todo if not db.get_etf_by_date(ds, path=path)]
+        if empty:
+            skip |= set(empty)
+            db.set_meta("non_trading", json.dumps(sorted(skip)), path)
 
-    # 目标日已有数据但主力净流入全空（收盘后接口尚未更新）→ 重抓一次
-    ds_tgt = tgt.strftime("%Y-%m-%d")
-    rows = db.get_etf_by_date(ds_tgt, path=path)
-    if rows and not any(r["main_net"] is not None for r in rows):
+    # 2) 强制重刷最近若干个交易日（修正"已抓到但统计不全"）
+    refresh = _recent_trading_days(tgt, refresh_days)
+    if refresh:
         try:
-            fetcher.backfill_date(ds_tgt)
-            done.append(ds_tgt + "(refetch)")
+            res = fetcher.backfill_range(refresh, path)
+            if res.get("rows"):
+                done.append("重刷 %s（%d 行）" % ("/".join(refresh), res["rows"]))
         except Exception:
             pass
 
@@ -123,12 +152,19 @@ def sync_missing(days: int = 20, path: str = db.DB_PATH) -> list:
 
 
 # ---------------- 组装静态数据 ----------------
-def build_static_payload(path: str = db.DB_PATH) -> dict:
+def build_static_payload(path: str = db.DB_PATH, window_days: int = None) -> dict:
     """全量快照：所有日期的明细一次性打包，筛选交给前端算。
 
     结构刻意贴近 /api/data 的字段语义，前端同一套渲染代码可直接复用。
+
+    明细只保留最近 window_days 个交易日（默认 db.EXPORT_WINDOW_DAYS），
+    避免 data.json 随天数无限膨胀；趋势图另用 history_full（全量汇总）展示完整区间。
     """
+    if window_days is None:
+        window_days = db.EXPORT_WINDOW_DAYS
     dates = db.get_dates(path)
+    if window_days and len(dates) > window_days:
+        dates = dates[-window_days:]
     days = {d: db.get_etf_by_date(d, path=path) for d in dates}
     news = {d: db.get_news_by_date(d, path=path) for d in dates}
     # 一级市场申赎（ETF 份额）：按日期打包，前端与明细表合并展示
@@ -136,6 +172,8 @@ def build_static_payload(path: str = db.DB_PATH) -> dict:
     dset = set(dates)
     share_dates = [d for d in db.get_share_dates(path) if d in dset]
     shares = {d: db.get_shares_by_date(d, path=path) for d in share_dates}
+    # 全量历史汇总（二级资金流 ∪ 一级份额的日期并集）：趋势图用它画完整区间
+    history_full = db.get_history_full(path)
     return {
         "generated_at": bj_now().strftime("%Y-%m-%d %H:%M:%S"),
         "latest_date": dates[-1] if dates else None,
@@ -145,6 +183,7 @@ def build_static_payload(path: str = db.DB_PATH) -> dict:
         "days": days,
         "news": news,
         "shares": shares,
+        "history_full": history_full,
         "cats": db.get_cats(path),
         "funds": db.get_funds(path),
         "actions_url": ACTIONS_URL,

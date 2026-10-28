@@ -178,8 +178,58 @@ class TestStorage(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    # ---------- ETF 份额（一级市场申赎口径） ----------
-    def test_share_rows_roundtrip(self):
+    # ---------- 批量回补：upsert 与强制重刷 ----------
+    def test_upsert_keeps_existing_rows(self):
+        """upsert 不删除该日已有行（上游某天抽风不会洗掉已归档数据）。"""
+        before = len(db.get_etf_by_date(D1, path=self.path))
+        db.upsert_etf_rows(D1, [
+            {"code": "510300", "name": "华泰柏瑞沪深300ETF", "cat": "沪深300",
+             "price": 4.2, "chg": 1.0, "amount": 6.0e9, "main_net": 1.0e8,
+             "huge_net": 0.6e8, "big_net": 0.4e8, "mid_net": -0.5e8, "small_net": -0.5e8},
+        ], path=self.path)
+        after = db.get_etf_by_date(D1, path=self.path)
+        self.assertEqual(len(after), before)
+        self.assertEqual({r["code"] for r in after}, {"510300", "510310", "510050", "588000"})
+
+    def test_upsert_null_does_not_overwrite(self):
+        """空值不覆盖旧值：重刷时资金流缺失不得把已抓到的数据洗成 NULL。"""
+        db.upsert_etf_rows(D1, [
+            {"code": "510300", "name": "华泰柏瑞沪深300ETF", "cat": "沪深300",
+             "price": None, "chg": None, "amount": None, "main_net": None,
+             "huge_net": None, "big_net": None, "mid_net": None, "small_net": None},
+        ], path=self.path)
+        r = {x["code"]: x for x in db.get_etf_by_date(D1, path=self.path)}["510300"]
+        self.assertAlmostEqual(r["main_net"], -8.61e8)
+        self.assertAlmostEqual(r["huge_net"], -12.50e8)
+        self.assertAlmostEqual(r["price"], 4.10)
+
+    def test_update_flow_rows_only_touches_flow(self):
+        """强制重刷只更新资金流列，价格/成交额保持不变。"""
+        n = db.update_flow_rows(D1, [
+            {"code": "510300", "main_net": 1.23e8, "huge_net": 0.8e8,
+             "big_net": 0.43e8, "mid_net": -0.1e8, "small_net": -1.13e8},
+        ], path=self.path)
+        self.assertEqual(n, 1)
+        r = {x["code"]: x for x in db.get_etf_by_date(D1, path=self.path)}["510300"]
+        self.assertAlmostEqual(r["main_net"], 1.23e8)
+        self.assertAlmostEqual(r["huge_net"], 0.8e8)
+        self.assertAlmostEqual(r["price"], 4.10)          # 价格未被改
+        self.assertAlmostEqual(r["amount"], 5.8e9)        # 成交额未被改
+        self.assertAlmostEqual(r["chg"], -1.34)
+
+    def test_get_history_full_union_of_dates(self):
+        """全量历史 = 二级资金流 ∪ 一级份额 的日期并集。"""
+        full = db.get_history_full(path=self.path)
+        self.assertEqual([h["date"] for h in full], [D1, D2, D3])
+        self.assertEqual(full[0]["share_cnt"], 3)
+        self.assertAlmostEqual(full[0]["share_net_sub"], 8.54 + 131.68 - 9.69)
+
+    def test_get_history_limit_days(self):
+        """窗口裁剪：只保留最近 N 个交易日（静态导出口径）。"""
+        h = db.get_history(path=self.path, limit_days=2)
+        self.assertEqual([x["date"] for x in h], [D2, D3])
+
+    # ---------- ETF 份额（一级市场申赎口径） ----------    def test_share_rows_roundtrip(self):
         """份额/净值/日变动/净申购读写不丢。"""
         rows = {r["code"]: r for r in db.get_shares_by_date(D1, path=self.path)}
         self.assertEqual(len(rows), 3)
