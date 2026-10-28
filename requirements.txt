@@ -1,0 +1,2 @@
+# 零第三方依赖：本应用仅使用 Python 标准库（http.server / sqlite3 / urllib 等）。
+# 部署时无需 pip install。

@@ -1,0 +1,10 @@
+# 统一换行符为 LF，避免跨平台（Windows 本地开发 / Linux CI 部署）差异
+* text=auto eol=lf
+
+# 二进制与生成物
+*.db binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
