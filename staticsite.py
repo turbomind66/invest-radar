@@ -306,6 +306,19 @@ def main():
                 sig_n += len(intraday.detect(ds))
             print("[intraday] 分时归档 %d 行 / %d 只 / %d 天；信号 %d 条" % (
                 n, funds, len(ds_list), sig_n))
+            # 方案C（逐笔大额买单）：归档大单 + 联动升级方案A 信号。
+            # 数据源是滚动窗口，盘后仅剩尾盘快照；盘中多次采样可累积全天大单分布。
+            tk_total, tk_funds = 0, 0
+            for ds in ds_list:
+                try:
+                    tn, tf = intraday.archive_tick(ds)
+                    intraday.detect_tick(ds)
+                    tk_total += tn
+                    tk_funds = max(tk_funds, tf)
+                except Exception as e:
+                    notes.append("逐笔大单归档失败(%s)" % type(e).__name__)
+            print("[tick] 逐笔大单归档 %d 行 / 覆盖 %d 只基金（盘后仅尾盘快照，盘中采样可累积全天）"
+                  % (tk_total, tk_funds))
             # 缺口检测：某天没抓到且已滑出上游窗口 → 永久缺失，明确告知
             gap = intraday.gap_dates()
             db.set_meta("intraday_gap", ",".join(gap) if gap else "", path)

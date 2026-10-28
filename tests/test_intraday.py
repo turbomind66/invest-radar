@@ -10,6 +10,7 @@
     python -m unittest discover -s tests -p "test_*.py" -v
 """
 import os
+import json
 import shutil
 import sys
 import tempfile
@@ -167,6 +168,127 @@ class TestIntradayDetect(unittest.TestCase):
         self.assertIn("signals", v)
         self.assertIn("thresholds", v)
         self.assertGreater(v["support_count"], 0)
+
+
+# ---------------- 方案C：逐笔大额买单识别 ----------------
+def _tick(path, date, code, name, cat, rows):
+    """注入若干逐笔大单（rows: [(ttime,price,vol手,direction,amount元)]）。"""
+    store = [{"code": code, "name": name, "cat": cat, "ttime": r[0], "price": r[1],
+              "volume": r[2], "direction": r[3], "amount": r[4]} for r in rows]
+    db.save_tick_rows(date, store, path=path)
+
+
+class TestTickDetect(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="ntt_tick_")
+        self.path = os.path.join(self.tmp, "test.db")
+        db.init_db(self.path)
+        # 510300：窗口 0930 集中扫货（买入主导 + 价格上行）
+        _tick(self.path, D1, "510300", "沪深300ETF", "沪深300", [
+            ("09:31:00", 1.00, 10000, 1, 100e4),
+            ("09:32:00", 1.02, 10000, 1, 102e4),
+            ("09:33:00", 1.05, 10000, 1, 105e4),
+            ("09:34:00", 1.05, 5000, 2, 52.5e4),
+        ])
+        # 510310：窗口 1000 集中抛压（卖出主导 + 价格下行）
+        _tick(self.path, D1, "510310", "沪深300ETF2", "沪深300", [
+            ("10:01:00", 2.00, 10000, 2, 200e4),
+            ("10:02:00", 1.95, 10000, 2, 195e4),
+            ("10:03:00", 1.90, 10000, 2, 190e4),
+            ("10:04:00", 1.90, 3000, 1, 57e4),
+        ])
+        # 510500：窗口 1100 净额不足（<200万）→ 不应产生事件
+        _tick(self.path, D1, "510500", "中证500ETF", "中证500", [
+            ("11:01:00", 5.00, 3000, 1, 150e4),
+            ("11:02:00", 5.00, 2000, 2, 100e4),
+        ])
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # ---------- 解析 ----------
+    def test_fetch_details_parses_and_self_computes_amount(self):
+        """fetch_details 应正确解析每行并自算金额=手数×价×100（不依赖金额列）。"""
+        fake = json.dumps({"data": {"details": [
+            "09:31:00,1.00,10000,1,100",
+            "09:32:00,1.02,5000,2,51",
+        ]}})
+        orig = intraday._get
+        intraday._get = lambda url, **k: fake
+        try:
+            rows = intraday.fetch_details("510300", lmt=10)
+        finally:
+            intraday._get = orig
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0], ("09:31:00", 1.0, 10000, 1, 10000 * 1.0 * 100))
+        self.assertEqual(rows[1], ("09:32:00", 1.02, 5000, 2, 5000 * 1.02 * 100))
+
+    # ---------- 聚合判定 ----------
+    def test_tick_buy_and_sell_detected(self):
+        ev = intraday.compute_tick_events(D1, path=self.path)
+        kinds = {e["kind"] for e in ev}
+        self.assertIn("tick_buy", kinds)
+        self.assertIn("tick_sell", kinds)
+        buy = [e for e in ev if e["kind"] == "tick_buy"]
+        self.assertEqual(len(buy), 1)
+        self.assertEqual(buy[0]["code"], "510300")
+        self.assertEqual(buy[0]["window"], "0930")
+        self.assertGreater(buy[0]["net"], intraday.MIN_WIN_AMT)
+        self.assertGreaterEqual(buy[0]["buy_ratio"], intraday.BUY_RATIO)
+        self.assertGreater(buy[0]["up_pct"], 0)
+        sell = [e for e in ev if e["kind"] == "tick_sell"]
+        self.assertEqual(sell[0]["code"], "510310")
+        self.assertEqual(sell[0]["window"], "1000")
+        # 净额不足的 510500 不应出现
+        self.assertNotIn("510500", {e["code"] for e in ev})
+
+    def test_tick_none_when_no_data(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            p = os.path.join(tmp, "s.db")
+            db.init_db(p)
+            self.assertEqual(intraday.compute_tick_events(D1, path=p), [])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_tick_empty_when_net_too_small(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            p = os.path.join(tmp, "s.db")
+            db.init_db(p)
+            # 两笔各 50 万，方向相反，净买 0 → 不触发阈值
+            _tick(p, D1, "510300", "T", "C", [
+                ("09:31:00", 1.0, 5000, 1, 50e4),
+                ("09:32:00", 1.0, 5000, 2, 50e4),
+            ])
+            self.assertEqual(intraday.compute_tick_events(D1, path=p), [])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # ---------- 与方案A 联动 ----------
+    def test_tick_linkage_upgrades_support_signal(self):
+        """方案A 的护盘信号所在窗口若有方案C 大买单印证 → 升级 confirmed_by_tick。"""
+        db.save_intraday_signals(D1, [{
+            "code": "510300", "name": "沪深300ETF", "cat": "沪深300", "minute": "0931",
+            "kind": "support", "amount": 100e4, "ratio": 5, "price": 1.0,
+            "price_chg": 0, "cover": 3, "level": "suspect", "note": "大额买入承接",
+        }], path=self.path)
+        intraday.detect_tick(D1, path=self.path)
+        sigs = db.get_intraday_signals(D1, path=self.path)
+        sup = [s for s in sigs if s["kind"] == "support"]
+        self.assertEqual(len(sup), 1)
+        self.assertEqual(sup[0]["level"], "confirmed_by_tick")
+        self.assertIn("逐笔大买单印证", sup[0]["note"])
+
+    # ---------- 视图包含 tick ----------
+    def test_build_view_has_tick_block(self):
+        v = intraday.build_view(D1, path=self.path)
+        self.assertIn("tick", v)
+        self.assertTrue(v["tick"]["has_data"])
+        self.assertGreaterEqual(v["tick"]["buy_events"], 1)
+        self.assertGreaterEqual(v["tick"]["sell_events"], 1)
+        self.assertIn("thresholds", v["tick"])
+        self.assertEqual(v["tick"]["thresholds"]["big"], intraday.TICK_BIG)
 
 
 if __name__ == "__main__":

@@ -398,6 +398,168 @@ def notify_stub(signals, path: str = db.DB_PATH):
     return {"sent": 0, "pending": len(signals or []), "channel": NOTIFY.get("channel")}
 
 
+# ---------------- 方案C：逐笔大额买单识别（Tick-level large buy detection） ----------------
+# 数据源：东财 stock/details/get 滚动明细（每笔含 时间/价格/手数/方向/金额）。
+# 这是滚动窗口——盘后冻结只留尾盘少量、盘中才有多笔；多次采样可累积全天大单分布。
+# 与方案A（分时放量）的关系：方案A 看「量放大了」，方案C 钻到逐笔层验证「是不是主动性大买单在托盘」。
+TICK_BIG = 30e4        # 大单阈值（单笔成交额，元）：宽基ETF 单笔 ≥ 30 万元算大单
+TICK_HUGE = 100e4      # 超大单阈值（元）：≥ 100 万元
+BUY_RATIO = 0.60       # 窗口内大买单额占比 ≥ 60% 视为「主动买入主导」
+MIN_WIN_AMT = 200e4    # 窗口大单净额绝对值 ≥ 200 万元才记为一个像样的「集中」事件
+UP_MIN = 0.0           # 价格上行门槛（末价 ≥ 首价 × (1+UP_MIN)）
+TICK_WIN = 5           # 聚合窗口（分钟）
+
+
+def _secid_of(code: str) -> str:
+    """东财 secid：沪市 1.xxxxxx，深市 0.xxxxxx（与腾讯 sh/sz 前缀规则一致）。"""
+    return ("1." if code[0] in "56" else "0.") + code
+
+
+def fetch_details(code: str, lmt: int = 2000):
+    """抓东财逐笔成交明细（滚动窗口），返回 [(ttime, price, volume手, direction, amount元)]。
+
+    每行形如 "15:29:58,4.152,25,1,1"：时间,价格,手数,方向(1买/2卖/其它=中性),金额。
+    金额列单位有歧义，这里不依赖它，自算 amount = 手数 × 价格 × 100（ETF 一手=100 股）。
+    方向枚举以盘中实测为准（暂按 1≈主动买 / 2≈主动卖）。
+    盘后接口冻结（只返回当日最后一笔左右），盘中会滚动返回最近若干笔。
+    """
+    sid = _secid_of(code)
+    url = ("https://push2.eastmoney.com/api/qt/stock/details/get?secid=%s"
+           "&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55"
+           "&pos=-1&lmt=%d"
+           "&ut=b2884a393a59ad64002292a3e90d46a5" % (sid, lmt))
+    txt = _get(url, timeout=12, retries=2, proxies=(None, "http://127.0.0.1:10808"))
+    d = json.loads(txt)
+    det = ((d.get("data") or {}).get("details") or [])
+    out = []
+    for row in det:
+        p = row.split(",")
+        if len(p) < 5:
+            continue
+        try:
+            t, price, vol = p[0], float(p[1]), int(p[2])
+            direction = int(p[3]) if p[3].isdigit() else 0
+        except ValueError:
+            continue
+        amount = vol * price * 100
+        out.append((t, price, vol, direction, amount))
+    return out
+
+
+def archive_tick(date: str, path: str = db.DB_PATH, lmt: int = 2000):
+    """抓逐笔明细并归档大单到 intraday_tick。返回 (入库行数, 覆盖基金数)。
+
+    只存金额 ≥ TICK_BIG 的大单，控制体积；主键去重，盘中多次运行可累积全天。
+    """
+    n, funds = 0, set()
+    for code, name, cat in WATCHLIST:
+        try:
+            rows = fetch_details(code, lmt)
+        except Exception:
+            rows = []
+        big = [r for r in rows if r[4] >= TICK_BIG]
+        if not big:
+            continue
+        store = [{"code": code, "name": name, "cat": cat, "ttime": r[0],
+                  "price": r[1], "volume": r[2], "direction": r[3], "amount": r[4]}
+                 for r in big]
+        db.save_tick_rows(date, store, path)
+        n += len(store)
+        funds.add(code)
+    return n, len(funds)
+
+
+def _win_of(ttime: str) -> int:
+    """把时间（"HHMM" 或 "HH:MM:SS"）归到 5 分钟窗口起点（分钟数）。
+
+    方案A 信号存的是 HHMM（如 "0931"），方案C 明细是 HH:MM:SS（如 "09:31:00"），
+    这里统一去掉冒号后按 HHMM 解析，保证两种格式落到同一窗口。
+    """
+    t = ttime.replace(":", "")
+    h, m = int(t[:2]), int(t[2:4])
+    return ((h * 60 + m) // TICK_WIN) * TICK_WIN
+
+
+def compute_tick_events(date: str, path: str = db.DB_PATH):
+    """纯读：把当日大单按 (code, 5分钟窗口) 聚合，识别「集中扫货/抛压」事件。
+
+    不写库。信号方向：
+      tick_buy  ：窗口内大单净买为正、大买单占比 ≥ BUY_RATIO、价格上行 → 疑似主动托盘
+      tick_sell ：窗口内大单净卖为负、大卖单占比高、价格下行 → 疑似集中抛压
+    """
+    rows = db.get_tick_by_date(date, path=path)
+    if not rows:
+        return []
+    buckets = {}
+    for r in rows:
+        wb = _win_of(r["ttime"])
+        key = (r["code"], wb)
+        b = buckets.setdefault(key, {"code": r["code"], "name": r["name"], "cat": r["cat"],
+                                     "win": wb, "buy": 0.0, "sell": 0.0,
+                                     "buy_n": 0, "sell_n": 0, "prices": []})
+        if r["direction"] == 1:
+            b["buy"] += r["amount"]; b["buy_n"] += 1
+        else:
+            b["sell"] += r["amount"]; b["sell_n"] += 1
+        b["prices"].append(r["price"])
+    events = []
+    for (code, wb), b in buckets.items():
+        net = b["buy"] - b["sell"]
+        tot = b["buy"] + b["sell"]
+        buy_ratio = (b["buy"] / tot) if tot else 0.0
+        first_p, last_p = b["prices"][0], b["prices"][-1]
+        up = (last_p / first_p - 1.0) if first_p else 0.0
+        if net >= MIN_WIN_AMT and buy_ratio >= BUY_RATIO and up >= UP_MIN:
+            kind = "tick_buy"
+        elif net <= -MIN_WIN_AMT and (1 - buy_ratio) >= BUY_RATIO and up < UP_MIN:
+            kind = "tick_sell"
+        else:
+            continue
+        events.append({
+            "code": code, "name": b["name"], "cat": b["cat"],
+            "window": "%02d%02d" % (wb // 60, wb % 60),
+            "buy": round(b["buy"]), "sell": round(b["sell"]), "net": round(net),
+            "buy_n": b["buy_n"], "sell_n": b["sell_n"],
+            "buy_ratio": round(buy_ratio, 2), "up_pct": round(up * 100, 3),
+            "kind": kind,
+            "amount": round(b["buy"] if kind == "tick_buy" else abs(b["sell"])),
+        })
+    events.sort(key=lambda e: -e["amount"])
+    return events
+
+
+def detect_tick(date: str, path: str = db.DB_PATH):
+    """计算逐笔事件，并与方案A（分时放量）联动升级信号。
+
+    联动：方案A 的护盘(support)信号所在 5 分钟窗口，若方案C 同窗口有 tick_buy 印证
+    → 把该信号 level 升级为 confirmed_by_tick（融合「放量+逐笔大买」双重证据），note 追加提示。
+    返回当日逐笔事件列表。
+    """
+    events = compute_tick_events(date, path=path)
+    if not events:
+        return events
+    buy_windows = {e["window"] for e in events if e["kind"] == "tick_buy"}
+    sell_windows = {e["window"] for e in events if e["kind"] == "tick_sell"}
+    sigs = db.get_intraday_signals(date, path=path)
+    if not sigs:
+        return events
+    changed = False
+    for s in sigs:
+        wb = _win_of(s["minute"])
+        w = "%02d%02d" % (wb // 60, wb % 60)
+        if s["kind"] == "support" and w in buy_windows:
+            if s["level"] != "confirmed_by_tick":
+                s["level"] = "confirmed_by_tick"
+                s["note"] = (s["note"] or "") + "，逐笔大买单印证"
+                changed = True
+        elif s["kind"] == "pressure" and w in sell_windows:
+            s["note"] = (s["note"] or "").rstrip("；") + "；逐笔大卖单印证"
+            changed = True
+    if changed:
+        db.save_intraday_signals(date, sigs, path)
+    return events
+
+
 def build_view(date: str, path: str = db.DB_PATH):
     """组装前端视图数据：分时序列 + 逐条信号 + 事件聚合 + 摘要。"""
     data = db.get_intraday_by_date(date, path=path)
@@ -416,7 +578,23 @@ def build_view(date: str, path: str = db.DB_PATH):
     events = _events(sigs)
     support = [s for s in sigs if s["kind"] == "support"]
     pressure = [s for s in sigs if s["kind"] == "pressure"]
-    conf = [s for s in sigs if s["level"] == "confirmed"]
+    conf = [s for s in sigs if s["level"] == "confirmed" or s["level"] == "confirmed_by_tick"]
+    # 方案C：逐笔大额买单识别（基于东财滚动明细，纯读聚合，不写库）
+    tick_events = compute_tick_events(date, path=path)
+    tick_buy = [e for e in tick_events if e["kind"] == "tick_buy"]
+    tick_sell = [e for e in tick_events if e["kind"] == "tick_sell"]
+    tick_rows = db.get_tick_by_date(date, path=path)
+    tick_summary = {
+        "has_data": bool(tick_rows),
+        "big_count": len(tick_rows),
+        "events": tick_events,
+        "buy_events": len(tick_buy),
+        "sell_events": len(tick_sell),
+        "buy_amount": sum(e["amount"] for e in tick_buy),
+        "sell_amount": sum(e["amount"] for e in tick_sell),
+        "thresholds": {"big": TICK_BIG, "huge": TICK_HUGE, "buy_ratio": BUY_RATIO,
+                       "min_win_amt": MIN_WIN_AMT, "window": TICK_WIN},
+    }
     return {
         "date": date,
         "has_data": bool(data),
@@ -433,4 +611,5 @@ def build_view(date: str, path: str = db.DB_PATH):
         "event_pressure": sum(1 for e in events if e["kind"] == "pressure"),
         "thresholds": {"ratio": RATIO_TH, "cover": COVER_TH,
                        "breadth": BREADTH_MIN, "drop": DROP_TH},
+        "tick": tick_summary,
     }

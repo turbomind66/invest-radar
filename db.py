@@ -56,6 +56,14 @@ def init_db(path: str = DB_PATH):
             price_chg REAL, cover REAL, level TEXT, note TEXT,
             PRIMARY KEY(date, code, minute, kind))"""
     )
+    # 逐笔大额成交（方案C：逐笔大额买单识别）的归档：来源东财 stock/details/get 滚动明细。
+    # 只存"大单"（单笔成交额 ≥ 阈值），控制体积；direction: 1=主动买 / 2=主动卖 / 其它=中性。
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS intraday_tick(
+            date TEXT, code TEXT, name TEXT, cat TEXT,
+            ttime TEXT, price REAL, volume REAL, direction INTEGER, amount REAL,
+            PRIMARY KEY(date, code, ttime, price, volume, direction))"""
+    )
     cur.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     conn.commit()
     conn.close()
@@ -215,6 +223,48 @@ def get_intraday_signals(date: str, cats=None, codes=None, path: str = DB_PATH):
     keys = ("code", "name", "cat", "minute", "kind", "amount", "ratio", "price",
             "price_chg", "cover", "level", "note")
     return [dict(zip(keys, r)) for r in rows]
+
+
+def save_tick_rows(date: str, rows: list, path: str = DB_PATH):
+    """写入某日逐笔大单归档（来自东财 stock/details/get）。
+
+    rows 每项：{code, name, cat, ttime(HH:MM:SS), price, volume(手), direction, amount(元)}
+    主键 (date,code,ttime,price,volume,direction) 去重：盘中多次采样幂等追加，不重复。
+    """
+    conn = _conn(path)
+    cur = conn.cursor()
+    for r in rows:
+        cur.execute(
+            "INSERT OR REPLACE INTO intraday_tick(date,code,name,cat,ttime,price,volume,direction,amount)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (date, r["code"], r.get("name"), r.get("cat"), r["ttime"],
+             r.get("price"), r.get("volume"), r.get("direction"), r.get("amount")),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_tick_by_date(date: str, cats=None, codes=None, path: str = DB_PATH):
+    """取某日全部逐笔大单：[(code,name,cat,ttime,price,volume,direction,amount), ...]。"""
+    conn = _conn(path)
+    extra, args = _where(cats, codes)
+    rows = conn.execute(
+        "SELECT code,name,cat,ttime,price,volume,direction,amount FROM intraday_tick"
+        " WHERE date=?" + extra + " ORDER BY code, ttime", [date] + args,
+    ).fetchall()
+    conn.close()
+    return [{"code": r[0], "name": r[1], "cat": r[2], "ttime": r[3], "price": r[4],
+             "volume": r[5], "direction": r[6], "amount": r[7]} for r in rows]
+
+
+def get_tick_dates(path: str = DB_PATH):
+    """有逐笔大单归档的日期列表（升序）。"""
+    conn = _conn(path)
+    rows = conn.execute(
+        "SELECT DISTINCT date FROM intraday_tick ORDER BY date"
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
 
 
 def save_news(date: str, rows: list, path: str = DB_PATH):

@@ -225,6 +225,21 @@
     </div>
   </div>
 
+  <div class="panel" id="tick-panel">
+    <h2>💰 逐笔大额买单 / 集中扫货 <small id="tick-sub">盘中逐笔成交钻取（独立口径）</small></h2>
+    <div class="cards" id="tick-cards"></div>
+    <div style="overflow:auto;max-height:300px;margin-top:14px">
+      <table id="tick-events">
+        <thead><tr>
+          <th>时段</th><th>基金</th><th>方向</th><th>大买单额(亿)</th>
+          <th>大卖单额(亿)</th><th>净买(亿)</th><th>买单占比</th><th>价格涨跌</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note" style="margin:10px 0 0;font-size:11.5px" id="tick-note"></div>
+  </div>
+
   <div class="panel">
     <h2>📋 明细 <small id="tbl-sub">宽基ETF观察池</small></h2>
     <div style="overflow:auto;max-height:460px">
@@ -617,6 +632,7 @@ function render(d){
   }
 
   renderIntraday(d);
+  renderTick(d);
   drawTrend(d.history||[]);
   drawBar(etf);
   drawCat(s.by_cat_yi||{}, etf);
@@ -868,6 +884,64 @@ function drawIntradayChart(iv, code){
         tooltip:{formatter:(x)=>x.data.name+"盘放量 "+(x.value[1])+" 亿"}},
     ],
   }, true);
+}
+
+// ---------- 方案C：逐笔大额买单 / 集中扫货（东财滚动明细，独立口径） ----------
+function renderTick(d){
+  const tk = d.intraday && d.intraday.tick;
+  const cards = document.getElementById("tick-cards");
+  const sub = document.getElementById("tick-sub");
+  const tbody = document.querySelector("#tick-events tbody");
+  const note = document.getElementById("tick-note");
+  if(!tk || !tk.has_data){
+    if(sub) sub.textContent = "暂无逐笔大单数据（盘中采样累积，盘后仅尾盘快照）";
+    if(cards) cards.innerHTML = `<div class="card"><div class="k">逐笔大单</div>
+      <div class="v amber">—</div><div class="sub">盘中多次采样后开始积累</div></div>`;
+    if(tbody) tbody.innerHTML = `<tr><td colspan="8" class="empty">暂无逐笔大单数据</td></tr>`;
+    if(note) note.textContent = "";
+    return;
+  }
+  const ev = tk.events || [];
+  if(sub) sub.textContent = `逐笔大单识别 · ${tk.big_count} 笔大单 · ${ev.length} 个集中事件`;
+  if(cards){
+    const th = tk.thresholds || {};
+    const cardsData = [
+      {k:"集中扫货事件", v:String(tk.buy_events), sub:"大单净买主导", cls:"red"},
+      {k:"集中抛压事件", v:String(tk.sell_events), sub:"大单净卖主导", cls:"green"},
+      {k:"大买单合计", v:fmt(tk.buy_amount/1e8)+" 亿", sub:`单笔≥${fmt((th.big||0)/1e8,2)}亿`, cls:"red"},
+      {k:"大卖单合计", v:fmt(tk.sell_amount/1e8)+" 亿", sub:"主动卖出分量", cls:"green"},
+    ];
+    cards.innerHTML = cardsData.map(c=>`
+      <div class="card"><div class="k">${c.k}</div>
+      <div class="v ${c.cls}">${c.v}</div><div class="sub">${c.sub}</div></div>`).join("");
+  }
+  if(tbody){
+    if(!ev.length){
+      tbody.innerHTML = `<tr><td colspan="8" class="empty">当日未识别到符合阈值的大单集中事件</td></tr>`;
+    } else {
+      tbody.innerHTML = ev.map(e=>{
+        const kindTxt = e.kind==="tick_buy"
+          ? `<span class="num red">集中扫货</span>`
+          : `<span class="num green">集中抛压</span>`;
+        return `<tr>
+          <td>${esc(e.window)}</td>
+          <td>${esc(e.name||e.code)}（${esc(e.code)}）</td>
+          <td>${kindTxt}</td>
+          <td class="num">${fmt(e.buy/1e8)}</td>
+          <td class="num">${fmt(e.sell/1e8)}</td>
+          <td class="num ${e.net>=0?'red':'green'}">${e.net>=0?'+':''}${fmt(e.net/1e8)}</td>
+          <td class="num">${fmt(e.buy_ratio*100,0)}%</td>
+          <td class="num ${e.up_pct>=0?'red':'green'}">${(e.up_pct>=0?'+':'')}${fmt(e.up_pct,2)}%</td>
+        </tr>`;
+      }).join("");
+    }
+  }
+  if(note){
+    const th = tk.thresholds || {};
+    note.innerHTML = `判定口径：单笔大单 ≥ <b>${fmt((th.big||0)/1e8,2)}</b> 亿元；窗口(5分钟)内<b>大买单占比 ≥ ${fmt((th.buy_ratio||0)*100,0)}%</b>`
+      + `且<b>净买 ≥ ${fmt((th.min_win_amt||0)/1e8,1)}</b> 亿、价格上行 → 记「集中扫货」(疑似主动托盘)；反之记「集中抛压」。`
+      + `<br>数据源为东财逐笔成交滚动明细，<b>盘后仅尾盘快照</b>，盘中多次采样可累积全天大单分布；若方案A 同窗口有护盘信号，则升级为「逐笔印证」。`;
+  }
 }
 
 function drawTrend(history){
