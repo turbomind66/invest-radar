@@ -23,7 +23,12 @@ function extractScript(html) {
 const els = {};
 const mkEl = (id) => ({
   id, innerHTML: '', textContent: '', value: '', disabled: false, style: {},
-  classList: { add() {}, remove() {} },
+  classList: {
+    _s: new Set(),
+    add(...c) { c.forEach((x) => this._s.add(x)); },
+    remove(...c) { c.forEach((x) => this._s.delete(x)); },
+    contains(x) { return this._s.has(x); },
+  },
 });
 global.document = {
   getElementById: (id) => els[id] || (els[id] = mkEl(id)),
@@ -122,8 +127,8 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
 (async () => {
   console.log('\n[1] 首屏（自动模式，后端回退到最近有效日）');
   await loadData(); await tick();
-  chk(els['meta-date'].textContent.includes('2026-10-27'), '元信息显示生效日期');
-  chk(els['meta-date'].textContent.includes('未生成'), '元信息提示自动回退原因');
+  chk(els['fresh-data'].textContent.includes('2026-10-27'), '时间戳条显示生效日期');
+  chk(els['fresh-data'].textContent.includes('未生成'), '时间戳条提示自动回退原因');
   chk(els['cards'].innerHTML.includes(String(FULL_TOTAL_YI)), `汇总卡片为全量合计 ${FULL_TOTAL_YI} 亿`);
   chk(els['f-cats'].innerHTML.includes('沪深300'), '类别 chips 已渲染');
   chk(chipCount('f-codes') === 5, `基金 chips = 全部 + 4 只（实际 ${chipCount('f-codes')}）`);
@@ -150,13 +155,13 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
 
   console.log('\n[4] 按日期筛选（切到历史 2026-10-26）');
   onDateChange('2026-10-26'); await tick(150);
-  chk(els['meta-date'].textContent.includes('2026-10-26'), '日期已切换');
-  chk(els['meta-date'].textContent.includes('历史'), '标注为历史日期');
-  chk(!els['meta-date'].textContent.includes('未生成'), '不再显示回退提示');
+  chk(els['fresh-data'].textContent.includes('2026-10-26'), '日期已切换');
+  chk(els['fresh-data'].textContent.includes('历史'), '标注为历史日期');
+  chk(!els['fresh-data'].textContent.includes('未生成'), '不再显示回退提示');
 
   console.log('\n[5] 重置筛选');
   resetFilters(); await tick(200);
-  chk(els['meta-date'].textContent.includes('2026-10-27'), '回到自动模式（最新有效日）');
+  chk(els['fresh-data'].textContent.includes('2026-10-27'), '回到自动模式（最新有效日）');
   chk(rowCount() === 4, `恢复全量 4 行（实际 ${rowCount()}）`);
 
   console.log('\n[6] 空结果兜底（类别与基金无交集）');
@@ -171,6 +176,50 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   await tick(80);
   chk(els['warn'].style.display === 'block', '显示主力数据缺失警示条');
   chk(els['cards'].innerHTML.includes('—'), '汇总卡片显示占位符而非错误的 0');
+
+  console.log('\n[8] 「数据更新于」时间戳');
+  // 北京时间 2026-10-28 09:55 = UTC 01:55
+  chk(parseBjTime('2026-10-28 09:55:00') === Date.UTC(2026, 9, 28, 1, 55, 0),
+      '北京时间字符串按 UTC+8 解析');
+  chk(parseBjTime('2026-10-28T09:55') === Date.UTC(2026, 9, 28, 1, 55, 0),
+      '兼容 T 分隔且缺省秒');
+  chk(parseBjTime('—') === null && parseBjTime('') === null && parseBjTime(null) === null,
+      '无效/缺失时间返回 null（不抛异常）');
+
+  // 相对时间（传入固定 now，避免依赖运行时刻）
+  const NOW = parseBjTime('2026-10-28 10:55:00');
+  chk(relTime(NOW - 20 * 1000, NOW) === '刚刚更新', '20 秒前 → 刚刚更新');
+  chk(relTime(NOW - 25 * 60 * 1000, NOW) === '25 分钟前', '25 分钟前 → 25 分钟前');
+  chk(relTime(NOW - 6 * 3600 * 1000, NOW) === '6 小时前', '6 小时前 → 6 小时前');
+  chk(relTime(NOW - 50 * 3600 * 1000, NOW) === '2 天前', '50 小时前 → 2 天前');
+  chk(relTime(NOW + 60 * 1000, NOW) === '刚刚更新', '未来时间（时钟偏差）→ 刚刚更新');
+  chk(relTime(null, NOW) === '', '无时间 → 空串');
+
+  render(buildData(''));
+  await tick(80);
+  chk(els['fresh-time'].textContent === '2026-10-28 09:55', '时间戳显示到分钟（实际 ' + els['fresh-time'].textContent + '）');
+  chk(/前|刚刚/.test(els['fresh-rel'].textContent), '相对时间徽标有内容（实际 ' + els['fresh-rel'].textContent + '）');
+  chk(els['fresh-data'].textContent.includes('2026-10-27'), '时间戳条同时标明数据日期');
+  chk(els['fresh-data'].textContent.includes('未生成'), '自动回退时给出原因');
+  chk(!els['fresh'].classList.contains('warn'), '新鲜数据不告警');
+
+  // 数据陈旧 → 琥珀告警
+  render(Object.assign(buildData(''), { last_fetch: '2026-10-01 16:20:00' }));
+  await tick(80);
+  chk(els['fresh'].classList.contains('warn'), '超过 3 天未更新 → 告警态');
+  chk(els['fresh-hint'].textContent.includes('未更新'), '告警时提示文案切换');
+  chk(els['fresh-time'].textContent === '2026-10-01 16:20', '陈旧数据仍显示真实更新时间');
+
+  // 更新时间未知
+  render(Object.assign(buildData(''), { last_fetch: '—' }));
+  await tick(80);
+  chk(els['fresh'].classList.contains('unknown'), '更新时间缺失 → 中性灰态');
+  chk(els['fresh-time'].textContent === '—', '更新时间缺失显示占位符');
+  chk(els['fresh-rel'].textContent === '更新时间未知', '更新时间缺失给出明确说明');
+
+  // 历史日期时时间戳条标明「历史」
+  onDateChange('2026-10-26'); await tick(150);
+  chk(els['fresh-data'].textContent.includes('历史'), '查看历史日期时标注历史');
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exit(fail === 0 ? 0 : 1);

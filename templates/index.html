@@ -71,7 +71,43 @@
   .fl-summary .hl{color:var(--blue);font-weight:700}
   .fl-summary .r{color:var(--red);font-weight:700}
   .fl-summary .g{color:var(--green);font-weight:700}
-  @media(max-width:860px){.cards{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}header{flex-direction:column;align-items:flex-start}.meta{text-align:left}}
+  /* ---- 数据更新于（新鲜度时间戳条） ---- */
+  .fresh{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:-4px 0 16px;
+    background:linear-gradient(90deg,#eaf7ef,#f4faf6);border:1px solid #cfe9d9;
+    border-radius:12px;padding:11px 16px;box-shadow:0 1px 3px rgba(20,40,80,.05)}
+  .fresh .dot{width:9px;height:9px;border-radius:50%;background:var(--green);flex:none;
+    animation:pulse 2s infinite}
+  @keyframes pulse{
+    0%{box-shadow:0 0 0 0 rgba(22,163,74,.45)}
+    70%{box-shadow:0 0 0 9px rgba(22,163,74,0)}
+    100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}
+  }
+  .fresh .t{font-size:15.5px;font-weight:800;color:#0f5132;letter-spacing:.2px}
+  .fresh .t b{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-weight:800;font-size:16px;letter-spacing:.5px}
+  .fresh .rel{font-size:12.5px;font-weight:800;background:#d7efe1;color:#0f5132;
+    padding:2px 10px;border-radius:20px;white-space:nowrap}
+  .fresh .d{font-size:12.5px;color:#3d6b55}
+  .fresh .sp{flex:1 1 0;min-width:0}
+  .fresh .hint{font-size:12px;color:#5b7d6b;white-space:nowrap}
+  /* 数据偏旧告警配色 */
+  .fresh.warn{background:linear-gradient(90deg,#fff7e8,#fffdf7);border-color:#f0dcb0}
+  .fresh.warn .dot{background:var(--amber);animation:none}
+  .fresh.warn .t{color:#8a5a06}
+  .fresh.warn .t b{color:#8a5a06}
+  .fresh.warn .rel{background:#fae9c8;color:#8a5a06}
+  .fresh.warn .d,.fresh.warn .hint{color:#8a6a33}
+  /* 更新时间未知 */
+  .fresh.unknown{background:#f6f8fb;border-color:var(--line)}
+  .fresh.unknown .dot{background:#9aa7b8;animation:none}
+  .fresh.unknown .t,.fresh.unknown .t b{color:var(--sub)}
+  .fresh.unknown .rel{background:var(--chip);color:var(--sub)}
+  .fresh.unknown .d,.fresh.unknown .hint{color:var(--sub)}
+  @media(max-width:860px){
+    .cards{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}
+    header{flex-direction:column;align-items:flex-start}.meta{text-align:left}
+    .fresh .hint{display:none}.fresh .t{font-size:14.5px}.fresh .t b{font-size:15px}
+  }
 </style>
 </head>
 <body>
@@ -81,11 +117,18 @@
       <h1>🛡️ 国家队买卖A股日报 <span class="tag">宽基ETF主力净流入代理</span></h1>
     </div>
     <div class="meta">
-      <div id="meta-date">数据日期：—</div>
-      <div id="meta-fetch">最后更新：—</div>
       <div style="margin-top:8px"><button class="btn" id="refresh-btn" onclick="refresh()">🔄 立即刷新</button></div>
     </div>
   </header>
+
+  <div class="fresh" id="fresh">
+    <span class="dot"></span>
+    <span class="t">数据更新于 <b id="fresh-time">—</b></span>
+    <span class="rel" id="fresh-rel">—</span>
+    <span class="d" id="fresh-data">数据日期：—</span>
+    <span class="sp"></span>
+    <span class="hint" id="fresh-hint">北京时间 · 每个交易日收盘后自动抓取</span>
+  </div>
 
   <div class="note">
     <b>口径说明：</b>国家队（中央汇金、证金公司等）不逐日公开买卖明细。本工具以<b>宽基指数ETF（沪深300/中证500/中证1000/上证50/创业板/科创50/科创100/中证A500）的主力资金净流入</b>作为国家队护盘动向的核心代理指标——这些ETF是国家队进场的标准通道。数据每日收盘后（约16:05）自动抓取并归档，历史曲线随运行天数累积。新闻为服务端尽力抓取，若上游不通则显示提示。
@@ -368,11 +411,8 @@ function render(d){
   const isFiltered = !!f.filtered;
   const isHistory = d.dates && d.dates.length && f.date !== d.dates[d.dates.length-1];
 
-  let metaTxt = "数据日期：" + (f.date || "—");
-  if(f.fallback_from) metaTxt += `（${f.fallback_from} 数据未生成，已显示最近有效日）`;
-  else if(isHistory) metaTxt += "（历史）";
-  document.getElementById("meta-date").textContent = metaTxt;
-  document.getElementById("meta-fetch").textContent = "最后更新：" + (d.last_fetch || "—");
+  // 数据日期 / 更新时间 / 回退与历史标识统一由「数据更新于」时间戳条呈现
+  renderFresh(d);
 
   // 警示条
   const warn = document.getElementById("warn");
@@ -453,6 +493,65 @@ function render(d){
   drawTrend(d.history||[]);
   drawBar(etf);
   drawCat(s.by_cat_yi||{});
+}
+
+// ---------- 「数据更新于」新鲜度时间戳 ----------
+// last_fetch 是北京时间字符串（不带时区）。这里手工解析而不交给 Date 构造函数：
+// Safari 无法解析 "YYYY-MM-DD HH:MM:SS"，且裸字符串会按浏览器本地时区解释。
+// 统一换算成 UTC 毫秒后比较，结果与访问者所在时区无关。
+function parseBjTime(s){
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(s||""));
+  if(!m) return null;
+  return Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +(m[6]||0)) - 8*3600*1000;
+}
+
+function relTime(ts, now){
+  if(ts===null || ts===undefined) return "";
+  if(now===undefined) now = Date.now();
+  const diff = now - ts;
+  if(diff < 60000) return "刚刚更新";               // 含未来时间（时钟偏差）
+  const min = Math.floor(diff/60000);
+  if(min < 60) return min + " 分钟前";
+  const h = Math.floor(min/60);
+  if(h < 24) return h + " 小时前";
+  const dd = Math.floor(h/24);
+  if(dd < 30) return dd + " 天前";
+  return Math.floor(dd/30) + " 个月前";
+}
+
+const FRESH_WARN_DAYS = 3;        // 超过 3 天未更新 → 转琥珀色提醒
+const FRESH_HINT = "北京时间 · 每个交易日收盘后自动抓取";
+
+function renderFresh(d){
+  const box = document.getElementById("fresh");
+  if(!box) return;
+  const f = d.filters || {};
+  const raw = (d.last_fetch && d.last_fetch !== "—") ? d.last_fetch : "";
+  const ts = parseBjTime(raw);
+
+  const tEl = document.getElementById("fresh-time");
+  const relEl = document.getElementById("fresh-rel");
+  const dEl = document.getElementById("fresh-data");
+  const hintEl = document.getElementById("fresh-hint");
+
+  box.classList.remove("warn", "unknown");
+  if(hintEl) hintEl.textContent = FRESH_HINT;
+
+  if(tEl) tEl.textContent = ts===null ? "—" : String(raw).slice(0, 16);
+  if(relEl) relEl.textContent = relTime(ts) || "更新时间未知";
+  if(dEl){
+    let txt = "数据日期：" + (f.date || "—");
+    if(f.fallback_from) txt += `（${f.fallback_from} 尚未生成，已回退）`;
+    else if(d.dates && d.dates.length && f.date !== d.dates[d.dates.length-1]) txt += "（历史）";
+    dEl.textContent = txt;
+  }
+
+  if(ts===null){ box.classList.add("unknown"); return; }
+
+  if((Date.now() - ts) / 86400000 > FRESH_WARN_DAYS){
+    box.classList.add("warn");
+    if(hintEl) hintEl.textContent = "已超过 " + FRESH_WARN_DAYS + " 天未更新，数据可能滞后";
+  }
 }
 
 function renderSummary(d){

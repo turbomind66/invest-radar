@@ -72,7 +72,13 @@ const rowsCount = () => (els['q_#tbl tbody'].innerHTML.match(/<tr>/g) || []).len
 
   chk(!!global.window.__STATIC__, 'head 中 window.__STATIC__ 标记存在');
   chk(fetched[0] === 'data.json', `数据源为相对路径 data.json（实际 ${fetched[0]}）`);
-  chk(els['meta-date'].textContent.includes(EXPECT_DATE), `首屏落在最近有效日 ${EXPECT_DATE}`);
+  chk(els['fresh-data'].textContent.includes(EXPECT_DATE), `首屏落在最近有效日 ${EXPECT_DATE}`);
+  // 「数据更新于」时间戳：取自 data.json 的 last_fetch（北京时间），精确到分钟
+  const EXPECT_FETCH = String(RAW.last_fetch || '').slice(0, 16);
+  chk(EXPECT_FETCH && els['fresh-time'].textContent === EXPECT_FETCH,
+      `时间戳条显示数据更新于 ${EXPECT_FETCH}（实际 ${els['fresh-time'].textContent}）`);
+  chk(!!els['fresh-rel'].textContent && els['fresh-rel'].textContent !== '更新时间未知',
+      `时间戳条给出相对时间（实际 ${els['fresh-rel'].textContent}）`);
   chk(els['cards'].innerHTML.includes(EXPECT_TOTAL), `首屏净买入合计 = ${EXPECT_TOTAL} 亿`);
   chk(rowsCount() === rowsOf(EXPECT_DATE).length, `明细行数 = ${rowsOf(EXPECT_DATE).length}`);
   chk(replaced.length === 1 && replaced[0][1] === 'a', '刷新按钮已换成 Actions 链接');
