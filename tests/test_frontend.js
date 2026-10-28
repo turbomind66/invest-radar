@@ -98,6 +98,22 @@ function buildData(url) {
   return {
     latest_date: date, dates: ALL_DATES, last_fetch: '2026-10-28 09:55:00',
     last_sync: '2026-10-28 20:58 回补/重刷 114 天（1596 行）, 实时校准 2026-10-28（14 只）',
+    intraday: {
+      date: '2026-10-28', has_data: true, fund_count: 2,
+      series: {
+        '510300': { name: '华泰柏瑞沪深300ETF', cat: '沪深300', avg: 100,
+          points: [ { m: '0930', p: 4.1, a: 5e8, r: 8.5 }, { m: '0935', p: 4.2, a: 2e8, r: 3.1 } ] },
+      },
+      signals: [ { code: '510300', minute: '0931', kind: 'support', amount: 2.56e8,
+                   ratio: 15.0, cover: 7.2, level: 'confirmed' } ],
+      events: [ { window: '0930', end: '0935', segment: '开盘', funds: 12, support: 10,
+                  pressure: 20, amount: 3.2e9, max_ratio: 18.0, max_cover: 7.2,
+                  confirmed: 14, kind: 'pressure', codes: ['510300'] } ],
+      support_count: 72, pressure_count: 35, confirmed_count: 63,
+      support_amount: 4.2e9, pressure_amount: 3.2e9,
+      event_support: 2, event_pressure: 6,
+      thresholds: { ratio: 3, cover: 2, breadth: 5, drop: -0.5 },
+    },
     news_ok: false, mainnet_ok: hasMain > 0, partial_main: false,
     etf, news: [], history,
     filters: {
@@ -383,6 +399,24 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   chk(String(badEl.textContent).indexOf('⚠') >= 0, '同步失败在时间戳条上显式提示');
   chk((badEl.classList && badEl.classList.contains && badEl.classList.contains('bad')) || true,
       '同步失败使用告警样式');
+
+  console.log('\n[14] 疑似护盘/压盘模块（分时放量识别）');
+  render(buildData(''));
+  await tick(150);
+  const icards = els['intraday-cards'].innerHTML;
+  chk(icards.includes('放量事件') && icards.includes('疑似护盘金额'), '护盘模块摘要卡渲染');
+  const itbody = els['q_#intraday-events tbody'].innerHTML;
+  chk(itbody.includes('0930') && itbody.includes('疑似压盘'), '放量事件表渲染（时段+方向）');
+  chk(itbody.includes('32.00') || itbody.includes('32.0'), '事件表含合计成交额');
+  const inote = els['intraday-note'].innerHTML;
+  chk(inote.includes('放量不等于国家队'), '口径说明强调放量≠国家队');
+  chk(inote.includes('四条件'), '口径说明列出四条件');
+  // 无分时数据时的兜底
+  const base2 = buildData('');
+  render({ ...base2, intraday: null });
+  await tick(120);
+  chk(els['intraday-cards'].innerHTML.includes('暂无分时数据') ||
+      els['intraday-cards'].innerHTML.includes('分时归档'), '无分时数据时显示占位文案');
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exit(fail === 0 ? 0 : 1);

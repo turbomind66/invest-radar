@@ -21,6 +21,7 @@ import json
 import os
 
 import db
+import intraday
 import fetcher
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -214,6 +215,9 @@ def build_static_payload(path: str = db.DB_PATH, window_days: int = None) -> dic
         "news": news,
         "shares": shares,
         "history_full": history_full,
+        # 疑似护盘/压盘模块：只带最近 3 个有分时的日期（分时点较密，控制体积）
+        "intraday": {d: intraday.build_view(d, path)
+                     for d in db.get_intraday_dates(path)[-3:]},
         "cats": db.get_cats(path),
         "funds": db.get_funds(path),
         "actions_url": ACTIONS_URL,
@@ -291,6 +295,19 @@ def main():
                 time.sleep(2)
         if err:
             print("[shares] 份额抓取失败（不影响主流程）：%s" % err)
+        # 疑似护盘/压盘模块：归档分时（上游只给近 5 日，窗口一滑过就再也拿不到）
+        # + 重算各日信号（收盘后有大单净额，可把"疑似"升级为"已印证"）
+        try:
+            tgt = target_date().strftime("%Y-%m-%d")
+            n, funds, ds_list = intraday.archive(tgt)
+            sig_n = 0
+            for ds in ds_list:
+                sig_n += len(intraday.detect(ds))
+            print("[intraday] 分时归档 %d 行 / %d 只 / %d 天；信号 %d 条" % (
+                n, funds, len(ds_list), sig_n))
+            intraday.notify_stub(None)
+        except Exception as e:
+            print("[intraday] 分时抓取失败（不影响主流程）：%s" % e)
 
     res = export(out_dir=args.out)
     print("[export] %s" % json.dumps(res, ensure_ascii=False))

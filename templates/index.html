@@ -199,6 +199,32 @@
     </div>
   </div>
 
+  <div class="panel" id="intraday-panel">
+    <h2>🕵️ 疑似护盘 / 疑似压盘 <small id="intraday-sub">分时放量识别（独立口径）</small></h2>
+    <div class="cards" id="intraday-cards"></div>
+    <div class="grid2" style="margin-top:14px">
+      <div>
+        <h3 style="font-size:14px;margin:0 0 8px">放量事件 <small style="color:var(--sub);font-weight:400">同一 5 分钟窗口内多只宽基同时放量</small></h3>
+        <div style="overflow:auto;max-height:320px">
+          <table id="intraday-events">
+            <thead><tr>
+              <th>时段</th><th>阶段</th><th>方向</th><th>只数</th>
+              <th>护/压</th><th>合计成交额(亿)</th><th>最大倍数</th><th>全池共振</th><th>已印证</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3 style="font-size:14px;margin:0 0 8px">分时成交额与放量标记
+          <select id="intraday-fund" class="sel" onchange="onIntradayFundChange(this.value)" style="margin-left:8px;font-size:12.5px;padding:3px 8px"></select>
+        </h3>
+        <div id="intraday-chart" class="chart" style="height:320px"></div>
+        <div class="note" style="margin:10px 0 0;font-size:11.5px" id="intraday-note"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="panel">
     <h2>📋 明细 <small id="tbl-sub">宽基ETF观察池</small></h2>
     <div style="overflow:auto;max-height:460px">
@@ -350,6 +376,8 @@ function computeStaticPayload(raw, date, cats, codes){
     dates: dates,
     last_fetch: raw.last_fetch || "—",
     last_sync: raw.last_sync || "—",
+    // 疑似护盘/压盘模块：静态站从 data.json 取当日视图
+    intraday: (raw.intraday && raw.intraday[selDate]) || null,
     news_ok: !!raw.news_ok,
     mainnet_ok: mainOk,
     partial_main: mainOk && (etf.length - cur.has_main) > 0,
@@ -588,6 +616,7 @@ function render(d){
       <div class="t">${esc(n.time||"")}<span class="src">${esc(n.src||"")}</span></div></li>`).join("");
   }
 
+  renderIntraday(d);
   drawTrend(d.history||[]);
   drawBar(etf);
   drawCat(s.by_cat_yi||{}, etf);
@@ -721,6 +750,124 @@ function renderSummary(d){
     line += `<br><span style="opacity:.85">提示：类别与基金可叠加（取交集）；选择类别后，基金列表只显示该类别下的基金。</span>`;
   }
   document.getElementById("f-summary").innerHTML = line;
+}
+
+// ---------- 疑似护盘 / 疑似压盘（分时放量识别，独立口径） ----------
+let intradayChart = null;
+function renderIntraday(d){
+  const iv = d.intraday || null;
+  const cards = document.getElementById("intraday-cards");
+  const sub = document.getElementById("intraday-sub");
+  const tbody = document.querySelector("#intraday-events tbody");
+  const fundSel = document.getElementById("intraday-fund");
+  const note = document.getElementById("intraday-note");
+  if(!iv || !iv.has_data){
+    if(sub) sub.textContent = "暂无分时数据（每个交易日收盘后自动归档）";
+    if(cards) cards.innerHTML = `<div class="card"><div class="k">分时归档</div>
+      <div class="v amber">—</div><div class="sub">首次运行后开始积累</div></div>`;
+    if(tbody) tbody.innerHTML = `<tr><td colspan="9" class="empty">暂无分时数据</td></tr>`;
+    if(intradayChart){ intradayChart.clear(); }
+    if(note) note.textContent = "";
+    if(fundSel) fundSel.innerHTML = "";
+    return;
+  }
+  const ev = iv.events || [];
+  const supAmt = (iv.support_amount||0)/1e8, preAmt = (iv.pressure_amount||0)/1e8;
+  if(sub) sub.textContent = `分时放量识别 · ${iv.fund_count} 只宽基 · ${ev.length} 个放量事件`;
+  if(cards){
+    const cardsData = [
+      {k:"放量事件", v:String(ev.length), sub:`疑似护盘 ${iv.event_support||0} · 疑似压盘 ${iv.event_pressure||0}`, cls:"blue"},
+      {k:"疑似护盘金额", v:fmt(supAmt)+" 亿", sub:"放量但价格不跌", cls:"red"},
+      {k:"疑似压盘金额", v:fmt(preAmt)+" 亿", sub:"放量且跌破当日均价", cls:"green"},
+      {k:"资金流已印证", v:String(iv.confirmed_count||0)+" 条", sub:"大单净额方向一致", cls:"amber"},
+    ];
+    cards.innerHTML = cardsData.map(c=>`
+      <div class="card"><div class="k">${c.k}</div>
+      <div class="v ${c.cls}">${c.v}</div><div class="sub">${c.sub}</div></div>`).join("");
+  }
+  if(tbody){
+    if(!ev.length){
+      tbody.innerHTML = `<tr><td colspan="9" class="empty">当日未识别到符合四条件的放量事件</td></tr>`;
+    } else {
+      tbody.innerHTML = ev.map(e=>{
+        const kindTxt = e.kind==="support"
+          ? `<span class="num red">疑似护盘</span>`
+          : `<span class="num green">疑似压盘</span>`;
+        return `<tr>
+          <td>${esc(e.window)}–${esc(e.end)}</td>
+          <td>${esc(e.segment)}</td>
+          <td>${kindTxt}</td>
+          <td>${e.funds}</td>
+          <td>${e.support}/${e.pressure}</td>
+          <td class="num">${fmt(e.amount/1e8)}</td>
+          <td class="num">${fmt(e.max_ratio,1)}×</td>
+          <td class="num">${fmt(e.max_cover,1)}×</td>
+          <td>${e.confirmed ? `<span class="num red">${e.confirmed}</span>` : "—"}</td>
+        </tr>`;
+      }).join("");
+    }
+  }
+  // 分时图：柱=分钟成交额，线=价格，红点=护盘候选，绿点=压盘候选
+  const series = iv.series || {};
+  const codes = Object.keys(series);
+  if(fundSel){
+    const cur = fundSel.value;
+    fundSel.innerHTML = codes.map(c=>`<option value="${esc(c)}">${esc(series[c].name||c)}（${esc(c)}）</option>`).join("");
+    if(codes.includes(cur)) fundSel.value = cur;
+  }
+  const th = iv.thresholds || {};
+  if(note){
+    note.innerHTML = `判定四条件：① 单只分钟额 ≥ 日均 <b>${th.ratio}×</b>；② 全池共振 ≥ <b>${th.cover}×</b> 且同时放量 ≥ <b>${th.breadth}</b> 只；`
+      + `③ 护盘=价格不跌破均价、压盘=跌破 <b>${th.drop}%</b>；④ 收盘后大单净额方向一致才升级为「已印证」。`
+      + `<br>分时数据来自腾讯行情接口（分钟级），与主流程口径完全独立；<b>放量不等于国家队行为</b>，本表只提示"值得看一眼"的时点与规模。`;
+  }
+  drawIntradayChart(iv, (fundSel && fundSel.value) || codes[0]);
+}
+
+// 切换基金时重绘分时图
+function onIntradayFundChange(code){
+  if(!DATA || !DATA.intraday) return;
+  drawIntradayChart(DATA.intraday, code);
+}
+
+function drawIntradayChart(iv, code){
+  const series = iv.series || {};
+  const s = series[code];
+  if(!s){ if(intradayChart) intradayChart.clear(); return; }
+  const sigs = (iv.signals||[]).filter(x=>x.code===code);
+  const supSet = {}, preSet = {};
+  // 信号是分钟级，图表是 5 分钟聚合 → 落到同一时间桶上标记
+  const bucketOf = (m)=>{ const n=parseInt(m,10); return String(Math.floor(n/5)*5).padStart(4,"0"); };
+  sigs.forEach(x=>{ (x.kind==="support"?supSet:preSet)[bucketOf(x.minute)] = x; });
+  if(!intradayChart) intradayChart = echarts.init(document.getElementById("intraday-chart"));
+  const pts = s.points||[];
+  const labels = pts.map(p=>p.m);
+  const amts = pts.map(p=>+(p.a/1e8).toFixed(2));
+  const prices = pts.map(p=>p.p);
+  const marks = [];
+  pts.forEach(p=>{
+    const hit = supSet[p.m] || preSet[p.m];
+    if(!hit) return;
+    marks.push({value:[p.m, +(p.a/1e8).toFixed(2)], name:(hit.kind==="support"?"护":"压"),
+                itemStyle:{color:(hit.kind==="support"?"#e0392b":"#16a34a")}});
+  });
+  intradayChart.setOption({
+    tooltip:{trigger:"axis",axisPointer:{type:"shadow"},
+      valueFormatter:v=>v===null||v===undefined?"—":v},
+    legend:{data:["分钟成交额(亿)","价格(元)"],top:0,itemGap:12,textStyle:{fontSize:11.5,color:"#6b7a8d"}},
+    grid:{left:48,right:52,top:30,bottom:34},
+    xAxis:{type:"category",data:labels,axisLabel:{interval:Math.max(1,Math.floor(labels.length/12)),fontSize:10.5}},
+    yAxis:[{type:"value",name:"亿",nameTextStyle:{fontSize:10.5}},
+           {type:"value",name:"元",nameTextStyle:{fontSize:10.5},splitLine:{show:false},scale:true}],
+    series:[
+      {type:"bar",data:amts,barMaxWidth:6,itemStyle:{color:"#9cb8ef"}},
+      {type:"line",data:prices,yAxisIndex:1,smooth:true,symbol:"none",
+        lineStyle:{width:1.4,color:"#94a3b8"}},
+      {type:"scatter",data:marks,symbolSize:10,symbol:"circle",z:5,
+        label:{show:true,position:"top",fontSize:10,formatter:(x)=>x.data.name},
+        tooltip:{formatter:(x)=>x.data.name+"盘放量 "+(x.value[1])+" 亿"}},
+    ],
+  }, true);
 }
 
 function drawTrend(history){

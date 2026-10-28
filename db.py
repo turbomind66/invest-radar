@@ -41,6 +41,21 @@ def init_db(path: str = DB_PATH):
             shares REAL, nav REAL, chg_shares REAL, net_sub REAL,
             PRIMARY KEY(date, code))"""
     )
+    # 分时归档（分钟级价量）：疑似护盘/压盘识别的原始素材
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS intraday_minute(
+            date TEXT, code TEXT, name TEXT, cat TEXT,
+            minute TEXT, price REAL, vol REAL, amount REAL,
+            PRIMARY KEY(date, code, minute))"""
+    )
+    # 护盘/压盘信号：kind=support(护盘)/pressure(压盘)，level=suspect/confirmed
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS intraday_signal(
+            date TEXT, code TEXT, name TEXT, cat TEXT,
+            minute TEXT, kind TEXT, amount REAL, ratio REAL, price REAL,
+            price_chg REAL, cover REAL, level TEXT, note TEXT,
+            PRIMARY KEY(date, code, minute, kind))"""
+    )
     cur.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     conn.commit()
     conn.close()
@@ -122,6 +137,84 @@ def update_flow_rows(date: str, rows: list, path: str = DB_PATH) -> int:
     conn.commit()
     conn.close()
     return n
+
+
+# ---------------- 分时（分钟级）归档与护盘/压盘信号 ----------------
+
+def save_intraday_rows(date: str, rows: list, path: str = DB_PATH):
+    """写入某日分钟级量额归档（来自腾讯分时接口）。
+
+    rows 每项：{code, name, cat, minute(HHMM), price, vol(手), amount(元)}
+    """
+    conn = _conn(path)
+    cur = conn.cursor()
+    for r in rows:
+        cur.execute(
+            "INSERT OR REPLACE INTO intraday_minute(date,code,name,cat,minute,price,vol,amount)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (date, r["code"], r.get("name"), r.get("cat"), r["minute"],
+             r.get("price"), r.get("vol"), r.get("amount")),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_intraday_by_date(date: str, cats=None, codes=None, path: str = DB_PATH):
+    """取某日全池分钟级数据：{code: [{minute, price, vol, amount}, ...]}。"""
+    conn = _conn(path)
+    extra, args = _where(cats, codes)
+    rows = conn.execute(
+        "SELECT code,name,cat,minute,price,vol,amount FROM intraday_minute"
+        " WHERE date=?" + extra + " ORDER BY code, minute", [date] + args,
+    ).fetchall()
+    conn.close()
+    out = {}
+    for code, name, cat, minute, price, vol, amount in rows:
+        out.setdefault(code, []).append({
+            "name": name, "cat": cat, "minute": minute,
+            "price": price, "vol": vol, "amount": amount,
+        })
+    return out
+
+
+def get_intraday_dates(path: str = DB_PATH):
+    """有分时归档的日期列表（升序）。"""
+    conn = _conn(path)
+    rows = conn.execute(
+        "SELECT DISTINCT date FROM intraday_minute ORDER BY date"
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+def save_intraday_signals(date: str, rows: list, path: str = DB_PATH):
+    """写入某日的护盘/压盘信号。kind: support(护盘) / pressure(压盘)。"""
+    conn = _conn(path)
+    cur = conn.cursor()
+    for r in rows:
+        cur.execute(
+            "INSERT OR REPLACE INTO intraday_signal(date,code,name,cat,minute,kind,amount,"
+            "ratio,price,price_chg,cover,level,note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (date, r["code"], r.get("name"), r.get("cat"), r["minute"], r["kind"],
+             r.get("amount"), r.get("ratio"), r.get("price"), r.get("price_chg"),
+             r.get("cover"), r.get("level"), r.get("note")),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_intraday_signals(date: str, cats=None, codes=None, path: str = DB_PATH):
+    """取某日信号列表（按金额倒序）。"""
+    conn = _conn(path)
+    extra, args = _where(cats, codes)
+    rows = conn.execute(
+        "SELECT code,name,cat,minute,kind,amount,ratio,price,price_chg,cover,level,note"
+        " FROM intraday_signal WHERE date=?" + extra + " ORDER BY amount DESC", [date] + args,
+    ).fetchall()
+    conn.close()
+    keys = ("code", "name", "cat", "minute", "kind", "amount", "ratio", "price",
+            "price_chg", "cover", "level", "note")
+    return [dict(zip(keys, r)) for r in rows]
 
 
 def save_news(date: str, rows: list, path: str = DB_PATH):

@@ -14,6 +14,7 @@ import urllib.parse
 
 import db
 import fetcher
+import intraday
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 INDEX = os.path.join(BASE, "templates", "index.html")
@@ -103,6 +104,8 @@ def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
         "dates": dates,
         "last_fetch": last_fetch,
         "last_sync": last_sync,
+        # 疑似护盘/压盘模块（独立口径，分时来源与主流程不同）
+        "intraday": intraday.build_view(sel_date, path) if sel_date else None,
         "news_ok": news_ok,
         "mainnet_ok": mainnet_ok,
         "partial_main": partial_main,
