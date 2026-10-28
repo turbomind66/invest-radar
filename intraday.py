@@ -408,6 +408,10 @@ BUY_RATIO = 0.60       # 窗口内大买单额占比 ≥ 60% 视为「主动买�
 MIN_WIN_AMT = 200e4    # 窗口大单净额绝对值 ≥ 200 万元才记为一个像样的「集中」事件
 UP_MIN = 0.0           # 价格上行门槛（末价 ≥ 首价 × (1+UP_MIN)）
 TICK_WIN = 5           # 聚合窗口（分钟）
+# 持久化：Actions 每次都是干净环境、本地 SQLite 不随仓库走，
+# 大单必须随 data.json 往返，否则盘中多次采样的数据会在下次运行时全部丢失。
+TICK_EXPORT_DAYS = 3       # data.json 里保留最近几个交易日的大单原始行
+TICK_CAP_PER_FUND = 200    # 每只基金每日最多保留多少笔（按金额降序），控制体积
 
 
 def _secid_of(code: str) -> str:
@@ -467,6 +471,48 @@ def archive_tick(date: str, path: str = db.DB_PATH, lmt: int = 2000):
         n += len(store)
         funds.add(code)
     return n, len(funds)
+
+
+def tick_rows_for_export(date: str, path: str = db.DB_PATH, cap: int = None):
+    """导出用：某日大单的紧凑表示 [[code,ttime,price,volume,direction,amount],...]。
+
+    Actions 干净环境下大单必须写进 data.json 才能跨次累积（盘中多次采样不丢）。
+    体积控制：每只基金每日只保留金额最大的 cap 笔；name/cat 不落盘，导入时反查补回。
+    """
+    cap = cap or TICK_CAP_PER_FUND
+    rows = db.get_tick_by_date(date, path=path)
+    by = {}
+    for r in rows:
+        by.setdefault(r["code"], []).append(r)
+    out = []
+    for code, lst in by.items():
+        lst.sort(key=lambda r: -(r.get("amount") or 0))
+        for r in lst[:cap]:
+            out.append([code, r["ttime"], r["price"], r["volume"],
+                        r["direction"], r["amount"]])
+    return out
+
+
+def restore_tick_rows(date: str, compact: list, path: str = db.DB_PATH) -> int:
+    """导入用：把紧凑行还原写回 intraday_tick（name/cat 从 WATCHLIST 反查补回）。
+
+    与 save_tick_rows 的主键去重一致，重复导入不会产生重复行。
+    """
+    if not compact:
+        return 0
+    meta = {c: (n, cat) for c, n, cat in WATCHLIST}
+    store = []
+    for it in compact:
+        if len(it) < 6:
+            continue
+        code, ttime, price, vol, direction, amount = it[0], it[1], it[2], it[3], it[4], it[5]
+        name, cat = meta.get(code, (code, ""))
+        store.append({"code": code, "name": name, "cat": cat, "ttime": ttime,
+                      "price": price, "volume": vol, "direction": direction,
+                      "amount": amount})
+    if store:
+        db.save_tick_rows(date, store, path)
+    return len(store)
 
 
 def _win_of(ttime: str) -> int:

@@ -1,0 +1,50 @@
+name: tick-sample
+
+# 盘中逐笔大单采样（方案C）。
+# 为什么必须单开一个：东财 stock/details/get 是「滚动窗口」——盘后冻结只留当日最后一笔
+# （实测仅约 1 万元，远低于 30 万大单阈值），因此盘后那两次调度永远采不到大单。
+# 只有在交易时段多次采样，才能累积出全天的大单分布。
+#
+# 每次采样结果随 docs/data.json 的 tick_rows 字段持久化，
+# 下次运行（干净环境）先恢复再追加，因此多次采样可累积、不会互相覆盖。
+#
+# 触发：由 cron-job.org 在交易时段用 workflow_dispatch 触发
+# （建议 10:30 / 11:30 / 14:00 / 14:50 北京时间）。
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  # 与 daily-update 共用组：避免两个工作流同时提交 docs/ 造成冲突
+  group: daily-update
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 盘中采样（当日分时 + 逐笔大单）
+        run: python staticsite.py --mode=tick
+
+      - name: 提交变更
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs
+          if git diff --staged --quiet; then
+            echo "无变更，跳过提交"
+            exit 0
+          fi
+          BJTIME=$(TZ=Asia/Shanghai date +%Y-%m-%d\ %H:%M)
+          git commit -m "data: 盘中逐笔大单采样 ${BJTIME}"
+          git push

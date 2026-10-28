@@ -82,6 +82,10 @@ def import_from_days_file(days_file: str = DAYS_FILE, path: str = db.DB_PATH) ->
     for d, items in (raw.get("news") or {}).items():
         if items:
             db.save_news(d, items, path)
+    # 方案C：逐笔大单原始行——盘中多次采样靠它跨次累积，干净环境才不会丢
+    for d, rows in (raw.get("tick_rows") or {}).items():
+        if rows:
+            intraday.restore_tick_rows(d, rows, path)
     if raw.get("last_fetch"):
         db.set_meta("last_fetch", raw["last_fetch"], path)
     return n
@@ -218,6 +222,9 @@ def build_static_payload(path: str = db.DB_PATH, window_days: int = None) -> dic
         # 疑似护盘/压盘模块：带最近 10 个有分时的日期（上限控制体积；库里存的是全量）
         "intraday": {d: intraday.build_view(d, path)
                      for d in db.get_intraday_dates(path)[-10:]},
+        # 方案C 原始行：带最近 TICK_EXPORT_DAYS 天，供下次运行在干净环境恢复后继续累积
+        "tick_rows": {d: intraday.tick_rows_for_export(d, path)
+                      for d in db.get_tick_dates(path)[-intraday.TICK_EXPORT_DAYS:]},
         "cats": db.get_cats(path),
         "funds": db.get_funds(path),
         "actions_url": ACTIONS_URL,
@@ -267,12 +274,38 @@ def main():
     ap.add_argument("--date", help="额外补抓指定交易日 YYYY-MM-DD")
     ap.add_argument("--days", type=int, default=20, help="回补窗口（自然日）")
     ap.add_argument("--out", default=DOCS_DIR, help="输出目录")
+    ap.add_argument("--mode", default="full", choices=["full", "tick"],
+                    help="full=完整同步导出；tick=盘中轻量采样（只抓分时+逐笔大单，不跑全量回补）")
     args = ap.parse_args()
 
     db.init_db()
     restored = import_from_days_file()
     if restored:
         print("[import] 从 data.json 恢复历史 %d 天" % restored)
+
+    # 盘中轻量采样：只抓当日分时 + 逐笔大单，不跑全量回补/份额（快，适合盘中多次触发）。
+    # 目标日期必须用「今天」——target_date() 在 15:30 前返回的是上一交易日，会采错天。
+    if args.mode == "tick":
+        td = bj_now().date()
+        if not fetcher.is_trading_day(td):
+            print("[tick] 今日非交易日，跳过采样（仍导出，保证 data.json 完整）")
+        else:
+            ds = td.strftime("%Y-%m-%d")
+            try:
+                n, funds, ds_list = intraday.archive(ds, backup=False)
+                print("[intraday] 分时归档 %d 行 / %d 只" % (n, funds))
+            except Exception as e:
+                print("[intraday] 分时抓取失败（不影响采样）：%s" % e)
+            try:
+                tn, tf = intraday.archive_tick(ds)
+                ev = intraday.detect_tick(ds)
+                print("[tick] 采样 %s：大单 %d 行 / %d 只；集中事件 %d 个"
+                      % (ds, tn, tf, len(ev or [])))
+            except Exception as e:
+                print("[tick] 逐笔采样失败：%s" % e)
+        res = export(out_dir=args.out)
+        print("[export] %s" % json.dumps(res, ensure_ascii=False))
+        return
 
     if args.date:
         r = fetcher.backfill_date(args.date)
