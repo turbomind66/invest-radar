@@ -221,23 +221,47 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   onDateChange('2026-10-26'); await tick(150);
   chk(els['fresh-data'].textContent.includes('历史'), '查看历史日期时标注历史');
 
-  console.log('\n[9] 按类别汇总图（回归：负值类别不得被吞掉）');
-  // 真实故障复现：8 类中 7 类为净卖出时，ECharts 饼图只渲染唯一正值类别，
-  // 表现为"全是中证A500买入"。改用带正负号的条形图后，全部类别必须保留。
+  console.log('\n[9] 类别净买入/净卖出双饼图（回归：负值类别不得被吞掉）');
+  // 真实故障复现：8 类中 7 类为净卖出时，单张饼图只渲染唯一正值类别，
+  // 表现为"全是中证A500买入"。现拆成买入/卖出两张饼图：
+  // 卖出图用绝对值画扇区角度（否则负值仍被压成 0），标签/tooltip 保留真实负号。
   render(buildData(''));
   await tick(150);
-  const catOpt = optionLog['cat'];
-  chk(!!catOpt && catOpt.series[0].type === 'bar', '类别汇总使用条形图（非饼图）');
-  const catNames = (catOpt && catOpt.yAxis && catOpt.yAxis.data) || [];
-  const catVals = ((catOpt && catOpt.series[0].data) || []).map(x => x.value);
-  chk(catNames.length === 3, `3 个类别全部保留（实际 ${catNames.length}）`);
-  chk(catNames.includes('科创50'), '净卖出类别「科创50」仍显示');
-  chk(catNames.includes('沪深300'), '净卖出类别「沪深300」仍显示');
-  chk(catNames.includes('上证50'), '净买入类别「上证50」仍显示');
-  chk(catVals.includes(-14.73), '负值 -14.73（净卖出）保留在图中');
-  chk(catVals.includes(1.66), '正值 1.66（净买入）保留在图中');
-  chk(catVals.length === 3 && catVals.every(v => typeof v === 'number' && !isNaN(v)),
-      '所有类别值均为有效数值');
+  const buyOpt = optionLog['cat-buy'];
+  const sellOpt = optionLog['cat-sell'];
+  chk(!!buyOpt && buyOpt.series[0].type === 'pie', '净买入侧使用饼图');
+  chk(!!sellOpt && sellOpt.series[0].type === 'pie', '净卖出侧使用饼图');
+  const buyData = (buyOpt && buyOpt.series[0].data) || [];
+  const sellData = (sellOpt && sellOpt.series[0].data) || [];
+  const buyNames = buyData.map(x => x.name);
+  const sellNames = sellData.map(x => x.name);
+  chk(buyNames.length + sellNames.length === 3,
+      `3 个类别全部保留（买入 ${buyNames.length} + 卖出 ${sellNames.length}）`);
+  chk(buyNames.includes('上证50'), '净买入类别「上证50」在买入饼图');
+  chk(sellNames.includes('科创50'), '净卖出类别「科创50」在卖出饼图');
+  chk(sellNames.includes('沪深300'), '净卖出类别「沪深300」在卖出饼图');
+  chk(buyData.every(x => x.real > 0), '买入饼图只含正值类别');
+  chk(sellData.every(x => x.real < 0), '卖出饼图只含负值类别');
+  chk(sellData.every(x => x.value > 0), '卖出饼图扇区角度用绝对值（正值）');
+  const sci = sellData.find(x => x.name === '科创50');
+  chk(!!sci && sci.value === 14.73, '卖出扇区角度 = |-14.73| = 14.73');
+  // 标签策略：占比 ≥20% 的主扇区才带标签（percent 由 ECharts 注入）
+  // 扇区标签只放类别名（窄面板下"名称+数值"两行会被画布边缘裁切），数值在下方色点列表
+  const sellLbl = sellOpt.series[0].label.formatter({ name: '科创50', data: sci, percent: 35.5 });
+  chk(String(sellLbl) === '科创50', `卖出图主扇区标签为类别名（实际 "${sellLbl}"）`);
+  const buyLbl = buyOpt.series[0].label.formatter({ name: '上证50', data: buyData[0], percent: 100 });
+  chk(String(buyLbl) === '上证50', '买入图主扇区标签为类别名');
+  const smallLbl = sellOpt.series[0].label.formatter({ name: '中证500', data: { real: -0.90 }, percent: 2.2 });
+  chk(String(smallLbl) === '', '小扇区不画标签（数值在下方色点列表，避免叠字/裁切）');
+  chk(els['cat-sell-list'].innerHTML.includes('-14.73亿') && els['cat-sell-list'].innerHTML.includes('-9.71亿'),
+      '被裁切风险的数值完整保留在色点列表');
+  chk(buyData.concat(sellData).every(x => typeof x.value === 'number' && !isNaN(x.value)),
+      '所有扇区值均为有效数值');
+  // 饼图下方色点列表：所有类别数值一眼可见（不靠 hover、无图例分页）
+  chk(els['cat-buy-list'].innerHTML.includes('1.66亿'), '买入图下方列表显示数值');
+  chk(els['cat-sell-list'].innerHTML.includes('-14.73亿'), '卖出图下方列表显示带负号数值');
+  chk(els['cat-sell-list'].innerHTML.includes('科创50') && els['cat-sell-list'].innerHTML.includes('沪深300'),
+      '卖出图下方列表含全部类别名');
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exit(fail === 0 ? 0 : 1);

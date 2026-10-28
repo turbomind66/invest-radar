@@ -30,11 +30,15 @@
   .card .sub{font-size:12px;color:var(--sub);margin-top:4px}
   .v.red{color:var(--red)} .v.green{color:var(--green)} .v.blue{color:var(--blue)} .v.amber{color:var(--amber)}
   .grid2{display:grid;grid-template-columns:1.5fr 1fr;gap:14px;margin-bottom:18px}
+  .grid3{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:14px;margin-bottom:18px}
   .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 1px 3px rgba(20,40,80,.04)}
   .panel h2{font-size:15px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:6px}
   .panel h2 small{font-size:12px;color:var(--sub);font-weight:500}
   .chart{width:100%;height:320px}
   .chart.sm{height:300px}
+  .cat-list{display:flex;flex-wrap:wrap;gap:6px 12px;justify-content:center;margin-top:2px}
+  .cat-list span{font-size:11px;color:#3c4a5a;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+  .cat-list i{width:9px;height:9px;border-radius:2px;display:inline-block}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{padding:9px 10px;text-align:right;border-bottom:1px solid var(--line)}
   th:first-child,td:first-child{text-align:left}
@@ -104,7 +108,7 @@
   .fresh.unknown .rel{background:var(--chip);color:var(--sub)}
   .fresh.unknown .d,.fresh.unknown .hint{color:var(--sub)}
   @media(max-width:860px){
-    .cards{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}
+    .cards{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}.grid3{grid-template-columns:1fr}
     header{flex-direction:column;align-items:flex-start}.meta{text-align:left}
     .fresh .hint{display:none}.fresh .t{font-size:14.5px}.fresh .t b{font-size:15px}
   }
@@ -167,14 +171,20 @@
     </div>
   </div>
 
-  <div class="grid2" style="grid-template-columns:1.5fr 1fr">
+  <div class="grid3">
     <div class="panel">
       <h2>🧭 各ETF净买入 <small>红色=净买入，绿色=净卖出（亿元）</small></h2>
       <div id="bar" class="chart"></div>
     </div>
     <div class="panel">
-      <h2>🗂️ 按类别汇总 <small>红色=净买入，绿色=净卖出（亿元）</small></h2>
-      <div id="cat" class="chart sm"></div>
+      <h2>🔴 类别净买入 <small>占净买入总额（亿元）</small></h2>
+      <div id="cat-buy" class="chart sm"></div>
+      <div class="cat-list" id="cat-buy-list"></div>
+    </div>
+    <div class="panel">
+      <h2>🟢 类别净卖出 <small>占净卖出总额（亿元）</small></h2>
+      <div id="cat-sell" class="chart sm"></div>
+      <div class="cat-list" id="cat-sell-list"></div>
     </div>
   </div>
 
@@ -198,7 +208,7 @@ const fmt = (v,d=2)=> (v===null||v===undefined||isNaN(v)) ? "—" : Number(v).to
 const signClass = (v)=> v>0?"red":(v<0?"green":"");
 const clsColor = (v)=> v>0?"#e0392b":(v<0?"#16a34a":"#6b7a8d");
 
-let trendChart, barChart, catChart;
+let trendChart, barChart, catBuyChart, catSellChart;
 let DATA = null;
 let reqSeq = 0;
 
@@ -630,28 +640,64 @@ function drawBar(etf){
 }
 
 function drawCat(byCat){
-  if(!catChart) catChart = echarts.init(document.getElementById("cat"));
   const keys = Object.keys(byCat||{});
-  if(!keys.length){ catChart.clear(); return; }
-  // 这里必须用「带正负号的条形图」，不能用饼图：
-  // ECharts pie 会把负值数据项的扇区角度压成 0，净卖出类别直接不渲染。
-  // 实测 2026-10-28（8 类中 7 类为净卖出）时饼图只剩唯一正值类别「中证A500」
-  // 占满整环，其余 7 类全部消失 —— 表现为"全是中证A500买入"。
-  // 按值升序排列：ECharts 类目轴自下而上，故最大净买入在顶部、最大净卖出在底部
-  // （与左侧「各ETF净买入」条形图的排序语言保持一致）。
-  const items = keys.map(k=>({k, v:+(+byCat[k]).toFixed(2)})).sort((a,b)=>a.v-b.v);
-  const vals = items.map(i=>i.v);
-  catChart.setOption({
-    tooltip:{trigger:"axis",axisPointer:{type:"shadow"},valueFormatter:v=>v+" 亿"},
-    grid:{left:78,right:46,top:10,bottom:30},
-    xAxis:{type:"value",name:"亿元"},
-    yAxis:{type:"category",data:items.map(i=>i.k),axisLabel:{fontSize:11}},
-    series:[{type:"bar",barMaxWidth:22,
-      data:vals.map(v=>({value:v,itemStyle:{color:clsColor(v)}})),
-      label:{show:true,position:"right",formatter:"{c}",fontSize:11},
-      markLine:{silent:true,symbol:"none",
-        data:[{xAxis:0}],lineStyle:{color:"#c3cdd8",width:1}}}]
+  const buys=[], sells=[];
+  keys.forEach(k=>{
+    const v = +(+byCat[k]).toFixed(2);
+    if(v < 0) sells.push({k, v});
+    else buys.push({k, v});   // 0 归入买入侧
+  });
+  buys.sort((a,b)=>b.v-a.v);   // 净买入大 → 小
+  sells.sort((a,b)=>a.v-b.v);  // 净卖出大（更负）在前
+  if(!catBuyChart) catBuyChart = echarts.init(document.getElementById("cat-buy"));
+  if(!catSellChart) catSellChart = echarts.init(document.getElementById("cat-sell"));
+  drawCatPie(catBuyChart, "cat-buy-list", buys, false);
+  drawCatPie(catSellChart, "cat-sell-list", sells, true);
+}
+
+// 净买入 / 净卖出两张饼图。ECharts pie 的扇区角度不支持负值（会被压成 0 不渲染），
+// 故卖出图用绝对值画角度，标签与 tooltip 保留真实负号 ——
+// 此前单张饼图在"8 类中 7 类净卖出"的日子把它们全部吞掉，只剩「中证A500」占满整环。
+function drawCatPie(chart, listId, items, isSell){
+  const listEl = document.getElementById(listId);
+  if(!items.length){
+    chart.clear();
+    chart.setOption({title:{text:isSell?"当日无净卖出类别":"当日无净买入类别",
+      left:"center",top:"middle",textStyle:{fontSize:13,fontWeight:400,color:"#8a97a8"}}}, true);
+    if(listEl) listEl.innerHTML = "";
+    return;
+  }
+  // 所有类别的名称+数值放在饼图下方色点列表里（不靠 hover、无分页），
+  // 饼图内只留扇区标签，小扇区标签由 hideOverlap 自动隐藏避免叠字。
+  if(listEl) listEl.innerHTML = items.map((it,i)=>
+    `<span><i style="background:${catShade(isSell,i,items.length)}"></i>${it.k} ${it.v>0?"+":""}${it.v.toFixed(2)}亿</span>`).join("");
+  const total = items.reduce((a,it)=>a+Math.abs(it.v),0);
+  chart.setOption({
+    tooltip:{trigger:"item",formatter:p=>
+      `${p.name}<br/>${isSell?"净卖出":"净买入"}：${p.data.real>0?"+":""}${p.data.real.toFixed(2)} 亿（占本图 ${p.percent}%）`},
+    series:[{type:"pie",radius:["34%","60%"],center:["50%","45%"],
+      // 占比 <20% 的扇区连 labelLine 一起隐藏——只隐藏标签会留下孤儿引导线（小竖线悬在图外）
+      data:items.map((it,i)=>{const big = Math.abs(it.v)/total >= 0.2;
+        return {name:it.k,value:Math.abs(it.v),real:it.v,
+        itemStyle:{color:catShade(isSell,i,items.length)},
+        label:{show:big}, labelLine:{show:big}};}),
+      // 只给占比 ≥20% 的主扇区留标签；小扇区名称+数值在下方色点列表里，
+      // 避免 8 个小扇区标签在边缘互相叠字、甚至被画布边界裁掉。
+      // ≥20% 的扇区之间天然相隔 ≥72°，短标签不会互相重叠，无需 labelLayout
+      // （labelLayout 的排版器会把窄面板上的标签框宽度截断成「沪深3…」）
+      label:{fontSize:11,overflow:"none",formatter:p=> p.percent>=20 ? p.name : ""},
+      labelLine:{length:8,length2:6},
+      avoidLabelOverlap:true,
+      emphasis:{label:{fontWeight:"bold"}}}]
   }, true);
+}
+
+// 同一饼图内用同色系深浅区分扇区，沿用全站红=净买入 / 绿=净卖出语言（与 clsColor 同源）
+function catShade(isSell, idx, n){
+  const base = isSell ? [22,163,74] : [224,57,43];
+  const t = n<=1 ? 0 : idx/(n-1);
+  const mix = c => Math.round(c + (255-c)*(0.12+0.5*t));
+  return `rgb(${mix(base[0])},${mix(base[1])},${mix(base[2])})`;
 }
 
 async function refresh(){
@@ -674,7 +720,7 @@ async function refresh(){
   finally{ btn.disabled=false; btn.textContent=old; }
 }
 
-window.addEventListener("resize",()=>{trendChart&&trendChart.resize();barChart&&barChart.resize();catChart&&catChart.resize();});
+window.addEventListener("resize",()=>{trendChart&&trendChart.resize();barChart&&barChart.resize();catBuyChart&&catBuyChart.resize();catSellChart&&catSellChart.resize();});
 
 // 静态模式：把"立即刷新"换成"去 Actions 手动更新"，并说明数据来源
 if(STATIC){
