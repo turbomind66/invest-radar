@@ -183,6 +183,7 @@ python staticsite.py --no-sync && node tests/test_static_boot.js
 
 完整版本说明见 [Releases](https://github.com/turbomind66/ashare-national-team-tracker/releases)。
 
+- **v1.2.0** — 新增「四档资金流拆解」：明细表增加超大单/大单/中单/小单净额四列，汇总区给出四档拆解与「大单买入被超大单卖出对冲」提示；回补 15 个交易日历史四档数据（主力净 = 大单净 + 超大单净）。
 - **v1.1.0** — 顶部「数据更新于」时间戳条（含相对时间、数据日期、陈旧告警）；GitHub Pages 静态托管上线，在线看板可直接访问。
 - **v1.0.0** — 首个可用版本：自动抓取归档、历史回补、日期/类别/基金三维筛选、容错降级。
 
