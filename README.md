@@ -65,6 +65,10 @@ python staticsite.py              # 同步缺失交易日 + 导出 docs/
 python staticsite.py --no-sync    # 只导出，不联网
 ```
 
+**首次启用 Pages（只需一次，需仓库管理员操作）**：`Settings → Pages → Build and deployment → Source` 选 **Deploy from a branch**，分支 `main`、目录 `/docs`，保存。之后每次 `daily-update` 提交 `docs/` 都会自动发布，无需再动设置。
+
+> 为什么不用 "GitHub Actions" 作为 Pages 源？因为工作流里的 `GITHUB_TOKEN` 没有开通 Pages 站点的权限（`Resource not accessible by integration`），且它提交的变更也不会触发其他工作流。分支发布由 push 直接触发，链路更短也更稳。
+
 > ⚠️ **静态站的已知限制**：GitHub Actions 的定时任务是最尽力调度，可能延迟几分钟到数十分钟；且**仓库连续 60 天无人工活动后，定时工作流会被 GitHub 自动停用**——到 Actions 页面手动点一次 `Run workflow` 即可恢复，或提交任意一次改动。数据文件由工作流自己提交，不算「人工活动」，这一点容易踩坑。
 
 ## 快速开始
@@ -136,6 +140,7 @@ python backfill.py 2026-10-27
 │   ├── test_static.py      # 静态导出测试（离线）
 │   ├── test_frontend.js    # 前端渲染逻辑测试（DOM 桩件，离线）
 │   ├── test_static.js      # 双模式一致性测试（前端筛选 vs 服务端逻辑）
+│   ├── test_static_boot.js # 静态站产物启动测试（加载 docs/index.html 实跑）
 │   └── gen_static_expected.py  # 为上面的一致性测试生成服务端期望值
 ├── .github/workflows/
 │   ├── ci.yml              # 语法检查 + 全部测试
@@ -155,6 +160,9 @@ node tests/test_frontend.js
 
 # 双模式一致性：前端本地筛选 vs 服务端 SQL 筛选，逐字段对比
 node tests/test_static.js
+
+# 静态站产物启动：直接加载 docs/index.html，按 Pages 的执行顺序跑一遍
+python staticsite.py --no-sync && node tests/test_static_boot.js
 ```
 
 最后一项是关键：静态站把筛选逻辑搬进了浏览器，两条实现路径必须**逐字段等价**，否则同一天的数据在 Pages 和自建服务上会显示不同结果。该测试会调用 Python 侧 `build_payload` 生成期望值，再与前端 `computeStaticPayload` 的输出对比（9 种筛选组合 × 12 个字段 + 信号阈值）。

@@ -34,5 +34,8 @@ jobs:
       - name: 静态模式一致性测试（前端筛选 vs 服务端逻辑）
         run: node tests/test_static.js
 
-      - name: 验证静态站可导出
+      - name: 导出静态站（同时验证导出可用）
         run: python staticsite.py --no-sync
+
+      - name: 静态站产物启动测试
+        run: node tests/test_static_boot.js
