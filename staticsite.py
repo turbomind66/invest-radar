@@ -87,7 +87,7 @@ def sync_missing(days: int = 20, path: str = db.DB_PATH) -> list:
     """把最近 days 个自然日内缺失的交易日补回，并重抓"主力数据未更新"的目标日。"""
     tgt = target_date()
     existed = set(db.get_dates(path))
-    start = max(tgt - datetime.timedelta(days=days), tgt - datetime.timedelta(days=days))
+    start = tgt - datetime.timedelta(days=days)
     todo = []
     d = start
     while d <= tgt:
