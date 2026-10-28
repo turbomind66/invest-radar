@@ -1,13 +1,15 @@
 name: daily-update
 
 # 每个交易日收盘后自动抓取 → 提交 docs/ → Pages（deploy from branch）自动发布。
-# 北京时间 = UTC+8，故 08:20 UTC = 16:20 北京。
+# 调度入口已移交 cron-job.org（每天 17:00 / 06:00 北京时间经 workflow_dispatch API 触发），
+# GitHub 自带 schedule 已于 2026-10-28 停用，避免双跑。
 
 on:
-  schedule:
-    - cron: "20 8 * * 1-5"    # 16:20 北京时间（收盘后首次抓取）
-    - cron: "40 10 * * 1-5"   # 18:40 北京时间（补抓：防主力资金接口延迟）
-  workflow_dispatch:           # 支持手动触发（页面右上角按钮即跳到这里）
+  # schedule 停用中——如需恢复 GitHub 自动运行，取消下面两行注释即可：
+  # schedule:
+  #   - cron: "20 8 * * 1-5"    # 16:20 北京时间（收盘后首次抓取）
+  #   - cron: "40 10 * * 1-5"   # 18:40 北京时间（补抓：防主力资金接口延迟）
+  workflow_dispatch:           # cron-job.org 触发 + 页面右上角手动触发都走这里
 
 concurrency:
   group: daily-update
