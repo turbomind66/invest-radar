@@ -117,7 +117,7 @@
     .fresh .hint{display:none}.fresh .t{font-size:14.5px}.fresh .t b{font-size:15px}
   }
 </style>
-<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/ashare-national-team-tracker/actions/workflows/daily.yml", "generated_at": "2026-10-28 19:15:38"};</script>
+<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/ashare-national-team-tracker/actions/workflows/daily.yml", "generated_at": "2026-10-28 20:15:40"};</script>
 </head>
 <body>
 <div class="wrap">
@@ -141,7 +141,8 @@
 
   <div class="note">
     <b>口径说明：</b>国家队（中央汇金、证金公司等）不逐日公开买卖明细。本工具以<b>宽基指数ETF（沪深300/中证500/中证1000/上证50/创业板/科创50/科创100/中证A500）的主力资金净流入</b>作为国家队护盘动向的核心代理指标——这些ETF是国家队进场的标准通道。数据每日收盘后（约16:05）自动抓取并归档，历史曲线随运行天数累积。新闻为服务端尽力抓取，若上游不通则显示提示。<br>
-    <b>四档净额：</b>东财「主力净买」= 超大单净 + 大单净的<b>净额</b>——分时图上的大额买入可能被更大额的超大单卖出对冲，或被算法拆成中小单，表面上"没统计上"。明细表新增超大单/大单/中单/小单四档净额列，买入卖出毛向一目了然。
+    <b>四档净额：</b>东财「主力净买」= 超大单净 + 大单净的<b>净额</b>——分时图上的大额买入可能被更大额的超大单卖出对冲，或被算法拆成中小单，表面上"没统计上"。明细表新增超大单/大单/中单/小单四档净额列，买入卖出毛向一目了然。<br>
+    <b>一级市场申赎（份额口径）：</b>ETF 的一级申购/赎回<b>不计入二级市场资金流</b>，是另一层证据。明细表的「份额日变动」为交易所公布的 ETF 份额变化（亿份），「一级净申购」≈ 份额日变动 × 单位净值（亿元），正=一级净申购。份额数据由 T+1 公布，最新交易日可能沿用上一日数值；该项为全市场机构与散户的合计申赎，<b>不等同于国家队专属行为</b>，与二级口径合看更稳妥。
   </div>
 
   <div class="note" id="warn" style="display:none;background:#fff0f0;border-color:#f3c2c2;color:#a33"></div>
@@ -205,6 +206,8 @@
           <th title="大单净额：大额成交的净买卖。正值（红）即分时图上的大额买入未被净额对冲掉的部分">大单净(亿)</th>
           <th title="中单净额：中等单笔成交的净买卖（算法拆单常落在此档）">中单净(亿)</th>
           <th title="小单净额：小单笔成交的净买卖（散户/拆单）">小单净(亿)</th>
+          <th title="ETF 份额日变动（亿份）：一级市场申购/赎回引起的份额变化">份额日变动(亿份)</th>
+          <th title="一级市场净申购（亿元）≈ 份额日变动 × 单位净值。正=一级净申购，这是二级市场资金流口径看不到的一层">一级净申购(亿)</th>
         </tr></thead>
         <tbody></tbody>
         <tfoot></tfoot>
@@ -258,7 +261,12 @@ function sumRows(rows){
       tiers[k] = rows.reduce((a,e)=>a+(e[k]||0), 0);
     });
   }
-  return {total_main_net:total, total_amount:amount, has_main:hasMain, by_cat:byCat, tiers};
+  // 一级市场申赎（份额口径，与服务端 _summarize 一致）：无数据时 null（前端显示 —）
+  const hasShare = rows.some(e=>e.net_sub!==null && e.net_sub!==undefined);
+  const share_net_sub = hasShare ? rows.reduce((a,e)=>a+(e.net_sub||0),0) : null;
+  const has_share = rows.filter(e=>e.net_sub!==null && e.net_sub!==undefined).length;
+  return {total_main_net:total, total_amount:amount, has_main:hasMain, by_cat:byCat, tiers,
+          share_net_sub:share_net_sub, has_share:has_share};
 }
 
 // 与服务端 ORDER BY (main_net IS NULL), main_net DESC 保持一致
@@ -301,7 +309,14 @@ function computeStaticPayload(raw, date, cats, codes){
     }
   }
 
-  const allRows = selDate ? rowsOfDate(raw, selDate) : [];
+  // 一级市场申赎：把当日份额变动并入明细行（与服务端 build_payload 口径一致）
+  const smap = {};
+  ((raw.shares && raw.shares[selDate]) || []).forEach(s=>{ smap[s.code] = s; });
+  const withShare = (rows)=> rows.map(e=>{
+    const s = smap[e.code] || {};
+    return Object.assign({}, e, {shares:s.shares, chg_shares:s.chg_shares, net_sub:s.net_sub});
+  });
+  const allRows = withShare(selDate ? rowsOfDate(raw, selDate) : []);
   const etf = sortRows(match(allRows));
   const cur = sumRows(etf), full = sumRows(allRows);
   const mainOk = cur.has_main>0;
@@ -309,8 +324,13 @@ function computeStaticPayload(raw, date, cats, codes){
   const history = dates.map(d=>{
     const rows = match(rowsOfDate(raw,d));
     const s = sumRows(rows);
+    // 一级市场申赎：与服务端 get_history 同口径（同筛选条件聚合）
+    const srows = match((raw.shares && raw.shares[d]) || []);
+    const sHas = srows.some(x=>x.net_sub!==null && x.net_sub!==undefined);
     return {date:d, total_main_net:s.total_main_net, total_amount:s.total_amount,
-            by_cat:s.by_cat, etf_count:rows.length, main_cnt:s.has_main};
+            by_cat:s.by_cat, etf_count:rows.length, main_cnt:s.has_main,
+            share_net_sub: sHas ? srows.reduce((a,x)=>a+(x.net_sub||0),0) : 0,
+            share_cnt: srows.filter(x=>x.net_sub!==null && x.net_sub!==undefined).length};
   }).filter(h=>h.etf_count>0);
 
   const byCatYi = {};
@@ -340,6 +360,10 @@ function computeStaticPayload(raw, date, cats, codes){
       full_etf_count: allRows.length,
       tier_yi: Object.fromEntries(Object.keys(cur.tiers).map(k=>
         [k, cur.tiers[k]===null ? null : +(cur.tiers[k]/1e8).toFixed(2)])),
+      // 一级市场申赎（ETF 份额口径，亿元）：二级资金流看不到的一级申购/赎回
+      share_net_sub_yi: (cur.share_net_sub===null || cur.share_net_sub===undefined)
+        ? null : +cur.share_net_sub.toFixed(2),
+      share_cover: cur.has_share,
     },
   };
   payload.signal = signalLabel(payload.summary.total_main_net_yi);
@@ -492,13 +516,17 @@ function render(d){
   const tb = document.querySelector("#tbl tbody");
   const tf = document.querySelector("#tbl tfoot");
   if(!etf.length){
-    tb.innerHTML = `<tr><td colspan="11" class="empty">当前筛选条件下没有数据，请调整日期或放宽筛选。</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="13" class="empty">当前筛选条件下没有数据，请调整日期或放宽筛选。</td></tr>`;
     tf.innerHTML = "";
   } else {
     // 四档净额：分时图上的大额买入/拆单去向不再被主力净额一口吞掉
     const tier = (v)=> (v===null||v===undefined)
       ? `<td class="num">—</td>`
       : `<td class="num ${signClass(v)}">${fmt(v/1e8)}</td>`;
+    // 一级市场申赎：份额日变动(亿份)、估算净申购(亿元)，单位已由服务端换算好
+    const shareCell = (v)=> (v===null||v===undefined)
+      ? `<td class="num">—</td>`
+      : `<td class="num ${signClass(v)}">${fmt(v)}</td>`;
     tb.innerHTML = etf.map(e=>`
       <tr>
         <td>${esc(e.name)}</td><td>${esc(e.code)}</td>
@@ -508,12 +536,18 @@ function render(d){
         <td>${fmt((e.amount||0)/1e8)}</td>
         <td class="num ${signClass(e.main_net)}">${e.main_net===null?"—":fmt(e.main_net/1e8)}</td>
         ${tier(e.huge_net)}${tier(e.big_net)}${tier(e.mid_net)}${tier(e.small_net)}
+        ${shareCell(e.chg_shares)}${shareCell(e.net_sub)}
       </tr>`).join("");
     const sumAmt = etf.reduce((a,e)=>a+(e.amount||0),0);
     const sumNet = etf.reduce((a,e)=>a+(e.main_net||0),0);
     const hasTier = etf.some(e=>e.huge_net!==null && e.huge_net!==undefined);
     const sumTier = (k)=> hasTier ? fmt(etf.reduce((a,e)=>a+(e[k]||0),0)/1e8) : "—";
     const sumTierCls = (k)=> hasTier ? signClass(etf.reduce((a,e)=>a+(e[k]||0),0)) : "";
+    // 一级申赎合计：无份额数据时显示 —，不显示 0 误导
+    const hasShare = etf.some(e=>e.net_sub!==null && e.net_sub!==undefined);
+    const sumChgShares = hasShare ? fmt(etf.reduce((a,e)=>a+(e.chg_shares||0),0)) : "—";
+    const sumNetSub = hasShare ? fmt(etf.reduce((a,e)=>a+(e.net_sub||0),0)) : "—";
+    const sumNetSubCls = hasShare ? signClass(etf.reduce((a,e)=>a+(e.net_sub||0),0)) : "";
     tf.innerHTML = `<tr>
       <td>合计（${etf.length} 只）</td><td>—</td><td>—</td><td>—</td><td>—</td>
       <td>${fmt(sumAmt/1e8)}</td>
@@ -521,14 +555,16 @@ function render(d){
       <td class="num ${sumTierCls('huge_net')}">${sumTier('huge_net')}</td>
       <td class="num ${sumTierCls('big_net')}">${sumTier('big_net')}</td>
       <td class="num ${sumTierCls('mid_net')}">${sumTier('mid_net')}</td>
-      <td class="num ${sumTierCls('small_net')}">${sumTier('small_net')}</td></tr>`;
+      <td class="num ${sumTierCls('small_net')}">${sumTier('small_net')}</td>
+      <td class="num ${hasShare?signClass(etf.reduce((a,e)=>a+(e.chg_shares||0),0)):""}">${sumChgShares}</td>
+      <td class="num ${sumNetSubCls}">${sumNetSub}</td></tr>`;
   }
   document.getElementById("tbl-sub").textContent = isFiltered
     ? `已筛选：${f.date||""}${f.cats&&f.cats.length?" · "+f.cats.join("/"):""}${f.codes&&f.codes.length?" · "+f.codes.length+"只基金":""}`
     : `宽基ETF观察池 · ${f.date||""}`;
   document.getElementById("trend-sub").textContent = isFiltered
-    ? "单位：亿元（当前筛选范围的每日合计）"
-    : "单位：亿元（每日合计主力净流入）";
+    ? "单位：亿元（当前筛选范围的每日合计；左轴=二级主力净流入，右轴=一级市场净申购）"
+    : "单位：亿元（左轴=二级主力净流入，右轴=一级市场净申购）";
 
   // 新闻
   const nl = document.getElementById("news");
@@ -645,6 +681,18 @@ function renderSummary(d){
       line += ` <span style="color:#a33">← 大单买入被超大单卖出对冲，故主力净为负</span>`;
     }
   }
+  // 一级市场申赎（ETF 份额口径）：一级申购/赎回不计入二级资金流，是另一层证据
+  if(s.share_net_sub_yi!==null && s.share_net_sub_yi!==undefined){
+    const v = s.share_net_sub_yi;
+    const cls = v>0?"r":(v<0?"g":"");
+    line += `<br><span style="opacity:.9">一级市场净申购合计 <span class="${cls}">${fmt(v)} 亿</span>（覆盖 ${s.share_cover||0} 只）</span>`;
+    if(v===0){
+      line += ` <span style="color:#a33">← 份额为 T+1 公布，最新交易日可能沿用上一日数值</span>`;
+    }
+    if(s.total_main_net_yi<0 && v>0){
+      line += ` <span style="color:#a33">← 二级主力净流出但一级净申购（资金在走申购通道）</span>`;
+    }
+  }
   if(f.filtered){
     line += `<br><span style="opacity:.85">提示：类别与基金可叠加（取交集）；选择类别后，基金列表只显示该类别下的基金。</span>`;
   }
@@ -664,18 +712,33 @@ function drawTrend(history){
     const v = h.main_cnt>0 ? h.total_main_net/1e8 : null;
     return v===null ? null : +v.toFixed(2);
   });
+  // 一级市场净申购（份额口径，已是亿元）：与二级资金流方向可能相反，是另一层证据
+  const shareVals = history.map(h=>{
+    if(!h.share_cnt) return null;
+    const v = h.share_net_sub;
+    return (v===null||v===undefined) ? null : +v.toFixed(2);
+  });
+  const hasShare = shareVals.some(v=>v!==null);
   trendChart.setOption({
     tooltip:{trigger:"axis",valueFormatter:v=>(v===null||v===undefined)?"无数据":(v+" 亿")},
-    grid:{left:50,right:20,top:20,bottom:40},
+    legend:{data:["二级主力净流入","一级市场净申购"],top:0,itemGap:16,
+            textStyle:{fontSize:12,color:"#6b7a8d"}},
+    grid:{left:50,right:hasShare?58:20,top:38,bottom:40},
     xAxis:{type:"category",data:dates,axisLabel:{rotate: dates.length>10?40:0}},
-    yAxis:{type:"value",name:"亿元",axisLabel:{formatter:"{value}"}},
+    yAxis:[{type:"value",name:"亿元",axisLabel:{formatter:"{value}"}}]
+      .concat(hasShare ? [{type:"value",name:"一级",axisLabel:{formatter:"{value}"},
+        splitLine:{show:false}}] : []),
     series:[{type:"line",data:vals,smooth:true,symbolSize:7,connectNulls:false,
+      name:"二级主力净流入",
       lineStyle:{width:3,color:"#2563eb"},
       itemStyle:{color:"#2563eb"},
       areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:"rgba(37,99,235,.25)"},{offset:1,color:"rgba(37,99,235,0)"}])},
       markLine:{silent:true,data:[{yAxis:0}],lineStyle:{color:"#bbb",type:"dashed"}}
-    }],
-    color:["#2563eb"]
+    }].concat(hasShare ? [{type:"line",data:shareVals,smooth:true,symbolSize:6,
+      connectNulls:false,name:"一级市场净申购",yAxisIndex:1,
+      lineStyle:{width:2,color:"#e0392b",type:"dashed"},
+      itemStyle:{color:"#e0392b"}}] : []),
+    color:["#2563eb","#e0392b"]
   }, true);
 }
 

@@ -30,6 +30,16 @@ ROWS = [
 ]
 ROWS_NO_MAIN = [dict(r, main_net=None) for r in ROWS]
 
+# 一级市场申赎（ETF 份额口径）样例
+SHARES_D1 = [
+    {"code": "510300", "name": "华泰柏瑞沪深300ETF", "cat": "沪深300",
+     "shares": 354.469877, "nav": 4.1797, "chg_shares": 2.043, "net_sub": 8.54},
+    {"code": "510310", "name": "易方达沪深300ETF", "cat": "沪深300",
+     "shares": 216.0154, "nav": 4.0618, "chg_shares": 32.418, "net_sub": 131.68},
+    {"code": "510050", "name": "华夏上证50ETF", "cat": "上证50",
+     "shares": 126.5737, "nav": 2.8878, "chg_shares": -3.357, "net_sub": -9.69},
+]
+
 
 class TestStaticExport(unittest.TestCase):
     def setUp(self):
@@ -40,6 +50,7 @@ class TestStaticExport(unittest.TestCase):
         db.save_etf_daily(D1, ROWS, path=self.db_path)
         db.save_etf_daily(D2, ROWS, path=self.db_path)
         db.save_etf_daily(D3, ROWS_NO_MAIN, path=self.db_path)
+        db.save_share_rows(D1, SHARES_D1, path=self.db_path)
         db.save_news(D2, [{"time": "09:30", "title": "中央汇金增持宽基ETF",
                            "url": "https://example.com/a", "src": "示例"}],
                      path=self.db_path)
@@ -61,6 +72,11 @@ class TestStaticExport(unittest.TestCase):
         self.assertEqual(cats, {"沪深300": 2, "上证50": 1})
         self.assertEqual(len(p["funds"]), 3)
         self.assertIn("actions_url", p)
+        # 一级市场申赎（份额）必须一并打包，供前端浏览器端合并
+        self.assertIn("shares", p)
+        self.assertEqual(len(p["shares"][D1]), 3)
+        self.assertAlmostEqual(p["shares"][D1][0]["net_sub"], -9.69)   # 按 code 升序，首行 510050
+        self.assertNotIn(D2, p["shares"])
 
     def test_payload_json_roundtrip(self):
         p = staticsite.build_static_payload(path=self.db_path)
@@ -84,6 +100,8 @@ class TestStaticExport(unittest.TestCase):
         self.assertEqual(n, 3)
         self.assertEqual(db.get_dates(fresh), [D1, D2, D3])
         self.assertEqual(db.get_meta("last_fetch", "", fresh), "2026-10-27 16:20:00")
+        # 份额历史也要跟着恢复（否则 Actions 干净环境会丢一级申赎口径）
+        self.assertEqual(len(db.get_shares_by_date(D1, path=fresh)), 3)
         # 二次调用不应重复导入（已有数据直接返回 0）
         self.assertEqual(staticsite.import_from_days_file(days_file=days_file, path=fresh), 0)
 

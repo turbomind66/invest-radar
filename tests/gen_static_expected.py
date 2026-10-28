@@ -42,6 +42,29 @@ ROWS_D2 = [
 ]
 ROWS_D3 = [dict(r, main_net=None) for r in ROWS]   # 盘前日：主力全缺
 
+# 一级市场申赎（ETF 份额口径）样例：份额(亿份) / 净值(元) / 日变动(亿份) / 净申购(亿元)
+SHARES_D1 = [
+    {"code": "510300", "name": "华泰柏瑞沪深300ETF", "cat": "沪深300",
+     "shares": 354.469877, "nav": 4.1797, "chg_shares": 2.043, "net_sub": 8.54},
+    {"code": "510310", "name": "易方达沪深300ETF", "cat": "沪深300",
+     "shares": 216.0154, "nav": 4.0618, "chg_shares": 32.418, "net_sub": 131.68},
+    {"code": "510050", "name": "华夏上证50ETF", "cat": "上证50",
+     "shares": 126.5737, "nav": 2.8878, "chg_shares": -3.357, "net_sub": -9.69},
+    {"code": "588000", "name": "华夏科创50ETF", "cat": "科创50",
+     "shares": 852.2967, "nav": 1.3899, "chg_shares": 29.37, "net_sub": 40.82},
+]
+SHARES_D2 = [
+    {"code": "510300", "name": "华泰柏瑞沪深300ETF", "cat": "沪深300",
+     "shares": 362.380877, "nav": 4.1259, "chg_shares": 7.911, "net_sub": 32.64},
+    {"code": "510310", "name": "易方达沪深300ETF", "cat": "沪深300",
+     "shares": 219.2644, "nav": 4.0093, "chg_shares": 3.249, "net_sub": 13.03},
+    {"code": "510050", "name": "华夏上证50ETF", "cat": "上证50",
+     "shares": 127.9147, "nav": 2.8654, "chg_shares": 1.341, "net_sub": 3.84},
+    {"code": "588000", "name": "华夏科创50ETF", "cat": "科创50",
+     "shares": 857.7867, "nav": 1.3234, "chg_shares": 5.49, "net_sub": 7.27},
+]
+# D3 盘前日：无份额数据（前端应显示 —）
+
 CASES = [
     ("默认自动最新（回退到最近有效日）", {}),
     ("指定最新日(主力全缺)", {"date": D3}),
@@ -63,6 +86,8 @@ def main():
         db.save_etf_daily(D1, ROWS, path=path)
         db.save_etf_daily(D2, ROWS_D2, path=path)
         db.save_etf_daily(D3, ROWS_D3, path=path)
+        db.save_share_rows(D1, SHARES_D1, path=path)
+        db.save_share_rows(D2, SHARES_D2, path=path)
         db.set_meta("last_fetch", "2026-10-27 16:20:00", path=path)
 
         raw = staticsite.build_static_payload(path=path)

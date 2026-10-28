@@ -34,6 +34,9 @@ def _summarize(rows):
     has_tier = any(e.get(k) is not None for e in rows for k in db.TIER_FIELDS)
     for k in db.TIER_FIELDS:
         tiers[k] = sum((e.get(k) or 0) for e in rows) if has_tier else None
+    # 一级市场申赎（ETF 份额口径）：净申购合计(亿元)与覆盖只数
+    has_share = sum(1 for e in rows if e.get("net_sub") is not None)
+    share_net_sub = sum((e.get("net_sub") or 0) for e in rows) if has_share else None
     return {
         "total_main_net": total_main,
         "total_amount": total_amount,
@@ -41,6 +44,8 @@ def _summarize(rows):
         "missing_main": len(rows) - has_main,
         "by_cat": by_cat,
         "tiers": tiers,
+        "share_net_sub": share_net_sub,
+        "has_share": has_share,
     }
 
 
@@ -67,6 +72,14 @@ def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
 
     etf = db.get_etf_by_date(sel_date, cats, codes, path) if sel_date else []
     etf_all = db.get_etf_by_date(sel_date, path=path) if sel_date else []
+    # 一级市场申赎口径：把当日份额变动并入明细行（chg_shares 亿份 / net_sub 亿元）
+    share_rows = db.get_shares_by_date(sel_date, path=path) if sel_date else []
+    smap = {r["code"]: r for r in share_rows}
+    for e in etf:
+        s = smap.get(e["code"]) or {}
+        e["shares"] = s.get("shares")
+        e["chg_shares"] = s.get("chg_shares")
+        e["net_sub"] = s.get("net_sub")
     news = db.get_news_by_date(sel_date, path) if sel_date else []
     history = db.get_history(cats, codes, path)
 
@@ -112,6 +125,10 @@ def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
             "full_etf_count": len(etf_all),
             "tier_yi": {k: (None if v is None else round(v / 1e8, 2))
                         for k, v in cur["tiers"].items()},
+            # 一级市场申赎（ETF 份额口径，亿元）：二级资金流看不到的一级申购/赎回
+            "share_net_sub_yi": (round(cur["share_net_sub"], 2)
+                                 if cur["share_net_sub"] is not None else None),
+            "share_cover": cur["has_share"],
         },
     }
 

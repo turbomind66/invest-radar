@@ -30,6 +30,13 @@ def init_db(path: str = DB_PATH):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT, time TEXT, title TEXT, url TEXT, src TEXT)"""
     )
+    # ETF 份额（一级市场申赎口径）：份额(亿份) / 净值(元) / 日变动(亿份) / 净申购(亿元)
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS etf_share(
+            date TEXT, code TEXT, name TEXT, cat TEXT,
+            shares REAL, nav REAL, chg_shares REAL, net_sub REAL,
+            PRIMARY KEY(date, code))"""
+    )
     cur.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     conn.commit()
     conn.close()
@@ -149,6 +156,50 @@ def get_etf_by_date(date: str, cats=None, codes=None, path: str = DB_PATH):
     ]
 
 
+# ---------------- ETF 份额（一级市场申赎口径） ----------------
+
+def save_share_rows(date: str, rows: list, path: str = DB_PATH):
+    """写入某日份额快照。rows 每项含 code/name/cat/shares/nav/chg_shares/net_sub。"""
+    conn = _conn(path)
+    cur = conn.cursor()
+    for r in rows:
+        cur.execute(
+            "INSERT OR REPLACE INTO etf_share(date,code,name,cat,shares,nav,chg_shares,net_sub)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (date, r["code"], r.get("name"), r.get("cat"), r.get("shares"),
+             r.get("nav"), r.get("chg_shares"), r.get("net_sub")),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_shares_by_date(date: str, cats=None, codes=None, path: str = DB_PATH):
+    """取某日份额明细，可按类别/基金代码筛选。"""
+    conn = _conn(path)
+    extra, args = _where(cats, codes)
+    rows = conn.execute(
+        "SELECT code,name,cat,shares,nav,chg_shares,net_sub"
+        " FROM etf_share WHERE date=?" + extra + " ORDER BY code",
+        [date] + args,
+    ).fetchall()
+    conn.close()
+    return [
+        {"code": r[0], "name": r[1], "cat": r[2], "shares": r[3], "nav": r[4],
+         "chg_shares": r[5], "net_sub": r[6]}
+        for r in rows
+    ]
+
+
+def get_share_dates(path: str = DB_PATH):
+    """有份额数据的日期列表（升序）。"""
+    conn = _conn(path)
+    rows = conn.execute(
+        "SELECT DISTINCT date FROM etf_share WHERE shares IS NOT NULL ORDER BY date"
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
 def get_news_by_date(date: str, path: str = DB_PATH):
     conn = _conn(path)
     rows = conn.execute(
@@ -170,12 +221,17 @@ def get_history(cats=None, codes=None, path: str = DB_PATH):
         "SELECT date, cat, code, main_net, amount FROM etf_daily WHERE 1=1" + extra
         + " ORDER BY date", args,
     ).fetchall()
+    # 一级市场申赎：同一筛选条件下聚合份额净申购（亿元）
+    srows = conn.execute(
+        "SELECT date, net_sub FROM etf_share WHERE 1=1" + extra + " ORDER BY date", args,
+    ).fetchall()
     conn.close()
     agg, order = {}, []
     for d, cat, code, mn, amt in rows:
         if d not in agg:
             agg[d] = {"date": d, "total_main_net": 0.0, "total_amount": 0.0,
-                      "by_cat": {}, "etf_count": 0, "main_cnt": 0}
+                      "by_cat": {}, "etf_count": 0, "main_cnt": 0,
+                      "share_net_sub": 0.0, "share_cnt": 0}
             order.append(d)
         a = agg[d]
         a["etf_count"] += 1
@@ -185,6 +241,10 @@ def get_history(cats=None, codes=None, path: str = DB_PATH):
             a["total_main_net"] += mn
         a["by_cat"].setdefault(cat, 0.0)
         a["by_cat"][cat] += (mn or 0)
+    for d, ns in srows:
+        if d in agg and ns is not None:
+            agg[d]["share_net_sub"] += ns
+            agg[d]["share_cnt"] += 1
     return [agg[d] for d in order]
 
 

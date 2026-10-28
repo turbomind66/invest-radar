@@ -39,6 +39,16 @@ def _no_tier(row):
 ROWS_D2 = [_no_tier(dict(r, main_net=None)) for r in ROWS_D1]   # 主力数据缺失日（旧数据无四档）
 ROWS_D3 = [_no_tier(dict(r, main_net=None)) for r in ROWS_D1]   # 盘前当日：价格有、资金流未出
 
+# 一级市场申赎（ETF 份额口径）样例
+SHARES_D1 = [
+    {"code": "510300", "name": "华泰柏瑞沪深300ETF", "cat": "沪深300",
+     "shares": 354.469877, "nav": 4.1797, "chg_shares": 2.043, "net_sub": 8.54},
+    {"code": "510310", "name": "易方达沪深300ETF", "cat": "沪深300",
+     "shares": 216.0154, "nav": 4.0618, "chg_shares": 32.418, "net_sub": 131.68},
+    {"code": "510050", "name": "华夏上证50ETF", "cat": "上证50",
+     "shares": 126.5737, "nav": 2.8878, "chg_shares": -3.357, "net_sub": -9.69},
+]
+
 
 class TestStorage(unittest.TestCase):
     def setUp(self):
@@ -48,6 +58,7 @@ class TestStorage(unittest.TestCase):
         db.save_etf_daily(D1, ROWS_D1, path=self.path)
         db.save_etf_daily(D2, ROWS_D2, path=self.path)
         db.save_etf_daily(D3, ROWS_D3, path=self.path)
+        db.save_share_rows(D1, SHARES_D1, path=self.path)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -166,6 +177,33 @@ class TestStorage(unittest.TestCase):
             self.assertAlmostEqual(r["small_net"], -1e8)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    # ---------- ETF 份额（一级市场申赎口径） ----------
+    def test_share_rows_roundtrip(self):
+        """份额/净值/日变动/净申购读写不丢。"""
+        rows = {r["code"]: r for r in db.get_shares_by_date(D1, path=self.path)}
+        self.assertEqual(len(rows), 3)
+        r = rows["510310"]
+        self.assertAlmostEqual(r["shares"], 216.0154)
+        self.assertAlmostEqual(r["nav"], 4.0618)
+        self.assertAlmostEqual(r["chg_shares"], 32.418)
+        self.assertAlmostEqual(r["net_sub"], 131.68)
+
+    def test_share_net_sub_identity(self):
+        """一级净申购 = 份额日变动(亿份) × 单位净值(元)。"""
+        for r in db.get_shares_by_date(D1, path=self.path):
+            self.assertAlmostEqual(r["net_sub"], r["chg_shares"] * r["nav"], places=2,
+                                   msg=r["code"])
+
+    def test_share_filter_by_category(self):
+        rows = db.get_shares_by_date(D1, cats=["沪深300"], path=self.path)
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(r["cat"] == "沪深300" for r in rows))
+
+    def test_share_dates_only_covered(self):
+        """只有写入过份额的日期才出现（前端据此显示 — 而不是 0）。"""
+        self.assertEqual(db.get_share_dates(path=self.path), [D1])
+        self.assertEqual(db.get_shares_by_date(D2, path=self.path), [])
 
     # ---------- 选项 ----------
     def test_get_cats(self):

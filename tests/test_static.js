@@ -93,11 +93,18 @@ for (const c of cases) {
     [js.summary.etf_count, js.summary.main_cnt, js.summary.full_etf_count]);
   ok &= cmp(`[${c.name}] 分类小计`, py.summary.by_cat_yi, js.summary.by_cat_yi);
   ok &= cmp(`[${c.name}] 四档净额`, py.summary.tier_yi, js.summary.tier_yi);
+  ok &= cmp(`[${c.name}] 一级净申购合计`, py.summary.share_net_sub_yi, js.summary.share_net_sub_yi);
+  ok &= cmp(`[${c.name}] 份额覆盖数`, py.summary.share_cover, js.summary.share_cover);
+  ok &= cmp(`[${c.name}] 份额明细`,
+    py.etf.map((e) => [e.chg_shares, e.net_sub]),
+    js.etf.map((e) => [e.chg_shares, e.net_sub]));
   ok &= cmp(`[${c.name}] 数据完整度标记`, [py.mainnet_ok, py.partial_main], [js.mainnet_ok, js.partial_main]);
   ok &= cmp(`[${c.name}] 信号判定`, py.signal, js.signal);
   ok &= cmp(`[${c.name}] 历史序列`,
-    py.history.map((h) => [h.date, r2(h.total_main_net), h.etf_count, h.main_cnt]),
-    js.history.map((h) => [h.date, r2(h.total_main_net), h.etf_count, h.main_cnt]));
+    py.history.map((h) => [h.date, r2(h.total_main_net), h.etf_count, h.main_cnt,
+                           r2(h.share_net_sub), h.share_cnt]),
+    js.history.map((h) => [h.date, r2(h.total_main_net), h.etf_count, h.main_cnt,
+                           r2(h.share_net_sub), h.share_cnt]));
   if (ok) { pass++; console.log(`  \u2705 ${c.name}`); }
 }
 

@@ -74,6 +74,9 @@ def import_from_days_file(days_file: str = DAYS_FILE, path: str = db.DB_PATH) ->
         if rows:
             db.save_etf_daily(d, rows, path)
             n += 1
+    for d, rows in (raw.get("shares") or {}).items():
+        if rows:
+            db.save_share_rows(d, rows, path)
     for d, items in (raw.get("news") or {}).items():
         if items:
             db.save_news(d, items, path)
@@ -128,6 +131,11 @@ def build_static_payload(path: str = db.DB_PATH) -> dict:
     dates = db.get_dates(path)
     days = {d: db.get_etf_by_date(d, path=path) for d in dates}
     news = {d: db.get_news_by_date(d, path=path) for d in dates}
+    # 一级市场申赎（ETF 份额）：按日期打包，前端与明细表合并展示
+    # 只打包应用展示的交易日（本地库仍保留完整份额历史，供后续回补二级数据时复用）
+    dset = set(dates)
+    share_dates = [d for d in db.get_share_dates(path) if d in dset]
+    shares = {d: db.get_shares_by_date(d, path=path) for d in share_dates}
     return {
         "generated_at": bj_now().strftime("%Y-%m-%d %H:%M:%S"),
         "latest_date": dates[-1] if dates else None,
@@ -136,6 +144,7 @@ def build_static_payload(path: str = db.DB_PATH) -> dict:
         "news_ok": db.get_meta("news_ok", "1", path) == "1",
         "days": days,
         "news": news,
+        "shares": shares,
         "cats": db.get_cats(path),
         "funds": db.get_funds(path),
         "actions_url": ACTIONS_URL,
@@ -174,6 +183,7 @@ def export(out_dir: str = DOCS_DIR, template: str = TEMPLATE,
         "dates": payload["dates"],
         "latest": payload["latest_date"],
         "days": len(payload["days"]),
+        "share_days": len(payload.get("shares") or {}),
         "generated_at": payload["generated_at"],
     }
 
@@ -198,6 +208,12 @@ def main():
     if not args.no_sync:
         done = sync_missing(days=args.days)
         print("[sync] 补齐/重抓：%s" % (", ".join(done) if done else "无"))
+        # 一级市场申赎（ETF 份额）：东财 datacenter 一次可回补整段历史
+        try:
+            sdays, hit, n = fetcher.sync_shares()
+            print("[shares] 份额回补：%d 个交易日 / %d 只基金 / %d 行" % (sdays, hit, n))
+        except Exception as e:
+            print("[shares] 份额抓取失败（不影响主流程）：%s" % e)
 
     res = export(out_dir=args.out)
     print("[export] %s" % json.dumps(res, ensure_ascii=False))

@@ -50,10 +50,10 @@ global.echarts = {
 // 四档净额满足东财勾稽：主力净 = 大单净 + 超大单净。588000 复刻 10-23 对冲场景
 // （大单 +8.33 买入 vs 超大单 -23.06 卖出 → 主力净 -14.73）。
 const RAW = [
-  { code: '510300', name: '华泰柏瑞沪深300ETF', cat: '沪深300', price: 4.123, chg: -1.34, amount: 5.848e9, main_net: -8.61e8, huge_net: -12.50e8, big_net: 3.89e8, mid_net: 2.10e8, small_net: 1.20e8 },
-  { code: '510310', name: '易方达沪深300ETF', cat: '沪深300', price: 1.900, chg: -1.20, amount: 1.200e9, main_net: -1.10e8, huge_net: -2.20e8, big_net: 1.10e8, mid_net: 0.60e8, small_net: 0.50e8 },
-  { code: '510050', name: '华夏上证50ETF', cat: '上证50', price: 3.100, chg: 0.40, amount: 2.100e9, main_net: 1.66e8, huge_net: 2.20e8, big_net: -0.54e8, mid_net: -0.80e8, small_net: -0.40e8 },
-  { code: '588000', name: '华夏科创50ETF', cat: '科创50', price: 1.100, chg: -3.10, amount: 3.000e9, main_net: -14.73e8, huge_net: -23.06e8, big_net: 8.33e8, mid_net: 11.57e8, small_net: 2.08e8 },
+  { code: '510300', name: '华泰柏瑞沪深300ETF', cat: '沪深300', price: 4.123, chg: -1.34, amount: 5.848e9, main_net: -8.61e8, huge_net: -12.50e8, big_net: 3.89e8, mid_net: 2.10e8, small_net: 1.20e8, chg_shares: 2.043, net_sub: 8.54 },
+  { code: '510310', name: '易方达沪深300ETF', cat: '沪深300', price: 1.900, chg: -1.20, amount: 1.200e9, main_net: -1.10e8, huge_net: -2.20e8, big_net: 1.10e8, mid_net: 0.60e8, small_net: 0.50e8, chg_shares: 32.418, net_sub: 131.68 },
+  { code: '510050', name: '华夏上证50ETF', cat: '上证50', price: 3.100, chg: 0.40, amount: 2.100e9, main_net: 1.66e8, huge_net: 2.20e8, big_net: -0.54e8, mid_net: -0.80e8, small_net: -0.40e8, chg_shares: -3.357, net_sub: -9.69 },
+  { code: '588000', name: '华夏科创50ETF', cat: '科创50', price: 1.100, chg: -3.10, amount: 3.000e9, main_net: -14.73e8, huge_net: -23.06e8, big_net: 8.33e8, mid_net: 11.57e8, small_net: 2.08e8, chg_shares: 29.37, net_sub: 40.82 },
 ];
 const ALL_DATES = ['2026-10-26', '2026-10-27', '2026-10-28'];
 const FULL_TOTAL_YI = +(RAW.reduce((a, e) => a + e.main_net, 0) / 1e8).toFixed(2);  // -22.78
@@ -68,8 +68,8 @@ function buildData(url) {
   let etf = RAW.filter(e =>
     (!cats.length || cats.includes(e.cat)) &&
     (!codes.length || codes.includes(e.code)));
-  // 模拟“盘前当日”：价格已抓取、主力资金尚未生成
-  if (date === '2026-10-28') etf = etf.map(e => ({ ...e, main_net: null }));
+  // 模拟“盘前当日”：价格已抓取、主力资金尚未生成（份额同样 T+1 未出）
+  if (date === '2026-10-28') etf = etf.map(e => ({ ...e, main_net: null, chg_shares: null, net_sub: null }));
   const hasMain = etf.filter(e => e.main_net !== null).length;
   const total = etf.reduce((a, e) => a + (e.main_net || 0), 0);
 
@@ -79,6 +79,10 @@ function buildData(url) {
   const hasTier = etf.some(e => [e.huge_net, e.big_net, e.mid_net, e.small_net]
     .some(v => v !== null && v !== undefined));
   const tierSum = k => hasTier ? etf.reduce((a, e) => a + (e[k] || 0), 0) : null;
+  // 一级市场申赎（份额口径）：与真实后端 _summarize 一致
+  const hasShare = etf.some(e => e.net_sub !== null && e.net_sub !== undefined);
+  const shareSum = hasShare ? etf.reduce((a, e) => a + (e.net_sub || 0), 0) : null;
+  const shareCover = etf.filter(e => e.net_sub !== null && e.net_sub !== undefined).length;
 
   // 与真实后端一致：筛选后无数据时 history 返回空数组
   const history = etf.length === 0 ? [] : ALL_DATES.map(d => {
@@ -112,6 +116,8 @@ function buildData(url) {
       full_total_main_net_yi: FULL_TOTAL_YI, full_etf_count: RAW.length,
       tier_yi: Object.fromEntries(['huge_net', 'big_net', 'mid_net', 'small_net']
         .map(k => [k, tierSum(k) === null ? null : +(tierSum(k) / 1e8).toFixed(2)])),
+      share_net_sub_yi: hasShare ? +shareSum.toFixed(2) : null,
+      share_cover: shareCover,
     },
     signal: total > 0 ? ['净买入', 'buy'] : ['净卖出', 'sell'],
   };
@@ -340,6 +346,27 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   const oldRow = els['q_#tbl tbody'].innerHTML;
   chk((oldRow.match(/—/g) || []).length >= 4, '旧行无四档数据时显示 4 个 —');
   chk(!els['f-summary'].innerHTML.includes('四档拆解'), '无四档数据时不显示拆解行');
+
+  console.log('\n[12] 一级市场申赎列（份额口径：二级资金流看不到的一级申购）');
+  render(buildData(''));
+  await tick(150);
+  const shTbl = els['q_#tbl tbody'].innerHTML;
+  const shTf = els['q_#tbl tfoot'].innerHTML;
+  const shSum = els['f-summary'].innerHTML;
+  chk(shTbl.includes('131.68') && shTbl.includes('8.54'), '一级净申购列渲染数值');
+  chk(shTbl.includes('32.42') && shTbl.includes('2.04'), '份额日变动列渲染数值（亿份，2 位小数）');
+  chk(/class="num red">131\.68/.test(shTbl), '一级净申购正值标红');
+  chk(/class="num green">-9\.69/.test(shTbl), '一级净申购负值标绿');
+  // 合计行：份额日变动合计 60.47 亿份（2.043+32.418-3.357+29.37），一级净申购合计 171.35 亿（8.54+131.68-9.69+40.82）
+  chk(shTf.includes('171.35') && shTf.includes('60.47'), '合计行含一级申赎合计');
+  chk(shSum.includes('一级市场净申购合计') && shSum.includes('171.35'),
+      '筛选摘要显示一级市场净申购合计');
+  // 盘前日（份额 T+1 未出）→ 显示 —，不显示 0 误导
+  render(buildData('?date=2026-10-28'));
+  await tick(120);
+  const shPre = els['q_#tbl tbody'].innerHTML;
+  chk((shPre.match(/—/g) || []).length >= 4, '无份额数据时显示 —（不显示 0）');
+  chk(!els['f-summary'].innerHTML.includes('一级市场净申购合计'), '无份额数据时不显示一级申赎合计');
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exit(fail === 0 ? 0 : 1);

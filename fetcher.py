@@ -190,6 +190,81 @@ def fetch_etfs() -> (list, bool):
     return result, em_ok
 
 
+# 东方财富 datacenter（ETF 份额历史报表）
+EM_DC = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+
+
+def _em_market(code: str) -> str:
+    """东财证券代码市场前缀：15 开头为深市，其余为沪市。"""
+    return "SZ" if code.startswith("15") else "SH"
+
+
+def fetch_em_share_scale(code: str, page_size: int = 400) -> dict:
+    """取某只 ETF 的每日份额与单位净值历史。
+
+    数据源：东方财富 datacenter 报表 RPT_ETF_SCALE_CHANGE
+    （已与上交所 TOT_VOL、深交所 dqgm 逐日交叉校验一致）。
+    返回 {date: {shares, nav, scale, name}}，份额单位亿份、净值单位元。
+    """
+    mk = _em_market(code)
+    url = (
+        EM_DC + "?reportName=RPT_ETF_SCALE_CHANGE"
+        "&columns=SECUCODE,SECURITY_NAME_ABBR,SHAREEND,PERNAV,NAVNEW,TRADE_DATE,DAY_STR,IS_DAY"
+        "&pageNumber=1&pageSize=%d&source=WEB&client=WEB" % page_size
+        + "&filter=(SECUCODE%%3D%%22%s.%s%%22)&sortColumns=TRADE_DATE&sortTypes=-1" % (code, mk)
+    )
+    try:
+        d = json.loads(_get(url, ref="https://data.eastmoney.com/"))
+    except Exception:
+        return {}
+    rows = ((d or {}).get("result") or {}).get("data") or []
+    out = {}
+    for r in rows:
+        dt = (r.get("DAY_STR") or (r.get("TRADE_DATE") or "")[:10] or "").strip()
+        if not dt or dt in out:
+            continue
+        out[dt] = {
+            "shares": _num(r.get("SHAREEND")),
+            "nav": _num(r.get("PERNAV")),
+            "scale": _num(r.get("NAVNEW")),
+            "name": r.get("SECURITY_NAME_ABBR") or "",
+        }
+    return out
+
+
+def sync_shares(days: int = 400, path: str = db.DB_PATH):
+    """抓全池 ETF 每日份额，算份额日变动与一级市场净申购金额，落库。
+
+    净申购(亿元) ≈ 份额日变动(亿份) × 单位净值(元/份)；正=净申购(一级买入)，负=净赎回。
+    返回 (覆盖日期数, 覆盖基金数, 写入行数)。
+    """
+    per_date = {}
+    hit = 0
+    for code, nm, cat in WATCHLIST:
+        hist = fetch_em_share_scale(code)
+        if not hist:
+            continue
+        hit += 1
+        ordered = sorted(hist.keys())
+        for i, dt in enumerate(ordered):
+            h = hist[dt]
+            chg = None
+            if i > 0:
+                chg = h["shares"] - hist[ordered[i - 1]]["shares"]
+            per_date.setdefault(dt, []).append({
+                "code": code, "name": nm, "cat": cat,
+                "shares": h["shares"], "nav": h["nav"],
+                "chg_shares": chg,
+                "net_sub": (chg * h["nav"]) if chg is not None else None,
+            })
+        time.sleep(0.2)
+    n = 0
+    for dt, rows in per_date.items():
+        db.save_share_rows(dt, rows, path)
+        n += len(rows)
+    return (len(per_date), hit, n)
+
+
 def _norm_news_title(t: str) -> str:
     return re.sub(r"\s+", " ", (t or "")).strip()
 
