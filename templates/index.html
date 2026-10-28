@@ -37,7 +37,11 @@
   .chart{width:100%;height:320px}
   .chart.sm{height:300px}
   .cat-list{display:flex;flex-wrap:wrap;gap:6px 12px;justify-content:center;margin-top:2px}
-  .cat-list span{font-size:11px;color:#3c4a5a;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+  .cat-list .cat-item{display:flex;flex-direction:column;align-items:center;gap:1px}
+  .cat-list .cat-head{font-size:11px;color:#3c4a5a;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+  .cat-list .cat-sub{font-size:10px;color:#7c8ba1;white-space:nowrap}
+  .cat-list .cat-sub .r{color:var(--red);font-weight:600}
+  .cat-list .cat-sub .g{color:var(--green);font-weight:600}
   .cat-list i{width:9px;height:9px;border-radius:2px;display:inline-block}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{padding:9px 10px;text-align:right;border-bottom:1px solid var(--line)}
@@ -392,6 +396,15 @@ function renderFilterBar(d){
 function shortName(n){
   return (n||"").replace(/^华泰柏瑞|^易方达|^南方|^华夏|^嘉实|^广发|^博时|^天弘|^富国|^银华/,"").replace(/ETF$/,"");
 }
+// 类内明细用的基金短标签：去掉 ETF 后缀与类别名（易方达中证1000ETF / 中证1000 → 易方达）。
+// 与条形图 shortName（去公司名、留指数名）互补——同类别多只基金要靠公司名区分。
+function fundLabel(name, cat){
+  const base = String(name||"").replace(/ETF$/,"");
+  if(cat && base.length > cat.length && base.slice(-cat.length) === cat){
+    return base.slice(0, base.length - cat.length);
+  }
+  return base || String(name||"");
+}
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m])); }
 
 function onDateChange(v){
@@ -502,7 +515,7 @@ function render(d){
 
   drawTrend(d.history||[]);
   drawBar(etf);
-  drawCat(s.by_cat_yi||{});
+  drawCat(s.by_cat_yi||{}, etf);
 }
 
 // ---------- 「数据更新于」新鲜度时间戳 ----------
@@ -639,7 +652,7 @@ function drawBar(etf){
   }, true);
 }
 
-function drawCat(byCat){
+function drawCat(byCat, etf){
   const keys = Object.keys(byCat||{});
   const buys=[], sells=[];
   keys.forEach(k=>{
@@ -649,16 +662,27 @@ function drawCat(byCat){
   });
   buys.sort((a,b)=>b.v-a.v);   // 净买入大 → 小
   sells.sort((a,b)=>a.v-b.v);  // 净卖出大（更负）在前
+  // 类内基金明细：类别是同指数多只 ETF 的合计，类内可能正负对冲——
+  // 如 10-27 中证1000 合计 -2.01，但类内 易方达 +0.17 被合计吞掉。
+  // 主力数据缺失（null）的基金不进明细；明细各自四舍五入，与类别合计最多差 0.01。
+  const details = {};
+  (etf||[]).forEach(e=>{
+    if(e.main_net===null || e.main_net===undefined) return;
+    (details[e.cat] = details[e.cat] || []).push({
+      n: fundLabel(e.name, e.cat),
+      v: +(e.main_net/1e8).toFixed(2)
+    });
+  });
   if(!catBuyChart) catBuyChart = echarts.init(document.getElementById("cat-buy"));
   if(!catSellChart) catSellChart = echarts.init(document.getElementById("cat-sell"));
-  drawCatPie(catBuyChart, "cat-buy-list", buys, false);
-  drawCatPie(catSellChart, "cat-sell-list", sells, true);
+  drawCatPie(catBuyChart, "cat-buy-list", buys, false, details);
+  drawCatPie(catSellChart, "cat-sell-list", sells, true, details);
 }
 
 // 净买入 / 净卖出两张饼图。ECharts pie 的扇区角度不支持负值（会被压成 0 不渲染），
 // 故卖出图用绝对值画角度，标签与 tooltip 保留真实负号 ——
 // 此前单张饼图在"8 类中 7 类净卖出"的日子把它们全部吞掉，只剩「中证A500」占满整环。
-function drawCatPie(chart, listId, items, isSell){
+function drawCatPie(chart, listId, items, isSell, details){
   const listEl = document.getElementById(listId);
   if(!items.length){
     chart.clear();
@@ -667,14 +691,28 @@ function drawCatPie(chart, listId, items, isSell){
     if(listEl) listEl.innerHTML = "";
     return;
   }
-  // 所有类别的名称+数值放在饼图下方色点列表里（不靠 hover、无分页），
-  // 饼图内只留扇区标签，小扇区标签由 hideOverlap 自动隐藏避免叠字。
-  if(listEl) listEl.innerHTML = items.map((it,i)=>
-    `<span><i style="background:${catShade(isSell,i,items.length)}"></i>${it.k} ${it.v>0?"+":""}${it.v.toFixed(2)}亿</span>`).join("");
+  const detailOf = k => (details && details[k]) || [];
+  const fmtYi = v => (v>0?"+":"")+v.toFixed(2);
+  // 所有类别的名称+数值放在饼图下方色点列表里（不靠 hover、无分页）；
+  // 多基金类别再展开类内逐只明细（正值红/负值绿），
+  // 类内正值基金（如卖出图 中证1000 里的 易方达 +0.17）一眼可见、不被合计吞掉。
+  if(listEl) listEl.innerHTML = items.map((it,i)=>{
+    const funds = detailOf(it.k);
+    const head = `<span class="cat-head"><i style="background:${catShade(isSell,i,items.length)}"></i>${it.k} ${fmtYi(it.v)}亿</span>`;
+    const sub = funds.length > 1
+      ? `<span class="cat-sub">${funds.map(f=>`${f.n} <b class="${f.v>0?"r":(f.v<0?"g":"")}">${fmtYi(f.v)}</b>`).join(" · ")}</span>`
+      : "";
+    return `<span class="cat-item">${head}${sub}</span>`;
+  }).join("");
   const total = items.reduce((a,it)=>a+Math.abs(it.v),0);
   chart.setOption({
-    tooltip:{trigger:"item",formatter:p=>
-      `${p.name}<br/>${isSell?"净卖出":"净买入"}：${p.data.real>0?"+":""}${p.data.real.toFixed(2)} 亿（占本图 ${p.percent}%）`},
+    tooltip:{trigger:"item",formatter:p=>{
+      const funds = detailOf(p.name);
+      const sub = funds.length > 1
+        ? `<br/>${funds.map(f=>`${f.n} ${fmtYi(f.v)}`).join(" · ")}`
+        : "";
+      return `${p.name}<br/>${isSell?"净卖出":"净买入"}：${p.data.real>0?"+":""}${p.data.real.toFixed(2)} 亿（占本图 ${p.percent}%）${sub}`;
+    }},
     series:[{type:"pie",radius:["34%","60%"],center:["50%","45%"],
       // 占比 <20% 的扇区连 labelLine 一起隐藏——只隐藏标签会留下孤儿引导线（小竖线悬在图外）
       data:items.map((it,i)=>{const big = Math.abs(it.v)/total >= 0.2;

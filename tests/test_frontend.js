@@ -263,6 +263,38 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   chk(els['cat-sell-list'].innerHTML.includes('科创50') && els['cat-sell-list'].innerHTML.includes('沪深300'),
       '卖出图下方列表含全部类别名');
 
+  console.log('\n[10] 类内基金明细（回归：正值基金不得被类别合计吞掉）');
+  // 桩件复盘：沪深300 两只（华泰柏瑞 -8.61 + 易方达 -1.10 = -9.71）应展开逐只明细，
+  // 单基金类别（上证50 / 科创50）不展开——类别值即基金值，无对冲可能。
+  const sellHtml = els['cat-sell-list'].innerHTML;
+  const buyHtml = els['cat-buy-list'].innerHTML;
+  chk(sellHtml.includes('cat-sub'), '多基金类别（沪深300）展开类内明细行');
+  chk(sellHtml.includes('华泰柏瑞') && sellHtml.includes('易方达'), '明细用公司短标签区分同指数基金');
+  chk(sellHtml.includes('-8.61') && sellHtml.includes('-1.10'), '明细含类内逐只数值');
+  chk(!buyHtml.includes('cat-sub'), '单基金类别（上证50）不展开明细');
+  // 真实故障场景重放（2026-10-27 中证1000 类）：类内 易方达 +0.17 被合计 -2.01 吞进卖出图，
+  // 改造后卖出图下方明细必须能看到这只逆势净买入基金。
+  drawCat({ '中证1000': -2.01, '中证A500': 0.43 }, [
+    { code: '560010', name: '易方达中证1000ETF', cat: '中证1000', main_net: 17498160 },
+    { code: '159845', name: '华夏中证1000ETF', cat: '中证1000', main_net: -1574400 },
+    { code: '512100', name: '南方中证1000ETF', cat: '中证1000', main_net: -216634432 },
+    { code: '563300', name: '中证A500ETF', cat: '中证A500', main_net: 42793296 },
+  ]);
+  const mixSell = els['cat-sell-list'].innerHTML;
+  const mixBuy = els['cat-buy-list'].innerHTML;
+  chk(mixSell.includes('易方达') && mixSell.includes('+0.17'),
+      '卖出类别明细中可见类内正值「易方达 +0.17」');
+  chk(mixSell.includes('<b class="r">+0.17</b>'), '类内正值标红（红=净买入全局语言）');
+  chk(mixSell.includes('华夏') && mixSell.includes('-0.02') && mixSell.includes('南方') && mixSell.includes('-2.17'),
+      '类内其余两只负值基金完整可见');
+  chk(mixSell.includes('中证1000') && mixSell.includes('-2.01亿'), '类别行仍保留合计 -2.01亿');
+  chk(mixBuy.includes('中证A500') && mixBuy.includes('+0.43亿') && !mixBuy.includes('cat-sub'),
+      '单基金买入类别（中证A500）不展开明细');
+  const tipTxt = String(optionLog['cat-sell'].tooltip.formatter(
+    { name: '中证1000', percent: 4.7, data: { real: -2.01 } }));
+  chk(tipTxt.includes('易方达 +0.17') && tipTxt.includes('南方 -2.17'),
+      'tooltip 同步展开类内明细');
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => {
