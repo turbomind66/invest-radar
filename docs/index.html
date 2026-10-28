@@ -109,7 +109,7 @@
     .fresh .hint{display:none}.fresh .t{font-size:14.5px}.fresh .t b{font-size:15px}
   }
 </style>
-<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/ashare-national-team-tracker/actions/workflows/daily.yml", "generated_at": "2026-10-28 11:12:42"};</script>
+<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/ashare-national-team-tracker/actions/workflows/daily.yml", "generated_at": "2026-10-28 11:24:39"};</script>
 </head>
 <body>
 <div class="wrap">
@@ -174,7 +174,7 @@
       <div id="bar" class="chart"></div>
     </div>
     <div class="panel">
-      <h2>🗂️ 按类别汇总 <small>主力净流入（亿元）</small></h2>
+      <h2>🗂️ 按类别汇总 <small>红色=净买入，绿色=净卖出（亿元）</small></h2>
       <div id="cat" class="chart sm"></div>
     </div>
   </div>
@@ -632,15 +632,26 @@ function drawBar(etf){
 
 function drawCat(byCat){
   if(!catChart) catChart = echarts.init(document.getElementById("cat"));
-  const keys = Object.keys(byCat);
+  const keys = Object.keys(byCat||{});
   if(!keys.length){ catChart.clear(); return; }
-  const vals = keys.map(k=>+(byCat[k]).toFixed(2));
+  // 这里必须用「带正负号的条形图」，不能用饼图：
+  // ECharts pie 会把负值数据项的扇区角度压成 0，净卖出类别直接不渲染。
+  // 实测 2026-10-28（8 类中 7 类为净卖出）时饼图只剩唯一正值类别「中证A500」
+  // 占满整环，其余 7 类全部消失 —— 表现为"全是中证A500买入"。
+  // 按值升序排列：ECharts 类目轴自下而上，故最大净买入在顶部、最大净卖出在底部
+  // （与左侧「各ETF净买入」条形图的排序语言保持一致）。
+  const items = keys.map(k=>({k, v:+(+byCat[k]).toFixed(2)})).sort((a,b)=>a.v-b.v);
+  const vals = items.map(i=>i.v);
   catChart.setOption({
-    tooltip:{trigger:"item",valueFormatter:v=>v+" 亿"},
-    legend:{bottom:0,type:"scroll"},
-    series:[{type:"pie",radius:["40%","68%"],center:["50%","45%"],
-      data:keys.map((k,i)=>({name:k,value:vals[i],itemStyle:{color:clsColor(vals[i])}})),
-      label:{formatter:"{b}\n{c}亿"}}]
+    tooltip:{trigger:"axis",axisPointer:{type:"shadow"},valueFormatter:v=>v+" 亿"},
+    grid:{left:78,right:46,top:10,bottom:30},
+    xAxis:{type:"value",name:"亿元"},
+    yAxis:{type:"category",data:items.map(i=>i.k),axisLabel:{fontSize:11}},
+    series:[{type:"bar",barMaxWidth:22,
+      data:vals.map(v=>({value:v,itemStyle:{color:clsColor(v)}})),
+      label:{show:true,position:"right",formatter:"{c}",fontSize:11},
+      markLine:{silent:true,symbol:"none",
+        data:[{xAxis:0}],lineStyle:{color:"#c3cdd8",width:1}}}]
   }, true);
 }
 

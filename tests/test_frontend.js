@@ -221,6 +221,24 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   onDateChange('2026-10-26'); await tick(150);
   chk(els['fresh-data'].textContent.includes('历史'), '查看历史日期时标注历史');
 
+  console.log('\n[9] 按类别汇总图（回归：负值类别不得被吞掉）');
+  // 真实故障复现：8 类中 7 类为净卖出时，ECharts 饼图只渲染唯一正值类别，
+  // 表现为"全是中证A500买入"。改用带正负号的条形图后，全部类别必须保留。
+  render(buildData(''));
+  await tick(150);
+  const catOpt = optionLog['cat'];
+  chk(!!catOpt && catOpt.series[0].type === 'bar', '类别汇总使用条形图（非饼图）');
+  const catNames = (catOpt && catOpt.yAxis && catOpt.yAxis.data) || [];
+  const catVals = ((catOpt && catOpt.series[0].data) || []).map(x => x.value);
+  chk(catNames.length === 3, `3 个类别全部保留（实际 ${catNames.length}）`);
+  chk(catNames.includes('科创50'), '净卖出类别「科创50」仍显示');
+  chk(catNames.includes('沪深300'), '净卖出类别「沪深300」仍显示');
+  chk(catNames.includes('上证50'), '净买入类别「上证50」仍显示');
+  chk(catVals.includes(-14.73), '负值 -14.73（净卖出）保留在图中');
+  chk(catVals.includes(1.66), '正值 1.66（净买入）保留在图中');
+  chk(catVals.length === 3 && catVals.every(v => typeof v === 'number' && !isNaN(v)),
+      '所有类别值均为有效数值');
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => {
