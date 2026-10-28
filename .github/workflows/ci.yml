@@ -18,7 +18,7 @@ jobs:
           python-version: '3.11'
 
       - name: 语法检查
-        run: python -m py_compile app.py db.py fetcher.py backfill.py
+        run: python -m py_compile app.py db.py fetcher.py backfill.py staticsite.py
 
       - name: 数据层单元测试（离线）
         run: python -m unittest discover -s tests -p "test_*.py" -v
@@ -30,3 +30,9 @@ jobs:
 
       - name: 前端渲染逻辑测试（DOM 桩件，离线）
         run: node tests/test_frontend.js
+
+      - name: 静态模式一致性测试（前端筛选 vs 服务端逻辑）
+        run: node tests/test_static.js
+
+      - name: 验证静态站可导出
+        run: python staticsite.py --no-sync

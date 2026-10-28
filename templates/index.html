@@ -83,7 +83,7 @@
     <div class="meta">
       <div id="meta-date">数据日期：—</div>
       <div id="meta-fetch">最后更新：—</div>
-      <div style="margin-top:8px"><button class="btn" onclick="refresh()">🔄 立即刷新</button></div>
+      <div style="margin-top:8px"><button class="btn" id="refresh-btn" onclick="refresh()">🔄 立即刷新</button></div>
     </div>
   </header>
 
@@ -162,6 +162,11 @@ let reqSeq = 0;
 // 筛选状态：date 为空表示“最新”
 const state = { date:"", cats:new Set(), codes:new Set() };
 
+// GitHub Pages 静态模式：由 staticsite.py 注入 window.__STATIC__，
+// 数据来自同目录 data.json，筛选在浏览器本地计算（无需后端）。
+const STATIC = !!window.__STATIC__;
+let STATIC_RAW = null;   // 全量快照缓存，只拉一次
+
 function buildQuery(){
   const p = new URLSearchParams();
   if(state.date) p.set("date", state.date);
@@ -171,12 +176,118 @@ function buildQuery(){
   return s ? "?"+s : "";
 }
 
+// ---------- 静态模式：在浏览器里复刻服务端的筛选/汇总逻辑 ----------
+function rowsOfDate(raw, d){ return (raw.days && raw.days[d]) || []; }
+
+function sumRows(rows){
+  let total=0, amount=0, hasMain=0; const byCat={};
+  rows.forEach(e=>{
+    if(e.main_net!==null && e.main_net!==undefined){ total+=e.main_net; hasMain++; }
+    amount += (e.amount||0);
+    byCat[e.cat] = (byCat[e.cat]||0) + (e.main_net||0);
+  });
+  return {total_main_net:total, total_amount:amount, has_main:hasMain, by_cat:byCat};
+}
+
+// 与服务端 ORDER BY (main_net IS NULL), main_net DESC 保持一致
+function sortRows(rows){
+  return [...rows].sort((a,b)=>{
+    const an = (a.main_net===null||a.main_net===undefined);
+    const bn = (b.main_net===null||b.main_net===undefined);
+    if(an!==bn) return an?1:-1;
+    return (b.main_net||0)-(a.main_net||0);
+  });
+}
+
+// 与服务端 signal_label 阈值保持一致
+function signalLabel(yi){
+  if(yi===null||yi===undefined) return ["主力净流入暂不可用","flat"];
+  if(yi>5) return ["明显净买入（护盘）","buy"];
+  if(yi>0) return ["净买入","buy"];
+  if(yi<-5) return ["明显净卖出","sell"];
+  if(yi<0) return ["净卖出","sell"];
+  return ["基本中性","flat"];
+}
+
+function computeStaticPayload(raw, date, cats, codes){
+  const dates = raw.dates || [];
+  const latest = dates.length ? dates[dates.length-1] : null;
+  let selDate = (date && dates.indexOf(date)>=0) ? date : latest;
+  let fallbackFrom = null;
+
+  const match = rows => rows.filter(e =>
+      (!cats.length || cats.indexOf(e.cat)>=0) &&
+      (!codes.length || codes.indexOf(e.code)>=0));
+
+  // 未指定日期且最新日无主力数据（盘前/未收盘）→ 自动回退到最近有效日
+  if(!date && selDate){
+    const probe = rowsOfDate(raw, selDate);
+    if(!probe.some(e=>e.main_net!==null && e.main_net!==undefined)){
+      const valid = dates.filter(d=>rowsOfDate(raw,d).some(e=>e.main_net!==null&&e.main_net!==undefined));
+      const alt = valid.length ? valid[valid.length-1] : null;
+      if(alt && alt!==selDate){ fallbackFrom = selDate; selDate = alt; }
+    }
+  }
+
+  const allRows = selDate ? rowsOfDate(raw, selDate) : [];
+  const etf = sortRows(match(allRows));
+  const cur = sumRows(etf), full = sumRows(allRows);
+  const mainOk = cur.has_main>0;
+
+  const history = dates.map(d=>{
+    const rows = match(rowsOfDate(raw,d));
+    const s = sumRows(rows);
+    return {date:d, total_main_net:s.total_main_net, total_amount:s.total_amount,
+            by_cat:s.by_cat, etf_count:rows.length, main_cnt:s.has_main};
+  }).filter(h=>h.etf_count>0);
+
+  const byCatYi = {};
+  Object.keys(cur.by_cat).forEach(k=>{ byCatYi[k] = +(cur.by_cat[k]/1e8).toFixed(2); });
+
+  const payload = {
+    latest_date: selDate,
+    dates: dates,
+    last_fetch: raw.last_fetch || "—",
+    news_ok: !!raw.news_ok,
+    mainnet_ok: mainOk,
+    partial_main: mainOk && (etf.length - cur.has_main) > 0,
+    etf: etf,
+    news: (raw.news && raw.news[selDate]) || [],
+    history: history,
+    filters: { date: selDate, cats: cats, codes: codes,
+               filtered: !!(cats.length || codes.length), auto: !date,
+               fallback_from: fallbackFrom },
+    options: { dates: dates, cats: raw.cats || [], funds: raw.funds || [] },
+    summary: {
+      total_main_net_yi: mainOk ? +(cur.total_main_net/1e8).toFixed(2) : null,
+      total_amount_yi: +(cur.total_amount/1e8).toFixed(2),
+      etf_count: etf.length,
+      main_cnt: cur.has_main,
+      by_cat_yi: byCatYi,
+      full_total_main_net_yi: full.has_main ? +(full.total_main_net/1e8).toFixed(2) : null,
+      full_etf_count: allRows.length,
+    },
+  };
+  payload.signal = signalLabel(payload.summary.total_main_net_yi);
+  return payload;
+}
+
+async function staticPayload(){
+  if(!STATIC_RAW){
+    const r = await fetch("data.json", {cache:"no-cache"});
+    if(!r.ok) throw new Error("data.json 加载失败："+r.status);
+    STATIC_RAW = await r.json();
+  }
+  return computeStaticPayload(STATIC_RAW, state.date, [...state.cats], [...state.codes]);
+}
+
 async function loadData(){
   const seq = ++reqSeq;
   document.querySelector(".wrap").classList.add("loading");
   try{
-    const r = await fetch("/api/data" + buildQuery());
-    const d = await r.json();
+    const d = STATIC
+      ? await staticPayload()
+      : await (await fetch("/api/data" + buildQuery())).json();
     if(seq !== reqSeq) return;          // 丢弃过期响应
     DATA = d;
     // 仅在“手动选了不存在的日期”时重置；自动模式(空)保持不变，
@@ -434,6 +545,12 @@ function drawCat(byCat){
 }
 
 async function refresh(){
+  if(STATIC){
+    // 静态托管下没有后端可触发抓取，引导去 Actions 手动跑一次
+    const u = (window.__STATIC__ && window.__STATIC__.actions_url) || "";
+    if(u) window.open(u, "_blank", "noopener");
+    return;
+  }
   const btn = document.querySelector(".btn:not(.ghost)");
   btn.disabled=true; const old=btn.textContent; btn.textContent="抓取中…";
   try{
@@ -448,6 +565,19 @@ async function refresh(){
 }
 
 window.addEventListener("resize",()=>{trendChart&&trendChart.resize();barChart&&barChart.resize();catChart&&catChart.resize();});
+
+// 静态模式：把"立即刷新"换成"去 Actions 手动更新"，并说明数据来源
+if(STATIC){
+  const b = document.getElementById("refresh-btn");
+  const a = document.createElement("a");
+  a.className = "btn ghost";
+  a.href = (window.__STATIC__ && window.__STATIC__.actions_url) || "#";
+  a.target = "_blank"; a.rel = "noopener";
+  a.textContent = "⚙️ 去 Actions 手动更新";
+  if(b) b.parentNode.replaceChild(a, b);
+  const note = document.querySelector(".note");
+  if(note) note.innerHTML += " <b>本站为 GitHub Pages 静态托管版</b>：数据由 GitHub Actions 于每个交易日收盘后自动抓取并提交，打开即最新；如需立即更新可在右上角手动触发工作流。";
+}
 loadData();
 </script>
 </body>

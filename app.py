@@ -38,9 +38,12 @@ def _summarize(rows):
     }
 
 
-def build_payload(date=None, cats=None, codes=None):
-    """组装前端数据。支持按 日期 / 类别 / 基金代码 三个维度筛选。"""
-    dates = db.get_dates()
+def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
+    """组装前端数据。支持按 日期 / 类别 / 基金代码 三个维度筛选。
+
+    path 可注入（测试用临时库），默认与服务端共用同一个 SQLite。
+    """
+    dates = db.get_dates(path)
     latest = dates[-1] if dates else None
     sel_date = date if (date in dates) else latest
     fallback_from = None
@@ -50,19 +53,19 @@ def build_payload(date=None, cats=None, codes=None):
 
     # 未指定日期时：若最新日期的数据尚未生成（盘前/未收盘），自动回退到最近有效日
     if not date and sel_date:
-        probe = db.get_etf_by_date(sel_date)
+        probe = db.get_etf_by_date(sel_date, path=path)
         if not any(e["main_net"] is not None for e in probe):
-            alt = db.latest_main_date()
+            alt = db.latest_main_date(path)
             if alt and alt != sel_date:
                 fallback_from, sel_date = sel_date, alt
 
-    etf = db.get_etf_by_date(sel_date, cats, codes) if sel_date else []
-    etf_all = db.get_etf_by_date(sel_date) if sel_date else []
-    news = db.get_news_by_date(sel_date) if sel_date else []
-    history = db.get_history(cats, codes)
+    etf = db.get_etf_by_date(sel_date, cats, codes, path) if sel_date else []
+    etf_all = db.get_etf_by_date(sel_date, path=path) if sel_date else []
+    news = db.get_news_by_date(sel_date, path) if sel_date else []
+    history = db.get_history(cats, codes, path)
 
-    last_fetch = db.get_meta("last_fetch", "—")
-    news_ok = db.get_meta("news_ok", "1") == "1"
+    last_fetch = db.get_meta("last_fetch", "—", path)
+    news_ok = db.get_meta("news_ok", "1", path) == "1"
 
     cur = _summarize(etf)
     full = _summarize(etf_all)
@@ -90,8 +93,8 @@ def build_payload(date=None, cats=None, codes=None):
         },
         "options": {
             "dates": dates,
-            "cats": db.get_cats(),
-            "funds": db.get_funds(),
+            "cats": db.get_cats(path),
+            "funds": db.get_funds(path),
         },
         "summary": {
             "total_main_net_yi": round(cur["total_main_net"] / 1e8, 2) if mainnet_ok else None,

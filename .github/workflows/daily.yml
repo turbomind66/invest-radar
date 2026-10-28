@@ -1,0 +1,44 @@
+name: daily-update
+
+# 每个交易日收盘后自动抓取并存档；GitHub Pages 直接读取 docs/data.json。
+# 北京时间 = UTC+8，故 08:20 UTC = 16:20 北京。
+
+on:
+  schedule:
+    - cron: "20 8 * * 1-5"    # 16:20 北京时间（收盘后首次抓取）
+    - cron: "40 10 * * 1-5"   # 18:40 北京时间（补抓：防主力资金接口延迟）
+  workflow_dispatch:           # 支持手动触发（页面右上角按钮即跳到这里）
+
+concurrency:
+  group: daily-update
+  cancel-in-progress: false
+
+permissions:
+  contents: write              # 需要写权限把 docs/ 的变更提交回去
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 抓取并导出静态数据
+        run: python staticsite.py
+
+      - name: 提交变更
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs
+          if git diff --staged --quiet; then
+            echo "无变更，跳过提交"
+            exit 0
+          fi
+          BJDATE=$(TZ=Asia/Shanghai date +%Y-%m-%d)
+          git commit -m "data: 更新 ${BJDATE} 国家队动向快照"
+          git push

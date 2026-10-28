@@ -10,6 +10,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Zero Dependency](https://img.shields.io/badge/dependencies-0-brightgreen)](#快速开始)
 
+**[▶ 在线看板](https://turbomind66.github.io/ashare-national-team-tracker/)** · 由 GitHub Pages 托管，无需自行部署
+
 ---
 
 ## 这个项目解决什么问题
@@ -43,6 +45,27 @@
   - 类别与基金叠加取交集，卡片 / 趋势 / 条形 / 饼图 / 明细表全站联动。
 - **容错降级**：主力资金接口不可用时，价格 / 涨跌 / 成交额仍显示真实数据，并明确标注缺失，**不会静默显示成「中性」**。
 - **零依赖**：只用 Python 标准库（`http.server` + `sqlite3` + `urllib`），单命令启动。
+
+## 两种部署形态
+
+同一份代码既能跑成**有后端的服务**，也能跑成**纯静态站**：
+
+| | 服务端模式 | 静态站模式（GitHub Pages） |
+|---|---|---|
+| 启动 | `python app.py` | 无需部署，直接访问 Pages |
+| 抓取时机 | 进程内定时（16:05）+ 页面按钮即时抓取 | GitHub Actions 定时（16:20 / 18:40 北京）+ 手动触发 |
+| 数据存储 | 本地 SQLite | 仓库内 `docs/data.json` |
+| 筛选计算 | 服务端 SQL | 浏览器本地计算 |
+| 手动刷新 | ✅ 立即抓取 | ➖ 只能触发 Actions（需等一两分钟） |
+
+静态站由 `staticsite.py` 产出：它把全部日期的明细一次性打包成 `docs/data.json`，并复用同一份 `templates/index.html` 注入 `window.__STATIC__` 标记，前端据此切到本地筛选。两种模式的筛选/汇总结果由测试强制保持一致（见「测试」）。
+
+```bash
+python staticsite.py              # 同步缺失交易日 + 导出 docs/
+python staticsite.py --no-sync    # 只导出，不联网
+```
+
+> ⚠️ **静态站的已知限制**：GitHub Actions 的定时任务是最尽力调度，可能延迟几分钟到数十分钟；且**仓库连续 60 天无人工活动后，定时工作流会被 GitHub 自动停用**——到 Actions 页面手动点一次 `Run workflow` 即可恢复，或提交任意一次改动。数据文件由工作流自己提交，不算「人工活动」，这一点容易踩坑。
 
 ## 快速开始
 
@@ -104,25 +127,37 @@ python backfill.py 2026-10-27
 ├── app.py                  # HTTP 服务 + 路由 + 定时调度 + 数据组装
 ├── db.py                   # SQLite 存储层（快照 / 筛选查询 / 历史聚合）
 ├── fetcher.py              # 抓取层（实时行情、主力资金、历史回补、新闻）
+├── staticsite.py           # 静态站导出（GitHub Pages：docs/data.json + index.html）
 ├── backfill.py             # 手动回补指定交易日
-├── templates/index.html    # 仪表盘（原生 JS + ECharts）
+├── templates/index.html    # 仪表盘（原生 JS + ECharts），服务端/静态两种模式共用
+├── docs/                   # Pages 产物（data.json / index.html 由 staticsite.py 生成）
 ├── tests/
 │   ├── test_db.py          # 数据层单元测试（离线）
-│   └── test_frontend.js    # 前端渲染逻辑测试（DOM 桩件，离线）
+│   ├── test_static.py      # 静态导出测试（离线）
+│   ├── test_frontend.js    # 前端渲染逻辑测试（DOM 桩件，离线）
+│   ├── test_static.js      # 双模式一致性测试（前端筛选 vs 服务端逻辑）
+│   └── gen_static_expected.py  # 为上面的一致性测试生成服务端期望值
+├── .github/workflows/
+│   ├── ci.yml              # 语法检查 + 全部测试
+│   └── daily.yml           # 每个交易日收盘后抓取并提交 docs/
 ├── requirements.txt
-├── LICENSE
-└── .github/workflows/ci.yml
+└── LICENSE
 ```
 
 ## 测试
 
 ```bash
-# 数据层（离线，无需网络）
+# 数据层 + 静态导出（离线，无需网络）
 python -m unittest discover -s tests -p "test_*.py" -v
 
 # 前端渲染逻辑（用 DOM / ECharts 桩件跑真实页面脚本，无需浏览器）
 node tests/test_frontend.js
+
+# 双模式一致性：前端本地筛选 vs 服务端 SQL 筛选，逐字段对比
+node tests/test_static.js
 ```
+
+最后一项是关键：静态站把筛选逻辑搬进了浏览器，两条实现路径必须**逐字段等价**，否则同一天的数据在 Pages 和自建服务上会显示不同结果。该测试会调用 Python 侧 `build_payload` 生成期望值，再与前端 `computeStaticPayload` 的输出对比（9 种筛选组合 × 12 个字段 + 信号阈值）。
 
 ## 实现中踩过的坑
 

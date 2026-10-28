@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>国家队买卖A股日报</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  :root{
+    --bg:#f5f7fa; --card:#ffffff; --ink:#1f2d3d; --sub:#6b7a8d; --line:#e7ecf2;
+    --red:#e0392b; --green:#16a34a; --blue:#2563eb; --amber:#d97706; --chip:#eef2f7;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,Roboto,sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.5;padding:20px}
+  .wrap{max-width:1180px;margin:0 auto;transition:opacity .15s}
+  .wrap.loading{opacity:.55;pointer-events:none}
+  header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
+  h1{font-size:22px;font-weight:700;display:flex;align-items:center;gap:8px}
+  .tag{font-size:12px;font-weight:500;color:var(--sub);background:var(--chip);padding:3px 9px;border-radius:20px}
+  .meta{font-size:13px;color:var(--sub);text-align:right}
+  .btn{cursor:pointer;border:none;background:var(--blue);color:#fff;padding:8px 16px;border-radius:8px;font-size:14px;font-weight:600}
+  .btn:active{transform:translateY(1px)}
+  .btn.ghost{background:#fff;color:var(--blue);border:1px solid #c9dcff;padding:7px 13px;font-size:13px}
+  .btn.ghost:hover{background:#f2f7ff}
+  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 1px 3px rgba(20,40,80,.04)}
+  .card .k{font-size:13px;color:var(--sub);margin-bottom:6px}
+  .card .v{font-size:26px;font-weight:800;letter-spacing:.5px}
+  .card .sub{font-size:12px;color:var(--sub);margin-top:4px}
+  .v.red{color:var(--red)} .v.green{color:var(--green)} .v.blue{color:var(--blue)} .v.amber{color:var(--amber)}
+  .grid2{display:grid;grid-template-columns:1.5fr 1fr;gap:14px;margin-bottom:18px}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 1px 3px rgba(20,40,80,.04)}
+  .panel h2{font-size:15px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+  .panel h2 small{font-size:12px;color:var(--sub);font-weight:500}
+  .chart{width:100%;height:320px}
+  .chart.sm{height:300px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:9px 10px;text-align:right;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--sub);font-weight:600;background:#fafbfc;position:sticky;top:0}
+  tbody tr:hover{background:#f7faff}
+  tfoot td{font-weight:800;background:#fafbfc;border-top:2px solid var(--line)}
+  .num.red{color:var(--red);font-weight:700} .num.green{color:var(--green);font-weight:700}
+  .cat-chip{font-size:11px;background:var(--chip);color:var(--sub);padding:2px 7px;border-radius:6px}
+  .news{list-style:none;max-height:340px;overflow:auto}
+  .news li{padding:9px 0;border-bottom:1px solid var(--line)}
+  .news a{color:var(--ink);text-decoration:none;font-size:14px;font-weight:600}
+  .news a:hover{color:var(--blue)}
+  .news .t{font-size:12px;color:var(--sub);margin-top:3px}
+  .news .src{display:inline-block;font-size:11px;background:var(--chip);color:var(--sub);padding:1px 6px;border-radius:5px;margin-left:6px}
+  .note{font-size:12px;color:var(--sub);background:#fff8ec;border:1px solid #f3e2bf;border-radius:10px;padding:10px 12px;margin-bottom:18px}
+  .note b{color:var(--amber)}
+  .empty{color:var(--sub);font-size:13px;padding:14px 0}
+  /* ---- 筛选栏 ---- */
+  .filters{margin-bottom:16px;padding:14px 16px}
+  .filters h2{margin-bottom:6px}
+  .fl-row{display:flex;align-items:flex-start;gap:10px;padding:7px 0;flex-wrap:wrap}
+  .fl-label{font-size:13px;color:var(--sub);font-weight:600;min-width:56px;padding-top:5px}
+  .chips{display:flex;flex-wrap:wrap;gap:7px;flex:1;min-width:0}
+  .chip{cursor:pointer;font-size:12.5px;border:1px solid var(--line);background:#fff;color:#41536b;
+    padding:5px 11px;border-radius:20px;transition:all .12s;user-select:none;white-space:nowrap}
+  .chip:hover{border-color:#9cb8ef;color:var(--blue)}
+  .chip.on{background:#e8f0fe;border-color:var(--blue);color:var(--blue);font-weight:700}
+  .chip .n{opacity:.6;font-size:11px;margin-left:3px}
+  .sel{border:1px solid var(--line);border-radius:9px;padding:7px 11px;font-size:13.5px;color:var(--ink);
+    background:#fff;font-weight:600;cursor:pointer;font-family:inherit}
+  .sel:focus{outline:2px solid #cfe0ff;outline-offset:1px}
+  .fl-summary{font-size:12.5px;color:var(--sub);border-top:1px dashed var(--line);margin-top:9px;padding-top:9px;line-height:1.8}
+  .fl-summary b{color:var(--ink)}
+  .fl-summary .hl{color:var(--blue);font-weight:700}
+  .fl-summary .r{color:var(--red);font-weight:700}
+  .fl-summary .g{color:var(--green);font-weight:700}
+  @media(max-width:860px){.cards{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}header{flex-direction:column;align-items:flex-start}.meta{text-align:left}}
+</style>
+<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/ashare-national-team-tracker/actions/workflows/daily.yml", "generated_at": "2026-10-28 10:24:15"};</script>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>🛡️ 国家队买卖A股日报 <span class="tag">宽基ETF主力净流入代理</span></h1>
+    </div>
+    <div class="meta">
+      <div id="meta-date">数据日期：—</div>
+      <div id="meta-fetch">最后更新：—</div>
+      <div style="margin-top:8px"><button class="btn" id="refresh-btn" onclick="refresh()">🔄 立即刷新</button></div>
+    </div>
+  </header>
+
+  <div class="note">
+    <b>口径说明：</b>国家队（中央汇金、证金公司等）不逐日公开买卖明细。本工具以<b>宽基指数ETF（沪深300/中证500/中证1000/上证50/创业板/科创50/科创100/中证A500）的主力资金净流入</b>作为国家队护盘动向的核心代理指标——这些ETF是国家队进场的标准通道。数据每日收盘后（约16:05）自动抓取并归档，历史曲线随运行天数累积。新闻为服务端尽力抓取，若上游不通则显示提示。
+  </div>
+
+  <div class="note" id="warn" style="display:none;background:#fff0f0;border-color:#f3c2c2;color:#a33"></div>
+
+  <div class="panel filters">
+    <h2>🔎 数据筛选 <small>日期 / 类别 / 基金，可组合使用</small></h2>
+    <div class="fl-row">
+      <span class="fl-label">📅 日期</span>
+      <select id="f-date" class="sel" onchange="onDateChange(this.value)"></select>
+      <button class="btn ghost" id="f-reset" onclick="resetFilters()">↺ 重置全部</button>
+    </div>
+    <div class="fl-row">
+      <span class="fl-label">🗂️ 类别</span>
+      <div class="chips" id="f-cats"></div>
+    </div>
+    <div class="fl-row">
+      <span class="fl-label">📊 基金</span>
+      <div class="chips" id="f-codes"></div>
+    </div>
+    <div class="fl-summary" id="f-summary"></div>
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="grid2" style="grid-template-columns:1.5fr 1fr">
+    <div class="panel">
+      <h2>📈 国家队净买入历史趋势 <small id="trend-sub">单位：亿元（每日合计主力净流入）</small></h2>
+      <div id="trend" class="chart"></div>
+    </div>
+    <div class="panel">
+      <h2>📰 国家队相关新闻</h2>
+      <ul class="news" id="news"></ul>
+    </div>
+  </div>
+
+  <div class="grid2" style="grid-template-columns:1.5fr 1fr">
+    <div class="panel">
+      <h2>🧭 各ETF净买入 <small>红色=净买入，绿色=净卖出（亿元）</small></h2>
+      <div id="bar" class="chart"></div>
+    </div>
+    <div class="panel">
+      <h2>🗂️ 按类别汇总 <small>主力净流入（亿元）</small></h2>
+      <div id="cat" class="chart sm"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>📋 明细 <small id="tbl-sub">宽基ETF观察池</small></h2>
+    <div style="overflow:auto;max-height:460px">
+      <table id="tbl">
+        <thead><tr>
+          <th>名称</th><th>代码</th><th>类别</th><th>现价</th><th>涨跌幅</th>
+          <th>成交额(亿)</th><th>主力净买(亿)</th>
+        </tr></thead>
+        <tbody></tbody>
+        <tfoot></tfoot>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const fmt = (v,d=2)=> (v===null||v===undefined||isNaN(v)) ? "—" : Number(v).toFixed(d);
+const signClass = (v)=> v>0?"red":(v<0?"green":"");
+const clsColor = (v)=> v>0?"#e0392b":(v<0?"#16a34a":"#6b7a8d");
+
+let trendChart, barChart, catChart;
+let DATA = null;
+let reqSeq = 0;
+
+// 筛选状态：date 为空表示“最新”
+const state = { date:"", cats:new Set(), codes:new Set() };
+
+// GitHub Pages 静态模式：由 staticsite.py 注入 window.__STATIC__，
+// 数据来自同目录 data.json，筛选在浏览器本地计算（无需后端）。
+const STATIC = !!window.__STATIC__;
+let STATIC_RAW = null;   // 全量快照缓存，只拉一次
+
+function buildQuery(){
+  const p = new URLSearchParams();
+  if(state.date) p.set("date", state.date);
+  if(state.cats.size) p.set("cats", [...state.cats].join(","));
+  if(state.codes.size) p.set("codes", [...state.codes].join(","));
+  const s = p.toString();
+  return s ? "?"+s : "";
+}
+
+// ---------- 静态模式：在浏览器里复刻服务端的筛选/汇总逻辑 ----------
+function rowsOfDate(raw, d){ return (raw.days && raw.days[d]) || []; }
+
+function sumRows(rows){
+  let total=0, amount=0, hasMain=0; const byCat={};
+  rows.forEach(e=>{
+    if(e.main_net!==null && e.main_net!==undefined){ total+=e.main_net; hasMain++; }
+    amount += (e.amount||0);
+    byCat[e.cat] = (byCat[e.cat]||0) + (e.main_net||0);
+  });
+  return {total_main_net:total, total_amount:amount, has_main:hasMain, by_cat:byCat};
+}
+
+// 与服务端 ORDER BY (main_net IS NULL), main_net DESC 保持一致
+function sortRows(rows){
+  return [...rows].sort((a,b)=>{
+    const an = (a.main_net===null||a.main_net===undefined);
+    const bn = (b.main_net===null||b.main_net===undefined);
+    if(an!==bn) return an?1:-1;
+    return (b.main_net||0)-(a.main_net||0);
+  });
+}
+
+// 与服务端 signal_label 阈值保持一致
+function signalLabel(yi){
+  if(yi===null||yi===undefined) return ["主力净流入暂不可用","flat"];
+  if(yi>5) return ["明显净买入（护盘）","buy"];
+  if(yi>0) return ["净买入","buy"];
+  if(yi<-5) return ["明显净卖出","sell"];
+  if(yi<0) return ["净卖出","sell"];
+  return ["基本中性","flat"];
+}
+
+function computeStaticPayload(raw, date, cats, codes){
+  const dates = raw.dates || [];
+  const latest = dates.length ? dates[dates.length-1] : null;
+  let selDate = (date && dates.indexOf(date)>=0) ? date : latest;
+  let fallbackFrom = null;
+
+  const match = rows => rows.filter(e =>
+      (!cats.length || cats.indexOf(e.cat)>=0) &&
+      (!codes.length || codes.indexOf(e.code)>=0));
+
+  // 未指定日期且最新日无主力数据（盘前/未收盘）→ 自动回退到最近有效日
+  if(!date && selDate){
+    const probe = rowsOfDate(raw, selDate);
+    if(!probe.some(e=>e.main_net!==null && e.main_net!==undefined)){
+      const valid = dates.filter(d=>rowsOfDate(raw,d).some(e=>e.main_net!==null&&e.main_net!==undefined));
+      const alt = valid.length ? valid[valid.length-1] : null;
+      if(alt && alt!==selDate){ fallbackFrom = selDate; selDate = alt; }
+    }
+  }
+
+  const allRows = selDate ? rowsOfDate(raw, selDate) : [];
+  const etf = sortRows(match(allRows));
+  const cur = sumRows(etf), full = sumRows(allRows);
+  const mainOk = cur.has_main>0;
+
+  const history = dates.map(d=>{
+    const rows = match(rowsOfDate(raw,d));
+    const s = sumRows(rows);
+    return {date:d, total_main_net:s.total_main_net, total_amount:s.total_amount,
+            by_cat:s.by_cat, etf_count:rows.length, main_cnt:s.has_main};
+  }).filter(h=>h.etf_count>0);
+
+  const byCatYi = {};
+  Object.keys(cur.by_cat).forEach(k=>{ byCatYi[k] = +(cur.by_cat[k]/1e8).toFixed(2); });
+
+  const payload = {
+    latest_date: selDate,
+    dates: dates,
+    last_fetch: raw.last_fetch || "—",
+    news_ok: !!raw.news_ok,
+    mainnet_ok: mainOk,
+    partial_main: mainOk && (etf.length - cur.has_main) > 0,
+    etf: etf,
+    news: (raw.news && raw.news[selDate]) || [],
+    history: history,
+    filters: { date: selDate, cats: cats, codes: codes,
+               filtered: !!(cats.length || codes.length), auto: !date,
+               fallback_from: fallbackFrom },
+    options: { dates: dates, cats: raw.cats || [], funds: raw.funds || [] },
+    summary: {
+      total_main_net_yi: mainOk ? +(cur.total_main_net/1e8).toFixed(2) : null,
+      total_amount_yi: +(cur.total_amount/1e8).toFixed(2),
+      etf_count: etf.length,
+      main_cnt: cur.has_main,
+      by_cat_yi: byCatYi,
+      full_total_main_net_yi: full.has_main ? +(full.total_main_net/1e8).toFixed(2) : null,
+      full_etf_count: allRows.length,
+    },
+  };
+  payload.signal = signalLabel(payload.summary.total_main_net_yi);
+  return payload;
+}
+
+async function staticPayload(){
+  if(!STATIC_RAW){
+    const r = await fetch("data.json", {cache:"no-cache"});
+    if(!r.ok) throw new Error("data.json 加载失败："+r.status);
+    STATIC_RAW = await r.json();
+  }
+  return computeStaticPayload(STATIC_RAW, state.date, [...state.cats], [...state.codes]);
+}
+
+async function loadData(){
+  const seq = ++reqSeq;
+  document.querySelector(".wrap").classList.add("loading");
+  try{
+    const d = STATIC
+      ? await staticPayload()
+      : await (await fetch("/api/data" + buildQuery())).json();
+    if(seq !== reqSeq) return;          // 丢弃过期响应
+    DATA = d;
+    // 仅在“手动选了不存在的日期”时重置；自动模式(空)保持不变，
+    // 这样盘前自动回退到最近有效日后，收盘有数据时会自动切回最新。
+    const eff = d.filters?.date || "";
+    if(state.date && state.date !== eff) state.date = "";
+    renderFilterBar(d);
+    render(d);
+  }catch(e){
+    console.error(e);
+  }finally{
+    if(seq === reqSeq) document.querySelector(".wrap").classList.remove("loading");
+  }
+}
+
+// ---------- 筛选栏渲染 ----------
+function renderFilterBar(d){
+  const opt = d.options || {};
+  const dates = (opt.dates || []).slice().reverse();   // 最新在前
+  const latest = dates[0] || "";
+  const sel = document.getElementById("f-date");
+  sel.innerHTML = `<option value="">自动（最新有效日）</option>` +
+    dates.map(x=>`<option value="${x}">${x}${x===latest?"　·　最新":""}</option>`).join("");
+  sel.value = state.date || "";
+
+  // 类别 chips
+  const cats = opt.cats || [];
+  const catBox = document.getElementById("f-cats");
+  const allCatOn = state.cats.size === 0;
+  catBox.innerHTML =
+    `<span class="chip ${allCatOn?"on":""}" onclick="clearCats()">全部 <span class="n">${cats.reduce((s,c)=>s+c.count,0)}</span></span>` +
+    cats.map(c=>`<span class="chip ${state.cats.has(c.cat)?"on":""}" onclick="toggleCat('${esc(c.cat)}')">${c.cat}<span class="n">${c.count}</span></span>`).join("");
+
+  // 基金 chips（跟随类别联动：选了类别只列该类别的基金）
+  const fundsAll = opt.funds || [];
+  const avail = state.cats.size ? fundsAll.filter(f=>state.cats.has(f.cat)) : fundsAll;
+  // 清理掉不再可选的已选基金
+  [...state.codes].forEach(c=>{
+    if(!avail.some(f=>f.code===c)) state.codes.delete(c);
+  });
+  const codeBox = document.getElementById("f-codes");
+  const allCodeOn = state.codes.size === 0;
+  codeBox.innerHTML =
+    `<span class="chip ${allCodeOn?"on":""}" onclick="clearCodes()">全部 <span class="n">${avail.length}</span></span>` +
+    avail.map(f=>`<span class="chip ${state.codes.has(f.code)?"on":""}" title="${esc(f.cat)}"
+        onclick="toggleCode('${f.code}')">${esc(shortName(f.name))}</span>`).join("");
+}
+
+function shortName(n){
+  return (n||"").replace(/^华泰柏瑞|^易方达|^南方|^华夏|^嘉实|^广发|^博时|^天弘|^富国|^银华/,"").replace(/ETF$/,"");
+}
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m])); }
+
+function onDateChange(v){
+  state.date = v;
+  loadData();
+}
+function toggleCat(cat){
+  if(state.cats.has(cat)) state.cats.delete(cat); else state.cats.add(cat);
+  loadData();
+}
+function clearCats(){ state.cats.clear(); loadData(); }
+function toggleCode(code){
+  if(state.codes.has(code)) state.codes.delete(code); else state.codes.add(code);
+  loadData();
+}
+function clearCodes(){ state.codes.clear(); loadData(); }
+function resetFilters(){
+  state.date=""; state.cats.clear(); state.codes.clear();
+  loadData();
+}
+
+// ---------- 主体渲染 ----------
+function render(d){
+  const s = d.summary || {};
+  const f = d.filters || {};
+  const sig = d.signal || ["—","flat"];
+  const isFiltered = !!f.filtered;
+  const isHistory = d.dates && d.dates.length && f.date !== d.dates[d.dates.length-1];
+
+  let metaTxt = "数据日期：" + (f.date || "—");
+  if(f.fallback_from) metaTxt += `（${f.fallback_from} 数据未生成，已显示最近有效日）`;
+  else if(isHistory) metaTxt += "（历史）";
+  document.getElementById("meta-date").textContent = metaTxt;
+  document.getElementById("meta-fetch").textContent = "最后更新：" + (d.last_fetch || "—");
+
+  // 警示条
+  const warn = document.getElementById("warn");
+  if(!d.mainnet_ok){
+    warn.style.display = "block";
+    warn.innerHTML = "⚠️ <b>所选范围主力净流入数据暂不可用</b>。价格 / 涨跌 / 成交额仍为真实数据，仅“主力净买(亿)”显示为 —。";
+  } else if(d.partial_main){
+    warn.style.display = "block";
+    warn.innerHTML = "⚠️ <b>部分 ETF 主力净流入缺失</b>，合计值按已有数据累加，可能偏低。";
+  } else {
+    warn.style.display = "none";
+  }
+
+  // 卡片
+  const netTxt = (d.mainnet_ok && s.total_main_net_yi!==null) ? fmt(s.total_main_net_yi)+" 亿" : "—";
+  const fullTxt = (s.full_total_main_net_yi===null||s.full_total_main_net_yi===undefined) ? "—" : fmt(s.full_total_main_net_yi)+" 亿";
+  const scopeSub = isFiltered
+    ? `筛选 ${s.etf_count||0}/${s.full_etf_count||0} 只 · 全量 ${fullTxt}`
+    : (d.mainnet_ok ? sig[0] : "主力净流入暂不可用");
+  const catCount = Object.keys(s.by_cat_yi||{}).length;
+  const cards = [
+    {k:"国家队净买入合计", v:netTxt, sub:scopeSub, cls:sig[1]==="buy"?"red":(sig[1]==="sell"?"green":"amber")},
+    {k:"信号判定", v:sig[0], sub:isFiltered?"仅代表当前筛选范围":"基于宽基ETF主力净流入",
+     cls:sig[1]==="buy"?"red":(sig[1]==="sell"?"green":"amber")},
+    {k:"当前范围基金数", v:(s.etf_count||0)+" 只", sub:`覆盖 ${catCount} 个类别${isFiltered?"（已筛选）":"（全量）"}`, cls:"blue"},
+    {k:"当前范围成交额", v:fmt(s.total_amount_yi)+" 亿", sub:isFiltered?"筛选后合计":"观察池合计", cls:"blue"},
+  ];
+  document.getElementById("cards").innerHTML = cards.map(c=>`
+    <div class="card"><div class="k">${c.k}</div>
+    <div class="v ${c.cls}">${c.v}</div><div class="sub">${c.sub}</div></div>`).join("");
+
+  // 筛选摘要
+  renderSummary(d);
+
+  // 表格
+  const etf = d.etf || [];
+  const tb = document.querySelector("#tbl tbody");
+  const tf = document.querySelector("#tbl tfoot");
+  if(!etf.length){
+    tb.innerHTML = `<tr><td colspan="7" class="empty">当前筛选条件下没有数据，请调整日期或放宽筛选。</td></tr>`;
+    tf.innerHTML = "";
+  } else {
+    tb.innerHTML = etf.map(e=>`
+      <tr>
+        <td>${esc(e.name)}</td><td>${esc(e.code)}</td>
+        <td><span class="cat-chip">${esc(e.cat)}</span></td>
+        <td>${fmt(e.price)}</td>
+        <td class="num ${signClass(e.chg)}">${fmt(e.chg)}%</td>
+        <td>${fmt((e.amount||0)/1e8)}</td>
+        <td class="num ${signClass(e.main_net)}">${e.main_net===null?"—":fmt(e.main_net/1e8)}</td>
+      </tr>`).join("");
+    const sumAmt = etf.reduce((a,e)=>a+(e.amount||0),0);
+    const sumNet = etf.reduce((a,e)=>a+(e.main_net||0),0);
+    tf.innerHTML = `<tr>
+      <td>合计（${etf.length} 只）</td><td>—</td><td>—</td><td>—</td><td>—</td>
+      <td>${fmt(sumAmt/1e8)}</td>
+      <td class="num ${signClass(sumNet)}">${d.mainnet_ok?fmt(sumNet/1e8):"—"}</td></tr>`;
+  }
+  document.getElementById("tbl-sub").textContent = isFiltered
+    ? `已筛选：${f.date||""}${f.cats&&f.cats.length?" · "+f.cats.join("/"):""}${f.codes&&f.codes.length?" · "+f.codes.length+"只基金":""}`
+    : `宽基ETF观察池 · ${f.date||""}`;
+  document.getElementById("trend-sub").textContent = isFiltered
+    ? "单位：亿元（当前筛选范围的每日合计）"
+    : "单位：亿元（每日合计主力净流入）";
+
+  // 新闻
+  const nl = document.getElementById("news");
+  if(!d.news_ok){
+    nl.innerHTML = `<li class="empty">新闻源暂未连通（上游接口限制），核心净买入数据不受影响。</li>`;
+  } else if(!d.news || !d.news.length){
+    nl.innerHTML = `<li class="empty">${isHistory?"该历史日期无新闻记录（历史补数不回溯新闻）。":"今日暂无匹配“国家队/汇金/证金/增持”的新闻。"}</li>`;
+  } else {
+    nl.innerHTML = d.news.map(n=>`<li>
+      <a href="${esc(n.url||'#')}" target="_blank" rel="noopener">${esc(n.title)}</a>
+      <div class="t">${esc(n.time||"")}<span class="src">${esc(n.src||"")}</span></div></li>`).join("");
+  }
+
+  drawTrend(d.history||[]);
+  drawBar(etf);
+  drawCat(s.by_cat_yi||{});
+}
+
+function renderSummary(d){
+  const f = d.filters||{}, s = d.summary||{}, sig = d.signal||["—","flat"];
+  const parts = [];
+  parts.push(`日期 <span class="hl">${f.date||"—"}</span>`);
+  if(f.fallback_from){
+    parts.push(`<span style="color:#a33">${f.fallback_from} 尚未生成数据，已自动选最近有效日</span>`);
+  }
+  if(f.cats && f.cats.length) parts.push(`类别 <span class="hl">${f.cats.map(esc).join(" / ")}</span>`);
+  if(f.codes && f.codes.length){
+    const nm = (d.etf||[]).map(e=>esc(shortName(e.name))).join("、");
+    parts.push(`基金 <span class="hl">${nm||f.codes.join(",")}</span>`);
+  }
+  let line = "当前筛选：" + parts.join("　·　");
+
+  if(s.total_main_net_yi!==null && s.total_main_net_yi!==undefined){
+    const v = s.total_main_net_yi;
+    const cls = v>0?"r":(v<0?"g":"");
+    line += `　→　净买入合计 <span class="${cls}">${fmt(v)} 亿</span>`;
+    if(f.filtered && s.full_total_main_net_yi!==null && s.full_total_main_net_yi!==undefined){
+      line += `（当日全量 ${fmt(s.full_total_main_net_yi)} 亿）`;
+    }
+    line += `　·　信号 <b>${sig[0]}</b>`;
+  } else {
+    line += `　→　<span style="color:#a33">该范围主力净流入暂不可用</span>`;
+  }
+  if(f.filtered){
+    line += `<br><span style="opacity:.85">提示：类别与基金可叠加（取交集）；选择类别后，基金列表只显示该类别下的基金。</span>`;
+  }
+  document.getElementById("f-summary").innerHTML = line;
+}
+
+function drawTrend(history){
+  if(!trendChart) trendChart = echarts.init(document.getElementById("trend"));
+  if(!history.length){
+    trendChart.clear();
+    trendChart.setOption({title:{text:"当前筛选范围无历史数据",left:"center",top:"middle",
+      textStyle:{color:"#9aa7b8",fontSize:13,fontWeight:"normal"}}});
+    return;
+  }
+  const dates = history.map(h=>h.date);
+  const vals = history.map(h=>{
+    const v = h.main_cnt>0 ? h.total_main_net/1e8 : null;
+    return v===null ? null : +v.toFixed(2);
+  });
+  trendChart.setOption({
+    tooltip:{trigger:"axis",valueFormatter:v=>(v===null||v===undefined)?"无数据":(v+" 亿")},
+    grid:{left:50,right:20,top:20,bottom:40},
+    xAxis:{type:"category",data:dates,axisLabel:{rotate: dates.length>10?40:0}},
+    yAxis:{type:"value",name:"亿元",axisLabel:{formatter:"{value}"}},
+    series:[{type:"line",data:vals,smooth:true,symbolSize:7,connectNulls:false,
+      lineStyle:{width:3,color:"#2563eb"},
+      itemStyle:{color:"#2563eb"},
+      areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:"rgba(37,99,235,.25)"},{offset:1,color:"rgba(37,99,235,0)"}])},
+      markLine:{silent:true,data:[{yAxis:0}],lineStyle:{color:"#bbb",type:"dashed"}}
+    }],
+    color:["#2563eb"]
+  }, true);
+}
+
+function drawBar(etf){
+  if(!barChart) barChart = echarts.init(document.getElementById("bar"));
+  if(!etf.length){ barChart.clear(); return; }
+  const sorted = [...etf].sort((a,b)=>(a.main_net||0)-(b.main_net||0));
+  const names = sorted.map(e=>shortName(e.name));
+  const vals = sorted.map(e=>+((e.main_net||0)/1e8).toFixed(2));
+  barChart.setOption({
+    tooltip:{trigger:"axis",axisPointer:{type:"shadow"},valueFormatter:v=>v+" 亿"},
+    grid:{left:96,right:40,top:10,bottom:30},
+    xAxis:{type:"value",name:"亿元"},
+    yAxis:{type:"category",data:names},
+    series:[{type:"bar",data:vals.map(v=>({value:v,itemStyle:{color:clsColor(v)}})),
+      label:{show:true,position:"right",formatter:"{c}"}}]
+  }, true);
+}
+
+function drawCat(byCat){
+  if(!catChart) catChart = echarts.init(document.getElementById("cat"));
+  const keys = Object.keys(byCat);
+  if(!keys.length){ catChart.clear(); return; }
+  const vals = keys.map(k=>+(byCat[k]).toFixed(2));
+  catChart.setOption({
+    tooltip:{trigger:"item",valueFormatter:v=>v+" 亿"},
+    legend:{bottom:0,type:"scroll"},
+    series:[{type:"pie",radius:["40%","68%"],center:["50%","45%"],
+      data:keys.map((k,i)=>({name:k,value:vals[i],itemStyle:{color:clsColor(vals[i])}})),
+      label:{formatter:"{b}\n{c}亿"}}]
+  }, true);
+}
+
+async function refresh(){
+  if(STATIC){
+    // 静态托管下没有后端可触发抓取，引导去 Actions 手动跑一次
+    const u = (window.__STATIC__ && window.__STATIC__.actions_url) || "";
+    if(u) window.open(u, "_blank", "noopener");
+    return;
+  }
+  const btn = document.querySelector(".btn:not(.ghost)");
+  btn.disabled=true; const old=btn.textContent; btn.textContent="抓取中…";
+  try{
+    const r = await fetch("/api/refresh"+buildQuery());
+    const d = await r.json();
+    DATA = d;
+    state.date = d.filters?.date || "";
+    renderFilterBar(d);
+    render(d);
+  }catch(e){ alert("刷新失败："+e); }
+  finally{ btn.disabled=false; btn.textContent=old; }
+}
+
+window.addEventListener("resize",()=>{trendChart&&trendChart.resize();barChart&&barChart.resize();catChart&&catChart.resize();});
+
+// 静态模式：把"立即刷新"换成"去 Actions 手动更新"，并说明数据来源
+if(STATIC){
+  const b = document.getElementById("refresh-btn");
+  const a = document.createElement("a");
+  a.className = "btn ghost";
+  a.href = (window.__STATIC__ && window.__STATIC__.actions_url) || "#";
+  a.target = "_blank"; a.rel = "noopener";
+  a.textContent = "⚙️ 去 Actions 手动更新";
+  if(b) b.parentNode.replaceChild(a, b);
+  const note = document.querySelector(".note");
+  if(note) note.innerHTML += " <b>本站为 GitHub Pages 静态托管版</b>：数据由 GitHub Actions 于每个交易日收盘后自动抓取并提交，打开即最新；如需立即更新可在右上角手动触发工作流。";
+}
+loadData();
+</script>
+</body>
+</html>
