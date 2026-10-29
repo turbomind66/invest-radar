@@ -25,9 +25,12 @@ import intraday
 import fetcher
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-# 静态导出目录：默认应用目录下 docs/（GitHub Pages 直接发布它）。
+# 项目根：national_team 的父目录（容器里即 /app，本地即仓库根）。
+# 重组后本模块移入 national_team/，静态站 docs/ 仍放在项目根，便于 GitHub Pages 统一发布。
+ROOT = os.path.dirname(BASE)
+# 静态导出目录：默认项目根下的 docs/（GitHub Pages 直接发布它）。
 # 容器化部署可用 NT_DOCS_DIR 改到挂载卷，让导出产物也持久化。
-DOCS_DIR = os.environ.get("NT_DOCS_DIR") or os.path.join(BASE, "docs")
+DOCS_DIR = os.environ.get("NT_DOCS_DIR") or os.path.join(ROOT, "docs")
 TEMPLATE = os.path.join(BASE, "templates", "index.html")
 DAYS_FILE = os.path.join(DOCS_DIR, "data.json")
 

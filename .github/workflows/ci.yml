@@ -18,10 +18,10 @@ jobs:
           python-version: '3.11'
 
       - name: 语法检查
-        run: python -m py_compile app.py db.py fetcher.py backfill.py staticsite.py
+        run: python -m py_compile national_team/app.py national_team/db.py national_team/fetcher.py national_team/backfill.py national_team/staticsite.py
 
       - name: 数据层单元测试（离线）
-        run: python -m unittest discover -s tests -p "test_*.py" -v
+        run: python -m unittest discover -s national_team/tests -p "test_*.py" -v
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -29,13 +29,13 @@ jobs:
           node-version: '20'
 
       - name: 前端渲染逻辑测试（DOM 桩件，离线）
-        run: node tests/test_frontend.js
+        run: node national_team/tests/test_frontend.js
 
       - name: 静态模式一致性测试（前端筛选 vs 服务端逻辑）
-        run: node tests/test_static.js
+        run: node national_team/tests/test_static.js
 
       - name: 导出静态站（同时验证导出可用）
-        run: python staticsite.py --no-sync
+        run: python national_team/staticsite.py --no-sync
 
       - name: 静态站产物启动测试
-        run: node tests/test_static_boot.js
+        run: node national_team/tests/test_static_boot.js

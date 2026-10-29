@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>海外QDII定投决策面板 · invest-radar</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+<style>
+  :root{--up:#e0392b;--down:#16a34a;--bg:#f6f7f9;--card:#fff;--bd:#e5e7eb;--t1:#1f2937;--t2:#6b7280;}
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,Segoe UI,Roboto,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--t1);}
+  header{padding:16px 22px;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;}
+  header h1{font-size:18px;margin:0;font-weight:600;}
+  .status{font-size:12px;color:#94a3b8;}
+  .status b{color:#e2e8f0;}
+  .wrap{max-width:1180px;margin:18px auto;padding:0 16px;display:grid;gap:16px;}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;box-shadow:0 1px 2px rgba(0,0,0,.04);}
+  .card h2{font-size:15px;margin:0 0 10px;display:flex;align-items:center;gap:8px;}
+  .card h2 .tag{font-size:11px;font-weight:400;color:var(--t2);background:#eef2f7;border-radius:6px;padding:2px 7px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th,td{padding:7px 9px;text-align:left;border-bottom:1px solid #f0f2f5;white-space:nowrap;}
+  th{color:var(--t2);font-weight:600;background:#fafbfc;}
+  .up{color:var(--up);font-weight:600;}
+  .down{color:var(--down);font-weight:600;}
+  .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;}
+  .p-open{background:#ecfdf5;color:#047857;}
+  .p-suspend{background:#fef2f2;color:#b91c1c;}
+  .p-limit{background:#fff7ed;color:#c2410c;}
+  .p-red{background:#fef2f2;color:#b91c1c;}
+  .p-green{background:#ecfdf5;color:#047857;}
+  .note{font-size:12px;color:var(--t2);margin-top:8px;line-height:1.6;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media(max-width:860px){.grid2{grid-template-columns:1fr;}}
+  .reason{font-size:12px;color:var(--t2);}
+  .big{font-size:20px;font-weight:700;}
+  .chart{width:100%;height:260px;}
+  .warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:8px 10px;border-radius:8px;font-size:12px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>海外 QDII 定投决策面板</h1>
+  <div class="status" id="status">加载中…</div>
+</header>
+<div class="wrap">
+
+  <div class="card">
+    <h2>① 定投决策 <span class="tag">固定周期 + 信号增强 + 跟跌加仓 + 避险防御</span></h2>
+    <div id="decisionChart" class="chart"></div>
+    <table id="decisionTable"><thead><tr>
+      <th>代码</th><th>名称</th><th>类别</th><th>状态</th><th>建议倍数</th><th>建议金额</th><th>理由</th>
+    </tr></thead><tbody></tbody></table>
+    <div class="note" id="decisionNote"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>② 美股信号 <span class="tag">14:30 北京时间</span></h2>
+      <div class="warn" style="margin-bottom:8px;">⚠️ 现货/美债为「上一交易日·非实时」（北京时间14:30美东已收盘）；仅<b>期货</b>为实时（CME Globex 近24h）。</div>
+      <table id="signalTable"><thead><tr>
+        <th>标的</th><th>最新价</th><th>涨跌幅</th><th>实时?</th>
+      </tr></thead><tbody></tbody></table>
+      <div class="note">现货昨收方向 = 本次申购将成交的净值方向；期货实时 = 今晚开盘前瞻。</div>
+    </div>
+
+    <div class="card">
+      <h2>③ 场内溢价率 <span class="tag">14:30 A股交易日</span></h2>
+      <table id="premiumTable"><thead><tr>
+        <th>场外代码</th><th>场内</th><th>场内价</th><th>净值</th><th>溢价率</th><th>提示</th>
+      </tr></thead><tbody></tbody></table>
+      <div class="note">溢价率&gt;0：场内比净值贵（优先场外按净值买）；&lt;0：场内折价（场内更便宜）。高溢价常意味限购抢手。</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>④ 申购状态 + 限额 <span class="tag">A股交易日 09:00</span></h2>
+    <table id="limitTable"><thead><tr>
+      <th>代码</th><th>名称</th><th>类别</th><th>状态</th><th>日限额(元)</th><th>下一开放日</th><th>购买起点</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card">
+    <h2>⑤ 多平台费率矩阵 <span class="tag">基金公司 / 天天基金 / 支付宝</span></h2>
+    <table id="feeTable"><thead><tr>
+      <th>代码</th><th>平台</th><th>在售</th><th>申购费(原)</th><th>申购费(折)</th><th>管理费</th><th>托管费</th><th>销售服务费</th><th>年费合计</th>
+    </tr></thead><tbody></tbody></table>
+    <div class="note">年费 = 管理费 + 托管费 + 销售服务费（长期定投比一次性申购费更重要）。支付宝折后价暂无法获取，以天天基金口径展示。</div>
+  </div>
+
+  <div class="card">
+    <h2>⑥ 跟踪误差 <span class="tag">年化 std</span></h2>
+    <table id="teTable"><thead><tr>
+      <th>代码</th><th>名称</th><th>类别</th><th>年化跟踪误差</th><th>评价</th>
+    </tr></thead><tbody></tbody></table>
+    <div class="note">跟踪误差越小越适合「无脑定投」；误差偏大需警惕主动偏离 / 汇率 / 额度拖累。自建 NAV 历史法：基金日收益−指数日收益年化标准差。</div>
+  </div>
+
+  <div class="card">
+    <h2>⑦ 基金池 <span class="tag" id="poolCount"></span></h2>
+    <table id="poolTable"><thead><tr>
+      <th>代码</th><th>名称</th><th>跟踪指数</th><th>类别</th><th>公司</th><th>类型</th><th>场内对应</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+</div>
+
+<script>
+const UP='var(--up)', DOWN='var(--down)';
+function fmtPct(v){ if(v===null||v===undefined||isNaN(v)) return '—'; return (v>=0?'+':'')+v.toFixed(2)+'%'; }
+function clsPct(v){ if(v===null||v===undefined||isNaN(v)) return ''; return v>=0?'up':'down'; }
+function el(id){ return document.getElementById(id); }
+function poolName(code){ return (window.__pool||[]).find(f=>f.code===code)||{}; }
+
+async function api(path){ const r=await fetch(path); return await r.json(); }
+
+async function loadStatus(){
+  try{
+    const s=await api('/api/qdii/status');
+    el('status').innerHTML='状态 <b>'+s.status+'</b> · 基金池 <b>'+s.pool_size+'</b> 只 · '+s.now;
+  }catch(e){ el('status').textContent='状态接口不可用'; }
+}
+
+function renderDecision(decisions){
+  const tb=el('decisionTable').querySelector('tbody'); tb.innerHTML='';
+  const cats={};
+  decisions.forEach(d=>{
+    const f=poolName(d.code); const mult=d.suggested_multiple||0;
+    const tr=document.createElement('tr');
+    const amt=(mult*1000).toFixed(0);
+    tr.innerHTML='<td>'+d.code+'</td><td>'+(f.name||'')+'</td><td>'+(f.category||'')+'</td>'+
+      '<td>'+(f.sub_status||'')+'</td>'+
+      '<td class="'+(mult>1?'up':(mult<1?'down':''))+'">'+mult.toFixed(2)+'×</td>'+
+      '<td>'+amt+' 元</td>'+
+      '<td class="reason">'+(d.reasons?d.reasons.join('；'):'')+'</td>';
+    tb.appendChild(tr);
+    cats[f.category||'其它']=(cats[f.category||'其它']||0)+mult;
+  });
+  // chart
+  const chart=echarts.init(el('decisionChart'));
+  const codes=decisions.map(d=>d.code);
+  const mults=decisions.map(d=>d.suggested_multiple);
+  chart.setOption({
+    grid:{left:50,right:20,top:20,bottom:60},
+    xAxis:{type:'category',data:codes,axisLabel:{rotate:45,fontSize:10}},
+    yAxis:{type:'value',name:'倍数'},
+    series:[{type:'bar',data:mults.map(v=>({value:v,itemStyle:{color:v>1?UP:(v<1?DOWN:'#94a3b8')}}))}]
+  });
+  el('decisionNote').textContent='基准额 1000 元。倍数=1 为基准；>1 跟跌加仓/低估；<1 高估/避险防御。暂停申购归零。';
+}
+
+function renderSignal(rows){
+  const tb=el('signalTable').querySelector('tbody'); tb.innerHTML='';
+  rows.forEach(r=>{
+    const tr=document.createElement('tr');
+    const rt=r.is_realtime? '<span class="pill p-green">实时</span>' : '<span class="pill" style="background:#f1f5f9;color:#475569">昨收·非实时</span>';
+    tr.innerHTML='<td>'+r.name+'<br><small style="color:#94a3b8">'+r.symbol+'</small></td>'+
+      '<td>'+(r.last_price!=null?r.last_price.toFixed(2):'—')+'</td>'+
+      '<td class="'+clsPct(r.change_pct)+'">'+fmtPct(r.change_pct)+'</td>'+
+      '<td>'+rt+'</td>';
+    tb.appendChild(tr);
+  });
+}
+
+function renderPremium(rows){
+  const tb=el('premiumTable').querySelector('tbody'); tb.innerHTML='';
+  rows.sort((a,b)=>(a.premium_pct||0)-(b.premium_pct||0));
+  rows.forEach(r=>{
+    const f=poolName(r.code);
+    const p=r.premium_pct||0;
+    let tip,cls;
+    if(p<-0.5){tip='场内折价·更划算';cls='p-green';}
+    else if(p>3){tip='高溢价·限购抢手';cls='p-red';}
+    else {tip='基本持平';cls='';}
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+r.code+'</td><td>'+(r.online_code||'')+'</td>'+
+      '<td>'+(r.market_price!=null?r.market_price.toFixed(3):'—')+'</td>'+
+      '<td>'+(r.nav!=null?r.nav.toFixed(3):'—')+'</td>'+
+      '<td class="'+clsPct(p)+'">'+fmtPct(p)+'</td>'+
+      '<td><span class="pill '+cls+'">'+tip+'</span></td>';
+    tb.appendChild(tr);
+  });
+}
+
+function renderLimit(rows){
+  const tb=el('limitTable').querySelector('tbody'); tb.innerHTML='';
+  rows.forEach(r=>{
+    const f=poolName(r.code);
+    const st=r.sub_status;
+    const pill = st==='SUSPEND'?'p-suspend':(st==='LIMIT'?'p-limit':'p-open');
+    const stxt = st==='SUSPEND'?'暂停':(st==='LIMIT'?'限大额':'开放');
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+r.code+'</td><td>'+(f.name||'')+'</td><td>'+(f.category||'')+'</td>'+
+      '<td><span class="pill '+pill+'">'+stxt+'</span></td>'+
+      '<td>'+(r.is_limited? (r.limit_amount<1e9?r.limit_amount:'不限') : '—')+'</td>'+
+      '<td>'+(r.next_open_date||'—')+'</td>'+
+      '<td>'+(r.buy_start||'—')+'</td>';
+    tb.appendChild(tr);
+  });
+}
+
+function annualFee(r){
+  const a=[r.mgmt_fee,r.custodian_fee,r.sales_service_fee].map(x=>x||0);
+  return a.reduce((s,v)=>s+v,0);
+}
+function renderFee(rows){
+  const tb=el('feeTable').querySelector('tbody'); tb.innerHTML='';
+  rows.forEach(r=>{
+    if(r.platform==='券商') return;
+    const tr=document.createElement('tr');
+    const fee=annualFee(r);
+    const onsale = r.on_sale? '<span class="pill p-open">在售</span>' : (r.platform==='支付宝'?'<span class="pill p-suspend">不可售</span>':'');
+    tr.innerHTML='<td>'+r.code+'</td><td>'+r.platform+'</td><td>'+onsale+'</td>'+
+      '<td>'+(r.sub_fee_rate!=null?r.sub_fee_rate+'%':'—')+'</td>'+
+      '<td>'+(r.sub_fee_discount!=null?r.sub_fee_discount+'%':'—')+'</td>'+
+      '<td>'+(r.mgmt_fee!=null?r.mgmt_fee+'%':'—')+'</td>'+
+      '<td>'+(r.custodian_fee!=null?r.custodian_fee+'%':'—')+'</td>'+
+      '<td>'+(r.sales_service_fee!=null?r.sales_service_fee+'%':'—')+'</td>'+
+      '<td><b>'+(fee?fee.toFixed(2)+'%':'—')+'</b></td>';
+    tb.appendChild(tr);
+  });
+}
+
+function renderTE(rows){
+  const tb=el('teTable').querySelector('tbody'); tb.innerHTML='';
+  if(!rows.length){
+    // 空态显式说明，避免「表格一片空白」让人误以为功能坏了
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td colspan="5" style="text-align:center;opacity:.75">'
+      +'跟踪误差尚未计算（首次计算在每日 09:00 调度执行；若上游指数接口超时会自动在下次调度补齐）</td>';
+    tb.appendChild(tr);
+    return;
+  }
+  rows.forEach(r=>{
+    const f=poolName(r.code);
+    const te=r.te_computed;
+    let evl,cls;
+    if(te==null){evl='待计算';cls='';}
+    else if(te<1){evl='优秀·适合无脑定投';cls='p-green';}
+    else if(te<2){evl='良好';cls='';}
+    else {evl='偏大·警惕偏离';cls='p-red';}
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+r.code+'</td><td>'+(f.name||'')+'</td><td>'+(f.category||'')+'</td>'+
+      '<td>'+(te!=null?te.toFixed(2)+'%':'—')+'</td>'+
+      '<td><span class="pill '+cls+'">'+evl+'</span></td>';
+    tb.appendChild(tr);
+  });
+}
+
+function renderPool(rows){
+  const tb=el('poolTable').querySelector('tbody'); tb.innerHTML='';
+  rows.forEach(f=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+f.code+'</td><td>'+f.name+'</td><td>'+f.index_name+'</td>'+
+      '<td>'+f.category+'</td><td>'+f.company+'</td><td>'+f.fund_type+'</td>'+
+      '<td>'+(f.online_code||'—')+'</td>';
+    tb.appendChild(tr);
+  });
+  el('poolCount').textContent='共 '+rows.length+' 只';
+}
+
+(async function(){
+  await loadStatus();
+  try{ const p=await api('/api/qdii/funds'); window.__pool=p.funds; renderPool(p.funds); }catch(e){}
+  try{ const d=await api('/api/qdii/decision'); renderDecision(d.rows||[]); }catch(e){}
+  try{ const s=await api('/api/qdii/signal'); renderSignal(s.rows||[]); }catch(e){}
+  try{ const pr=await api('/api/qdii/premium'); renderPremium(pr.rows||[]); }catch(e){}
+  try{ const l=await api('/api/qdii/limit'); renderLimit(l.rows||[]); }catch(e){}
+  try{ const fe=await api('/api/qdii/fee'); renderFee(fe.rows||[]); }catch(e){}
+  try{ const te=await api('/api/qdii/tracking'); renderTE(te.rows||[]); }catch(e){}
+})();
+</script>
+</body>
+</html>

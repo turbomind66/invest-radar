@@ -16,8 +16,8 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = path.join(__dirname, '..');
-const HTML = path.join(ROOT, 'templates', 'index.html');
+const ROOT = path.join(__dirname, '..', '..');
+const HTML = path.join(__dirname, '..', 'templates', 'index.html');
 
 // ---------------- 让 Python 产出期望值 ----------------
 function pickPython() {

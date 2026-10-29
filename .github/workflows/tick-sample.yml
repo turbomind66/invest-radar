@@ -34,7 +34,7 @@ jobs:
           python-version: "3.11"
 
       - name: 盘中采样（当日分时 + 逐笔大单）
-        run: python staticsite.py --mode=tick
+        run: python national_team/staticsite.py --mode=tick
 
       - name: 提交变更
         run: |

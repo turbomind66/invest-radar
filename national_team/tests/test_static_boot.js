@@ -15,7 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const DOCS = path.join(__dirname, '..', 'docs');
+const DOCS = path.join(__dirname, '..', '..', 'docs');
 const HTML = path.join(DOCS, 'index.html');
 const RAW = JSON.parse(fs.readFileSync(path.join(DOCS, 'data.json'), 'utf8'));
 

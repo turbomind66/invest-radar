@@ -1,16 +1,19 @@
-# 国家队买卖A股日报 —— Docker Compose 编排
+# 国家队买卖A股日报 + 海外QDII定投决策面板 —— Docker Compose 编排
 #
-# 两个服务共用同一个镜像与同一个数据卷：
-#   ntt-web  : 看板页面 + /api/data（对外提供访问）
-#   ntt-cron : 定时抓取（完整同步 06:00/17:10，盘中逐笔采样 10:30/11:30/14:00/14:50）
+# 四个服务共用同一个镜像与同一个数据卷：
+#   ntt-web     : 国家队看板页面 + /api/data（对外提供访问）
+#   ntt-cron    : 国家队定时抓取（06:00/17:10 全量，盘中逐笔采样）
+#   qdii-web    : QDII 决策看板 + /api/qdii/*
+#   qdii-cron   : QDII 定时抓取（双日历：A股交易日 09:00 限额/费率/跟踪误差，
+#                 美股交易日 14:30 信号，A股交易日 14:30 溢价）
 #
 # 一键启动：  docker compose up -d --build
 # 查看状态：  docker compose ps
-# 查看日志：  docker compose logs -f cron
+# 查看日志：  docker compose logs -f qdii-cron
 services:
   web:
     build: .
-    image: ashare-national-team-tracker:latest
+    image: invest-radar:latest
     container_name: ntt-web
     environment:
       APP_ROLE: web
@@ -40,7 +43,7 @@ services:
 
   cron:
     build: .
-    image: ashare-national-team-tracker:latest
+    image: invest-radar:latest
     container_name: ntt-cron
     environment:
       APP_ROLE: cron
@@ -71,6 +74,68 @@ services:
       interval: 5m
       retries: 1
 
+  # ===== 海外 QDII 定投决策面板 =====
+  qdii-web:
+    build: .
+    image: invest-radar:latest
+    container_name: qdii-web
+    environment:
+      APP_ROLE: qdii-web
+      TZ: ${TZ:-Asia/Shanghai}
+      QDII_PORT: ${QDII_PORT:-5001}
+      # QDII 独立数据库文件，与国家队 data.db 同卷但分离
+      NT_QDII_DB_PATH: /app/data/qdii.db
+    ports:
+      # 默认 18081，与国家队 web 的 18080 错开
+      - "${QDII_HOST_PORT:-18081}:${QDII_PORT:-5001}"
+    volumes:
+      - ntt-data:/app/data
+    restart: unless-stopped
+    init: true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  qdii-cron:
+    build: .
+    image: invest-radar:latest
+    container_name: qdii-cron
+    environment:
+      APP_ROLE: qdii-cron
+      TZ: ${TZ:-Asia/Shanghai}
+      NT_QDII_DB_PATH: /app/data/qdii.db
+      # 双日历：限额/费率/跟踪误差按 A 股交易日；美股信号按美股交易日；溢价按 A 股交易日
+      QDII_SCHED_LIMITTIMES: ${QDII_SCHED_LIMITTIMES:-09:00}
+      QDII_SCHED_SIGNALTIME: ${QDII_SCHED_SIGNALTIME:-14:30}
+      QDII_SCHED_PREMIUMTIME: ${QDII_SCHED_PREMIUMTIME:-14:30}
+      SCHED_RUN_ON_START: ${SCHED_RUN_ON_START:-1}
+    volumes:
+      - ntt-data:/app/data
+    restart: unless-stopped
+    init: true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 160M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      # cron 容器不提供 HTTP 端口，覆盖掉镜像自带的 /api/status 检查
+      test: ["CMD", "true"]
+      interval: 5m
+      retries: 1
+
 volumes:
-  # 命名卷：SQLite 数据库与累积的逐笔大单都在这里，重建容器不会丢
+  # 命名卷：国家队 data.db 与 QDII qdii.db 都在这里，重建容器不会丢
   ntt-data:

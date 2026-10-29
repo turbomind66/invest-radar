@@ -3,6 +3,10 @@ data.db
 data.db-journal
 data.db-wal
 data.db-shm
+qdii.db
+qdii.db-journal
+qdii.db-wal
+qdii.db-shm
 
 # ---- 部署配置（含本机端口等私密设置；模板 .env.example 仍需入库）----
 .env
@@ -20,6 +24,10 @@ venv/
 
 # ---- 本地开发脚本（数据源探测 / 调试，不入库）----
 dev_scripts/
+qdii/probes/
+
+# ---- 本地私有文件（含公司落款的定时配置说明，永不入库）----
+cron_trigger_setup.html
 
 # ---- 编辑器与系统 ----
 .vscode/
@@ -30,3 +38,7 @@ Thumbs.db
 # ---- 云同步 / 临时文件 ----
 *.baiduyun.uploading.cfg
 *.tmp
+
+# ---- 运行时锁文件（跨进程互斥用，本地产物）----
+*.sync.lock
+.qdii.lock

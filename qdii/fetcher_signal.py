@@ -1,0 +1,164 @@
+"""qdii/fetcher_signal.py — 模块D：每日美股信号（14:30，美股交易日）。
+
+⚠️ 时区事实：14:30 北京时间 = 美东约 01:30–02:30，美股已收盘，抓到的是
+「上一交易日收盘（非实时）」；美股期货（CME Globex 近24h）为实时。
+
+数据源（国内友好、实测可达，替代被封的雅虎）：
+- 期货实时：新浪 `hf_ES`(标普500指数期货) / `hf_NQ`(纳斯达克指数期货)
+- 现货昨收（非实时）：腾讯财经 `usSPX`(标普500) / `usNDX`(纳斯达克100)
+- VIX（避险情绪开关源，非实时）：腾讯 `usVIX`
+- 美债10Y（情绪/宏观参考，非实时）：腾讯 `usTNX`（无则降级标"暂不可用"）
+"""
+import os
+import sys
+import re
+import json
+import datetime
+
+BASE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(BASE)
+for p in (BASE, ROOT):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+from common.http import fetch_text
+import db
+import constants as C
+
+# 新浪期货代码 -> (symbol, name)
+FUTURES_MAP = {
+    "hf_ES": ("SPX_FUT", "标普500期货"),
+    "hf_NQ": ("NDX_FUT", "纳斯达克100期货"),
+}
+# 新浪美股指数（标普500 现货，上一交易日收盘）
+SINA_INDEX_URL = "https://hq.sinajs.cn/list=gb_inx,gb_ixic"
+# 腾讯财经美股代码 -> (symbol, name, is_realtime)
+TENCENT_URL = "https://qt.gtimg.cn/q=usNDX,usVIX,usTNX"
+TENCENT_SYMBOLS = {
+    "usNDX": ("NDX", "纳斯达克100现货", 0),
+    "usVIX": ("VIX", "VIX波动率", 0),
+    "usTNX": ("UST10Y", "美债10Y收益率", 0),
+}
+
+
+def fetch_sina_futures():
+    txt = fetch_text(C.URL_SINA_FUTURE,
+                     referer="https://finance.sina.com.cn/",
+                     encoding="gbk", use_proxy=None, retries=2)
+    res = {}
+    for m in re.finditer(r'var hq_str_(hf_\w+)="([^"]*)"', txt):
+        sym, body = m.group(1), m.group(2)
+        parts = body.split(",")
+        price = None
+        name = parts[-1] if parts else ""
+        if len(parts) > 5:
+            try:
+                price = float(parts[5])
+            except (ValueError, TypeError):
+                price = None
+        res[sym] = (name, price)
+    return res
+
+
+def fetch_tencent_us():
+    """腾讯财经美股行情（~ 分隔），含纳指100现货/VIX/美债；数据为上一交易日收盘。"""
+    txt = fetch_text(TENCENT_URL, use_proxy=None, retries=2)
+    res = {}
+    for m in re.finditer(r'v_(\w+)="([^"]*)"', txt):
+        sym, body = m.group(1), m.group(2)
+        parts = body.split("~")
+        if len(parts) < 5:
+            continue
+        try:
+            price = float(parts[3])
+            prev = float(parts[4])
+        except (ValueError, TypeError):
+            continue
+        chg = (price / prev - 1) * 100 if prev else 0.0
+        res[sym] = (price, chg)
+    return res
+
+
+def fetch_sina_us_index():
+    """新浪美股指数（标普500 gb_inx / 纳指综合 gb_ixic），上一交易日收盘。"""
+    txt = fetch_text(SINA_INDEX_URL, referer="https://finance.sina.com.cn/",
+                     encoding="gbk", use_proxy=None, retries=2)
+    res = {}
+    for m in re.finditer(r'var hq_str_(gb_\w+)="([^"]*)"', txt):
+        sym, body = m.group(1), m.group(2)
+        parts = body.split(",")
+        if len(parts) < 6:
+            continue
+        try:
+            price = float(parts[1])
+            prev = float(parts[5])
+        except (ValueError, TypeError):
+            continue
+        chg = (price / prev - 1) * 100 if prev else 0.0
+        res[sym] = (price, chg)
+    return res
+
+
+def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
+    date = date or datetime.date.today().isoformat()
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    rows = []
+    # 期货（实时）
+    try:
+        futures = fetch_sina_futures()
+        for hf_code, (symbol, name) in FUTURES_MAP.items():
+            name_f, price = futures.get(hf_code, ("", None))
+            if price is not None:
+                rows.append((date, symbol, name_f or name, price, 0.0, 1, now, now))
+    except Exception as e:  # noqa: BLE001
+        print("[signal] futures failed:", e)
+    # 腾讯（非实时：纳指100现货/VIX/美债）
+    try:
+        tencent = fetch_tencent_us()
+        for tcode, (symbol, name, is_rt) in TENCENT_SYMBOLS.items():
+            if tcode in tencent:
+                price, chg = tencent[tcode]
+                rows.append((date, symbol, name, price, chg, is_rt, now, now))
+    except Exception as e:  # noqa: BLE001
+        print("[signal] tencent failed:", e)
+    # 新浪（非实时：标普500 现货）
+    try:
+        sina_idx = fetch_sina_us_index()
+        if "gb_inx" in sina_idx:
+            price, chg = sina_idx["gb_inx"]
+            rows.append((date, "SPX", "标普500现货", price, chg, 0, now, now))
+    except Exception as e:  # noqa: BLE001
+        print("[signal] sina index failed:", e)
+    conn = db.get_conn(path)
+    for r in rows:
+        db.upsert_row(conn, "qdii_us_signal",
+                      ["date", "symbol", "name", "last_price", "change_pct",
+                       "is_realtime", "as_of", "fetched_at"],
+                      list(r), "date,symbol")
+    conn.commit()
+    conn.close()
+    db.set_meta("last_signal_fetch", now, path)
+    return len(rows)
+
+
+def get_latest_us_signal(path: str = C.QDII_DB_PATH):
+    conn = db.get_conn(path)
+    drow = conn.execute(
+        "SELECT date FROM qdii_us_signal ORDER BY date DESC LIMIT 1").fetchone()
+    if not drow:
+        conn.close()
+        return []
+    rows = conn.execute(
+        "SELECT * FROM qdii_us_signal WHERE date=?", (drow["date"],)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+if __name__ == "__main__":
+    db.init_db()
+    n = fetch_us_signal()
+    print("fetched %d us signals" % n)
+    for r in get_latest_us_signal():
+        print("  %-8s %s price=%.3f chg=%.2f%% rt=%s" % (
+            r["symbol"], r["name"], r["last_price"],
+            r["change_pct"], r["is_realtime"]))

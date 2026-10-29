@@ -30,7 +30,7 @@ jobs:
           python-version: "3.11"
 
       - name: 抓取并导出静态数据
-        run: python staticsite.py
+        run: python national_team/staticsite.py
 
       - name: 提交变更
         run: |

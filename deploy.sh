@@ -86,14 +86,23 @@ fi
 HOST_PORT="$(grep -m1 '^HOST_PORT=' .env | cut -d= -f2 | tr -d '[:space:]')"
 [ -n "${HOST_PORT}" ] || HOST_PORT=18080
 
+# QDII 面板端口（未配置则沿用默认 18081，与国家队 18080 错开）
+QDII_HOST_PORT="$(grep -m1 '^QDII_HOST_PORT=' .env | cut -d= -f2 | tr -d '[:space:]')"
+[ -n "${QDII_HOST_PORT}" ] || QDII_HOST_PORT=18081
+
 if port_in_use "${HOST_PORT}"; then
     warn "宿主机端口 ${HOST_PORT} 已被占用，可能与服务器上已有服务冲突。"
     warn "如需更换，请修改 .env 中的 HOST_PORT 后重新运行本脚本。"
 fi
 
+if port_in_use "${QDII_HOST_PORT}"; then
+    warn "QDII 面板端口 ${QDII_HOST_PORT} 已被占用。"
+    warn "如需更换，请修改 .env 中的 QDII_HOST_PORT 后重新运行本脚本。"
+fi
+
 # ---- 3. 构建并启动 ----
 if [ "${MODE}" = "compose" ]; then
-    info "使用 Docker Compose 部署（web + cron 两个服务）"
+    info "使用 Docker Compose 部署（ntt-web / ntt-cron / qdii-web / qdii-cron 四个服务）"
     docker compose up -d --build
     WEB_NAME="ntt-web"
 else
@@ -108,9 +117,12 @@ else
         -e TZ=Asia/Shanghai \
         -e PORT=5000 \
         -e NT_DB_PATH=/app/data/data.db \
+        -e QDII_PORT=5001 \
+        -e NT_QDII_DB_PATH=/app/data/qdii.db \
         -p "${HOST_PORT}:5000" \
+        -p "${QDII_HOST_PORT}:5001" \
         -v "${VOLUME}:/app/data" \
-        --memory=320m --cpus=0.75 \
+        --memory=384m --cpus=0.75 \
         "${IMAGE}"
     WEB_NAME="ntt"
 fi
@@ -119,9 +131,7 @@ fi
 info "等待服务就绪（最多 90 秒）"
 READY=0
 for i in $(seq 1 30); do
-    if docker exec "${WEB_NAME}" python -c \
-        "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','5000')+'/api/status',timeout=5)" \
-        >/dev/null 2>&1; then
+    if docker exec "${WEB_NAME}" python /app/docker/healthcheck.py >/dev/null 2>&1; then
         READY=1
         break
     fi
@@ -133,7 +143,9 @@ IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 
 echo ""
 if [ "${READY}" = "1" ]; then
-    info "部署完成 ✅  访问：http://${IP}:${HOST_PORT}"
+    info "部署完成 ✅"
+    info "  国家队看板：http://${IP}:${HOST_PORT}"
+    info "  QDII 面板 ：http://${IP}:${QDII_HOST_PORT}"
 else
     warn "服务已启动但 90 秒内未通过自检（首次启动会先抓取数据，可能较慢）。"
     warn "请稍后查看日志：docker logs ${WEB_NAME}"
@@ -142,15 +154,17 @@ fi
 cat <<EOF
 
 常用命令：
-  查看状态    docker ps --filter name=ntt
+  查看状态    docker ps --filter name=ntt ; docker ps --filter name=qdii
   看板日志    docker logs -f ${WEB_NAME}
-  抓取日志    $( [ "${MODE}" = "compose" ] && echo "docker compose logs -f cron" || echo "docker logs -f ntt" )
-  立即抓一次  $( [ "${MODE}" = "compose" ] && echo "docker compose run --rm -T --entrypoint python cron staticsite.py" || echo "docker exec ntt python staticsite.py" )
+  抓取日志    $( [ "${MODE}" = "compose" ] && echo "docker compose logs -f cron qdii-cron" || echo "docker logs -f ntt" )
+  立即抓一次  $( [ "${MODE}" = "compose" ] && echo "docker compose run --rm -T --entrypoint python cron national_team/staticsite.py" || echo "docker exec ntt python national_team/staticsite.py" )
+  QDII 抓一次 $( [ "${MODE}" = "compose" ] && echo "docker compose run --rm -T --entrypoint python qdii-cron qdii/qdii_scheduler.py --once" || echo "docker exec ntt python qdii/qdii_scheduler.py --once" )
   停止/启动   $( [ "${MODE}" = "compose" ] && echo "docker compose down / docker compose up -d" || echo "docker stop ntt / docker start ntt" )
   数据卷位置  docker volume inspect ${VOLUME}
 
 提示：
   · 首次启动会自动从内置种子数据恢复最近 90 天历史，随后定时任务持续累积。
-  · 服务器若有防火墙/安全组，需放行 ${HOST_PORT} 端口。
+  · QDII 的场内溢价/分时类数据从部署当天起才累积，历史无法回补（上游仅给近几日）。
+  · 服务器若有防火墙/安全组，需放行 ${HOST_PORT} 与 ${QDII_HOST_PORT} 端口。
   · 建议用 Nginx 反代并配 HTTPS（见 README「Docker 部署」章节）。
 EOF
