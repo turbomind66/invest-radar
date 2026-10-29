@@ -275,8 +275,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path in ("/", "/index.html"):
             try:
-                with open(INDEX, "rb") as f:
-                    self._send(200, f.read(), "text/html; charset=utf-8")
+                self._send(200, render_index(), "text/html; charset=utf-8")
             except Exception as e:
                 self._send(500, str(e).encode("utf-8"))
             return
@@ -311,6 +310,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+
+def render_index():
+    """读取首页模板并注入「对端面板地址」。
+
+    PEER_URL 显式指定时用它（域名反代场景：两边端口都是 443，端口推断会跳成死链）；
+    未配置则留空，前端回退到「本端口 ±1」的推断（同机不同端口部署时仍然正确）。
+    """
+    with open(INDEX, "rb") as f:
+        html = f.read().decode("utf-8", "replace")
+    peer = (os.environ.get("PEER_URL") or "").strip()
+    if peer:
+        html = html.replace('<meta name="peer-url" content="">',
+                            '<meta name="peer-url" content="%s">' % peer)
+    return html.encode("utf-8")
 
 
 def main():

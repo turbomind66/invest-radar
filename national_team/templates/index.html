@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<!-- 对端面板地址：由服务端按 PEER_URL 环境变量注入（域名反代后端口推断会跳成死链） -->
+<meta name="peer-url" content="">
 <title>国家队买卖A股日报</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <style>
@@ -287,6 +289,11 @@ let STATIC_RAW = null;   // 全量快照缓存，只拉一次
   if(!a || STATIC || typeof location === "undefined") return;
   const host = location.hostname || "";
   if(location.protocol === "file:" || /\.github\.io$/i.test(host)) return;
+  // 优先用服务端注入的对端地址（PEER_URL）：用 Nginx/NPM 按域名反代后，
+  // 两个面板的端口都是 443，「本端口 +1」的推断会指向不存在的 444 端口。
+  const meta = document.querySelector('meta[name="peer-url"]');
+  const cfg = meta ? (meta.getAttribute("content") || "") : "";
+  if(cfg){ a.href = cfg; a.style.display = ""; return; }
   const port = parseInt(location.port, 10);
   if(!port) return;
   a.href = location.protocol + "//" + host + ":" + (port + 1);

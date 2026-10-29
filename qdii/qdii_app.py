@@ -113,8 +113,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                           "application/json; charset=utf-8")
         elif path in ("/", "/index.html"):
             try:
-                with open(INDEX, "rb") as f:
-                    self._send(f.read(), "text/html; charset=utf-8")
+                self._send(render_index(), "text/html; charset=utf-8")
             except FileNotFoundError:
                 self._send(json.dumps({"error": "frontend not built"},
                           ensure_ascii=False).encode("utf-8"),
@@ -126,6 +125,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *args):  # 静默常规日志
         pass
+
+
+def render_index():
+    """读取首页模板并注入「对端面板地址」（PEER_URL，见 national_team/app.py 同名函数）。"""
+    with open(INDEX, "rb") as f:
+        html = f.read().decode("utf-8", "replace")
+    peer = (os.environ.get("PEER_URL") or "").strip()
+    if peer:
+        html = html.replace('<meta name="peer-url" content="">',
+                            '<meta name="peer-url" content="%s">' % peer)
+    return html.encode("utf-8")
 
 
 def main():
