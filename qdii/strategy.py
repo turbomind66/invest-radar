@@ -29,7 +29,7 @@ import tracking_error
 
 
 def recommend(ctx):
-    """ctx 含: code, sub_status, limit_amount, spx_chg, ndx_chg, vix, ust_chg, valuation_pct。
+    """ctx 含: code, sub_status, limit_amount, spx_chg, ndx_chg, vix, ust_bp, valuation_pct。
     返回 {'multiple': float, 'reasons': [str]}。
     """
     P = C.STRATEGY_PARAMS
@@ -68,13 +68,13 @@ def recommend(ctx):
             multiple -= 0.5
             reasons.append("估值百分位 %.0f%% 偏高，-0.5" % vp)
 
-    # 4. 避险情绪防御开关
+    # 4. 避险情绪防御开关（VIX 或 美债10Y 单日大幅上行）
     vix = ctx.get("vix") or 0.0
-    ust_chg = ctx.get("ust_chg") or 0.0
-    if vix > P["risk_off_vix"] or ust_chg > P["risk_off_ust_up"]:
+    ust_bp = ctx.get("ust_bp") or 0.0
+    if vix > P["risk_off_vix"] or ust_bp > P["risk_off_ust_bp"]:
         multiple *= 0.5
-        reasons.append("避险情绪升温(VIX=%.1f / 美债上行 %.2f%%)→防御 ×0.5"
-                       % (vix, ust_chg))
+        reasons.append("避险升温（VIX %.1f / 美债10Y %+.0fbp）→ 防御 ×0.5"
+                       % (vix, ust_bp))
 
     # 5. 限额封顶（限大额时按限额/基准额封顶）
     if sub == "LIMIT" and limit_amount > 0:
@@ -196,15 +196,16 @@ def recommend_category(cat, stats, us_map, valuation_pct=None):
         else:
             reasons.append("PE 分位 %.0f%%，估值中性" % valuation_pct)
 
-    # 3) 避险开关（VIX / 美债）
+    # 3) 避险开关（VIX / 美债10Y 上行 bp）
     vix_row = us_map.get("VIX") or {}
     ust_row = us_map.get("UST10Y") or {}
     vix = vix_row.get("last_price") or 0.0
-    ust_chg = ust_row.get("change_pct") or 0.0
-    if vix > P["risk_off_vix"] or ust_chg > P["risk_off_ust_up"]:
+    ust_bp = ust_row.get("change_bp") or 0.0
+    if vix > P["risk_off_vix"] or ust_bp > P["risk_off_ust_bp"]:
         multiple *= 0.5
         reasons.append("避险升温（VIX %.1f%s）→ 倍数 ×0.5"
-                       % (vix, "，美债10Y 大幅上行" if ust_chg > P["risk_off_ust_up"] else ""))
+                       % (vix, "，美债10Y 上行 %+.0fbp" % ust_bp
+                          if ust_bp > P["risk_off_ust_bp"] else ""))
 
     # 4) 可买性说明（不封顶倍数，只提示）
     if stats["limit"] and stats["min_limit"] is not None:
@@ -312,7 +313,7 @@ def build_contexts(date: str = None, path: str = C.QDII_DB_PATH):
             spx_chg=spx.get("change_pct"),
             ndx_chg=ndx.get("change_pct"),
             vix=vix_row.get("last_price"),
-            ust_chg=ust.get("change_pct"),
+            ust_bp=ust.get("change_bp"),
             valuation_pct=C.STATIC_VALUATION_PCT.get(f["category"]),
         ))
     return ctxs

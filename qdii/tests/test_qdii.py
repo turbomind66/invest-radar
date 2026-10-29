@@ -386,5 +386,91 @@ class PremiumAdjustedTest(unittest.TestCase):
                           "未知的基准源类型")
 
 
+class Ust10yTest(unittest.TestCase):
+    """美债10Y：涨跌必须用 **bp**，不能用相对涨跌%。
+
+    旧实现拿 change_pct(-0.99%) 去比 risk_off_ust_up(0.30)，阈值等于形同虚设：
+    收益率 4.00%→4.04% 只算 +1%（相对），实际是 +4bp，用 % 会严重低估利率冲击。
+    """
+
+    SAMPLE = json.dumps({"FormattedQuoteResult": {"FormattedQuote": [{
+        "symbol": "US10Y", "name": "U.S. 10 Year Treasury",
+        "last": "4.995%", "previous_day_closing": "5.045%", "change": "-0.05",
+        "change_pct": "-0.9911%", "last_time": "2026-10-29T03:51:40.000-0400",
+        "curmktstatus": "REG_MKT"}]}})
+
+    def setUp(self):
+        import fetcher_signal as fs
+        self.fs = fs
+        self._orig = fs.fetch_text
+        fs.fetch_text = lambda *a, **k: self.SAMPLE
+
+    def tearDown(self):
+        self.fs.fetch_text = self._orig
+
+    def test_parse_yield_and_bp(self):
+        last, bp, chg_pct, as_of = self.fs.fetch_cnbc_ust10y()
+        self.assertAlmostEqual(last, 4.995, places=6)
+        self.assertAlmostEqual(bp, -5.0, places=1)
+        self.assertAlmostEqual(chg_pct, -0.99, places=2)
+        self.assertIn("美东", as_of)
+
+    def test_bp_differs_from_relative_pct(self):
+        """4.00%→4.04% 应为 +4bp，而相对变化是 +1% —— 两者不可混用。"""
+        self.fs.fetch_text = lambda *a, **k: json.dumps(
+            {"FormattedQuoteResult": {"FormattedQuote": [{
+                "last": "4.04%", "previous_day_closing": "4.00%",
+                "last_time": "2026-10-29T03:51:40.000-0400"}]}})
+        _last, bp, chg_pct, _ = self.fs.fetch_cnbc_ust10y()
+        self.assertAlmostEqual(bp, 4.0, places=1)
+        self.assertGreater(chg_pct, 0.9)
+
+    def test_empty_quote_raises(self):
+        self.fs.fetch_text = lambda *a, **k: json.dumps(
+            {"FormattedQuoteResult": {"FormattedQuote": []}})
+        with self.assertRaises(ValueError):
+            self.fs.fetch_cnbc_ust10y()
+
+    def test_threshold_is_bp_and_old_key_gone(self):
+        self.assertEqual(C.STRATEGY_PARAMS["risk_off_ust_bp"], 30.0)
+        self.assertNotIn("risk_off_ust_up", C.STRATEGY_PARAMS)
+
+    def test_tentcent_tnx_removed(self):
+        """腾讯 usTNX 已不返回数据（2026-10-29 实测），不得再挂在配置里。"""
+        self.assertNotIn("usTNX", self.fs.TENCENT_SYMBOLS)
+
+    def test_signal_order_prefers_ust_over_vix(self):
+        """面板顺序固定：纳指现货 → 纳指期货 → 标普现货 → 标普期货 → 美债 → VIX。
+
+        用临时库乱序写入再读回，验证 SQL 里的 CASE 排序真的生效
+        （别依赖插入顺序——重跑补数时顺序会变）。
+        """
+        import tempfile
+        import datetime as _dt
+        import db as qdb
+        p = tempfile.mktemp(suffix=".db")
+        try:
+            init_conn = qdb.init_db(p)      # 必须显式关闭：Windows 上不关就删不掉文件
+            conn = qdb.get_conn(p)
+            d = _dt.date.today().isoformat()
+            for sym, name in [("VIX", "VIX波动率"), ("UST10Y", "美债10Y收益率"),
+                              ("SPX", "标普500现货"), ("IXIC", "纳指现货"),
+                              ("NDX_FUT", "纳指期货"), ("SPX_FUT", "标普500期货")]:
+                qdb.upsert_row(
+                    conn, "qdii_us_signal",
+                    ["date", "symbol", "name", "last_price", "change_pct",
+                     "is_realtime", "as_of", "fetched_at", "change_bp"],
+                    [d, sym, name, 1.0, 0.0, 0, None, None, None], "date,symbol")
+            conn.commit()
+            conn.close()
+            init_conn.close()
+            rows = self.fs.get_latest_us_signal(p)
+            self.assertEqual([r["symbol"] for r in rows],
+                             ["IXIC", "NDX_FUT", "SPX", "SPX_FUT", "UST10Y", "VIX"])
+        finally:
+            if os.path.exists(p):
+                os.remove(p)
+
+
 if __name__ == "__main__":
     unittest.main()

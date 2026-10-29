@@ -63,9 +63,12 @@
       <h2>② 美股信号 <span class="tag">14:30 北京时间</span></h2>
       <div class="warn" style="margin-bottom:8px;">⚠️ 现货/美债为「上一交易日·非实时」（北京时间14:30美东已收盘）；仅<b>期货</b>为实时（CME Globex 近24h）。</div>
       <table id="signalTable"><thead><tr>
-        <th>标的</th><th>最新价</th><th>涨跌幅</th><th>实时?</th>
+        <th>标的</th><th>最新价</th><th>涨跌</th><th>实时?</th>
       </tr></thead><tbody></tbody></table>
-      <div class="note">现货昨收方向 = 本次申购将成交的净值方向；期货实时 = 今晚开盘前瞻。</div>
+      <div class="note">现货昨收方向 = 本次申购将成交的净值方向；期货实时 = 今晚开盘前瞻。
+        <br><b>美债10Y</b> 为<b>实时</b>收益率，涨跌用 <b>bp</b> 表示（+10bp = 收益率上行 0.10 个百分点）；
+        收益率上行会压制股票估值，单日上行超 30bp 触发避险防御。
+        <br>VIX 不在本面板展示，但仍作为后台避险判据参与倍数计算。</div>
     </div>
 
     <div class="card">
@@ -155,12 +158,20 @@ function renderDecision(rows){
     tb.appendChild(tr);
   });
   // chart：按大类
-  const chart=echarts.init(el('decisionChart'));
+  // ⚠️ 布局要点（曾踩坑）：grid.top 太小 + yAxis.max 刚好等于最大倍数时，
+  // 顶部刻度会贴住画布边缘、轴名「倍数」直接被裁掉看不见。这里给轴上方留
+  // 0.25 的余量并把 top 抬到 46，轴名才完整显示。
+  const chart=echarts.getInstanceByDom(el('decisionChart'))||echarts.init(el('decisionChart'));
+  const maxV=Math.max.apply(null, rows.map(r=>r.suggested_multiple||0).concat([1]));
+  const yMax=Math.ceil((maxV+0.25)*4)/4;
   chart.setOption({
-    grid:{left:50,right:20,top:20,bottom:50},
+    grid:{left:62,right:26,top:46,bottom:46},
     xAxis:{type:'category',data:rows.map(r=>r.category),axisLabel:{fontSize:11}},
-    yAxis:{type:'value',name:'倍数'},
+    yAxis:{type:'value',name:'倍数',nameLocation:'end',nameGap:18,
+      nameTextStyle:{color:'#64748b',fontSize:11},min:0,max:yMax,splitNumber:4,
+      axisLabel:{formatter:'{value}×'}},
     series:[{type:'bar',barWidth:'36%',
+      label:{show:true,position:'top',formatter:'{c}×',fontSize:11,color:'#475569'},
       // ⚠️ ECharts 是 canvas 渲染，不能吃 CSS 变量（写 var(--up) 会静默变成默认灰蓝），
       // 必须给真实色值。A 股习惯：加仓/上涨=红，减仓=绿。
       data:rows.map(r=>{const v=r.suggested_multiple||0;
@@ -171,13 +182,24 @@ function renderDecision(rows){
 
 function renderSignal(rows){
   const tb=el('signalTable').querySelector('tbody'); tb.innerHTML='';
-  rows.forEach(r=>{
+  // VIX 只作后台避险判据，面板不展示（口径：美股信号看纳指 + 美债10Y）
+  rows.filter(r=>r.symbol!=='VIX').forEach(r=>{
+    const isUst=(r.symbol==='UST10Y');
     const tr=document.createElement('tr');
     const rt=r.is_realtime? '<span class="pill p-green">实时</span>' : '<span class="pill" style="background:#f1f5f9;color:#475569">昨收·非实时</span>';
-    tr.innerHTML='<td>'+r.name+'<br><small style="color:#94a3b8">'+
-      (r.is_realtime?'期货 · 24h 连续':'现货 · 上一交易日收盘')+'</small></td>'+
-      '<td>'+(r.last_price!=null?r.last_price.toFixed(2):'—')+'</td>'+
-      '<td class="'+clsPct(r.change_pct)+'">'+fmtPct(r.change_pct)+'</td>'+
+    const sub = isUst ? '实时 · 收益率' : (r.is_realtime?'期货 · 24h 连续':'现货 · 上一交易日收盘');
+    // 收益率保留 3 位小数 + %；涨跌用 bp —— 收益率算「相对涨跌%」没有经济含义
+    //（4.00%→4.04% 只算 +1%，实际是 +4bp）。
+    const price = isUst
+      ? (r.last_price!=null? r.last_price.toFixed(3)+'%' : '—')
+      : (r.last_price!=null? r.last_price.toFixed(2) : '—');
+    const chgHtml = isUst
+      ? '<span class="'+clsPct(r.change_bp)+'">'+
+        (r.change_bp!=null? (r.change_bp>0?'+':'')+r.change_bp.toFixed(1)+'bp' : '—')+'</span>'
+      : '<span class="'+clsPct(r.change_pct)+'">'+fmtPct(r.change_pct)+'</span>';
+    tr.innerHTML='<td>'+r.name+'<br><small style="color:#94a3b8">'+sub+'</small></td>'+
+      '<td>'+price+'</td>'+
+      '<td>'+chgHtml+'</td>'+
       '<td>'+rt+'</td>';
     tb.appendChild(tr);
   });

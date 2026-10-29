@@ -6,8 +6,8 @@
 数据源（国内友好、实测可达，替代被封的雅虎）：
 - 期货实时：新浪 `hf_ES`(标普500指数期货) / `hf_NQ`(纳指期货，标的为 CME 纳指100期货)
 - 现货昨收（非实时）：新浪 `gb_inx`(标普500) / 腾讯 `usIXIC`(纳斯达克综合指数＝口语「纳指」)
-- VIX（避险情绪开关源，非实时）：腾讯 `usVIX`
-- 美债10Y（情绪/宏观参考，非实时）：腾讯 `usTNX`（无则降级标"暂不可用"）
+- **美债10年期收益率（实时）**：CNBC 报价服务（腾讯 `usTNX` 已失效，2026-10-29 实测不返回）
+- VIX（**仅后台参与避险判断，面板不展示**）：CBOE 官方日收盘 CSV
 """
 import os
 import sys
@@ -37,14 +37,20 @@ SINA_INDEX_URL = "https://hq.sinajs.cn/list=gb_inx,gb_ixic"
 # 腾讯财经美股代码 -> (symbol, name, is_realtime)
 # usIXIC = 纳斯达克综合指数（口语「纳指」）；usNDX = 纳斯达克100，两者不同：
 # 综合指数含全部纳斯达克上市股票（约 3300 只），纳指100 只含 100 只非金融大盘股。
-TENCENT_URL = "https://qt.gtimg.cn/q=usIXIC,usTNX"
+# ⚠️ 腾讯 `usTNX`（美债10Y）已不再返回数据（2026-10-29 实测请求 3 个代码只回 2 条），
+#    美债改用 CNBC 实时报价，见 fetch_cnbc_ust10y()。
+TENCENT_URL = "https://qt.gtimg.cn/q=usIXIC"
 TENCENT_SYMBOLS = {
     "usIXIC": ("IXIC", "纳指现货", 0),
-    "usTNX": ("UST10Y", "美债10Y收益率", 0),
 }
 # VIX：腾讯 usVIX 的数值自 2026-09-15 起就不再更新（实测长期停在 21.67），
 # 拿它当避险开关等于开关永远不动。改用 CBOE 官方日收盘 CSV（权威、日频、T+1）。
 CBOE_VIX_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+# 美债10年期收益率（实时）：CNBC 报价服务，实测 last_time 就是当前时刻、curmktstatus=REG_MKT。
+# 备选（日频 T+1、权威）：美国财政部 daily_treasury_yield_curve XML。
+CNBC_US10Y_URL = ("https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol"
+                  "?symbols=US10Y&requestMethod=itv&noform=1&partnerId=2&fund=1"
+                  "&exthrs=1&output=json&events=1")
 
 
 def fetch_sina_futures():
@@ -141,6 +147,30 @@ def fetch_cboe_vix():
     return close, round(chg, 4), "%s-%s-%s" % (y, m, d)
 
 
+def fetch_cnbc_ust10y():
+    """CNBC 美债 10 年期收益率（**实时**），返回 (收益率%, 变动bp, 相对变动%, 美东时间)。
+
+    字段（2026-10-29 实测）：
+        last="4.995%"  previous_day_closing="5.045%"  change="-0.05"  change_pct="-0.9911%"
+        last_time="2026-10-29T03:51:40.000-0400"（美东）  curmktstatus="REG_MKT"
+    ⚠️ 收益率要用 **bp** 表达涨跌：change 本身就是「收益率百分点」差，×100 即 bp
+       （-0.05 → -5bp，正好 5.045→4.995）。change_pct 是相对变化率，对收益率没有
+       经济含义（4%→4.04% 只算 +1%，实际是 +4bp），仅作参考保留。
+    """
+    txt = fetch_text(CNBC_US10Y_URL, timeout=30, retries=2)
+    obj = json.loads(txt)
+    quotes = ((obj.get("FormattedQuoteResult") or {}).get("FormattedQuote") or [])
+    if not quotes:
+        raise ValueError("CNBC US10Y 无报价")
+    q = quotes[0]
+    last = float(str(q["last"]).rstrip("%").replace(",", ""))
+    prev = float(str(q.get("previous_day_closing") or "0").rstrip("%").replace(",", ""))
+    bp = round((last - prev) * 100, 1) if prev else None
+    chg_pct = round((last / prev - 1) * 100, 4) if prev else None
+    as_of = (q.get("last_time") or "").replace("T", " ")[:19]
+    return last, bp, chg_pct, ("美东 " + as_of if as_of else "")
+
+
 def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
     date = date or datetime.date.today().isoformat()
     now = datetime.datetime.now().isoformat(timespec="seconds")
@@ -155,7 +185,7 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
             _n, price, prev, ts = got
             # 涨跌幅按「现价 vs 昨收」真实计算（此前写死 0.00%，等于没有信息）
             chg = round((price / prev - 1) * 100, 4) if prev else None
-            rows.append((date, symbol, name, price, chg, 1, ts or now, now))
+            rows.append((date, symbol, name, price, chg, 1, ts or now, now, None))
     except Exception as e:  # noqa: BLE001
         print("[signal] futures failed:", e)
     # 腾讯（非实时：纳指100现货/VIX/美债）
@@ -164,20 +194,29 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
         for tcode, (symbol, name, is_rt) in TENCENT_SYMBOLS.items():
             if tcode in tencent:
                 price, chg = tencent[tcode]
-                rows.append((date, symbol, name, price, chg, is_rt, now, now))
+                rows.append((date, symbol, name, price, chg, is_rt, now, now, None))
     except Exception as e:  # noqa: BLE001
         print("[signal] tencent failed:", e)
-    # VIX（避险开关）：CBOE 官方 CSV 优先，失败再退回腾讯（可能停在旧值）
+    # 美债10年期收益率（实时，CNBC）
+    try:
+        ust, ust_bp, ust_pct, ust_ts = fetch_cnbc_ust10y()
+        rows.append((date, "UST10Y", "美债10Y收益率", ust, ust_pct, 1,
+                     ust_ts or now, now, ust_bp))
+    except Exception as e:  # noqa: BLE001
+        print("[signal] cnbc ust10y failed:", e)
+    # VIX（避险开关）：CBOE 官方 CSV 优先，失败再退回腾讯（可能停在旧值）。
+    # 面板不再展示 VIX（丁总 2026-10-29 明确改用美债10Y），但仍抓取——它是策略
+    # 「避险防御」的判据之一，少了它 VIX 飙升时不会触发倍数 ×0.5。
     try:
         vix_close, vix_chg, vix_date = fetch_cboe_vix()
-        rows.append((date, "VIX", "VIX波动率", vix_close, vix_chg, 0, vix_date, now))
+        rows.append((date, "VIX", "VIX波动率", vix_close, vix_chg, 0, vix_date, now, None))
     except Exception as e:  # noqa: BLE001
         print("[signal] cboe vix failed, fallback tencent:", e)
         try:
             t2 = fetch_tencent_us("usVIX")
             if "usVIX" in t2:
                 price, chg = t2["usVIX"]
-                rows.append((date, "VIX", "VIX波动率", price, chg, 0, now, now))
+                rows.append((date, "VIX", "VIX波动率", price, chg, 0, now, now, None))
         except Exception as e2:  # noqa: BLE001
             print("[signal] vix unavailable:", e2)
     # 新浪（非实时：标普500 现货）
@@ -185,17 +224,17 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
         sina_idx = fetch_sina_us_index()
         if "gb_inx" in sina_idx:
             price, chg = sina_idx["gb_inx"]
-            rows.append((date, "SPX", "标普500现货", price, chg, 0, now, now))
+            rows.append((date, "SPX", "标普500现货", price, chg, 0, now, now, None))
     except Exception as e:  # noqa: BLE001
         print("[signal] sina index failed:", e)
     conn = db.get_conn(path)
-    # 同日重跑先清当日旧行：symbol 口径变过（NDX → IXIC），不清理会让面板
-    # 同时出现「纳指现货」与旧的「纳斯达克100现货」两条。
+    # 同日重跑先清当日旧行：symbol 口径变过（NDX → IXIC、usTNX → CNBC UST10Y），
+    # 不清理会让面板同时出现新旧两条。
     conn.execute("DELETE FROM qdii_us_signal WHERE date=?", (date,))
     for r in rows:
         db.upsert_row(conn, "qdii_us_signal",
                       ["date", "symbol", "name", "last_price", "change_pct",
-                       "is_realtime", "as_of", "fetched_at"],
+                       "is_realtime", "as_of", "fetched_at", "change_bp"],
                       list(r), "date,symbol")
     conn.commit()
     conn.close()
@@ -211,7 +250,12 @@ def get_latest_us_signal(path: str = C.QDII_DB_PATH):
         conn.close()
         return []
     rows = conn.execute(
-        "SELECT * FROM qdii_us_signal WHERE date=?", (drow["date"],)).fetchall()
+        # 显式排序：面板固定为「纳指现货 → 纳指期货 → 标普现货 → 标普期货 →
+        # 美债10Y → VIX」。别依赖插入顺序——重跑/补数时顺序会变。
+        "SELECT * FROM qdii_us_signal WHERE date=? ORDER BY CASE symbol "
+        "WHEN 'IXIC' THEN 1 WHEN 'NDX_FUT' THEN 2 WHEN 'SPX' THEN 3 "
+        "WHEN 'SPX_FUT' THEN 4 WHEN 'UST10Y' THEN 5 WHEN 'VIX' THEN 6 ELSE 9 END",
+        (drow["date"],)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -221,6 +265,8 @@ if __name__ == "__main__":
     n = fetch_us_signal()
     print("fetched %d us signals" % n)
     for r in get_latest_us_signal():
-        print("  %-8s %s price=%.3f chg=%.2f%% rt=%s" % (
-            r["symbol"], r["name"], r["last_price"],
-            r["change_pct"], r["is_realtime"]))
+        bp = r.get("change_bp")
+        print("  %-8s %-14s price=%.3f chg=%.2f%%%s rt=%s as_of=%s" % (
+            r["symbol"], r["name"], r["last_price"], r["change_pct"],
+            (" (%+.1fbp)" % bp) if bp is not None else "",
+            r["is_realtime"], r["as_of"]))
