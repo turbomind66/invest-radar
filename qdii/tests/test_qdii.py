@@ -536,5 +536,46 @@ class RiskOffAssessTest(unittest.TestCase):
         self.assertNotIn("VIX", line[0])
 
 
+class PlatformFeeOrderTest(unittest.TestCase):
+    """费率矩阵：同基金的多平台行必须相邻 + 平台顺序固定（页面靠它做 rowspan 合并）。
+
+    踩坑背景：原 get_platform_fee 没有 ORDER BY，行序是 SQLite 物理存储序，
+    同一只基金的三个平台可能被别的基金隔开，合并单元格会错行；
+    若改按 `ORDER BY code` 又会把 FUND_POOL 的大类顺序（标普500→纳指→日经→DAX）打乱。
+    """
+
+    def test_rows_grouped_by_pool_order_then_platform(self):
+        import tempfile
+        import db as qdb
+        import constants as C
+        import fetcher_fee
+        p = tempfile.mktemp(suffix=".db")
+        init_conn = qdb.init_db(p)
+        conn = qdb.get_conn(p)
+        # 故意乱序写入：先纳指（池里靠后）、且平台倒着来
+        for code in ("161130", "161125"):
+            for plat in ("理财通", "支付宝", "天天基金"):
+                qdb.upsert_row(
+                    conn, "qdii_platform_fee",
+                    ["code", "platform", "on_sale", "mgmt_fee", "fetched_at"],
+                    [code, plat, 1, 0.5, "2026-10-29T16:00:00"], "code,platform")
+        conn.commit()
+        conn.close()
+        init_conn.close()
+        try:
+            rows = fetcher_fee.get_platform_fee(path=p)
+            self.assertEqual(
+                [(r["code"], r["platform"]) for r in rows],
+                [("161125", "天天基金"), ("161125", "支付宝"), ("161125", "理财通"),
+                 ("161130", "天天基金"), ("161130", "支付宝"), ("161130", "理财通")])
+            # 标普500（161125）在池里排在纳指100（161130）之前
+            self.assertLess(
+                [f["code"] for f in C.FUND_POOL].index("161125"),
+                [f["code"] for f in C.FUND_POOL].index("161130"))
+        finally:
+            if os.path.exists(p):
+                os.remove(p)
+
+
 if __name__ == "__main__":
     unittest.main()

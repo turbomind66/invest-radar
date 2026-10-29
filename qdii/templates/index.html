@@ -40,6 +40,11 @@
      决策表整体放开换行（其余表格不受影响）。 */
   #decisionTable td{white-space:normal;}
   #decisionTable td:first-child{white-space:nowrap;}   /* 大类名不许被拆成两行 */
+  /* 费率矩阵：代码/名称是 rowspan 合并单元格，必须垂直居中、底色区分；
+     基金名称较长且中文可任意断行，放开换行让它自动收窄，否则整表宽度爆掉。 */
+  #feeTable td.merged{vertical-align:middle;background:#fafbfc;font-weight:500;}
+  #feeTable td:nth-child(2){white-space:normal;word-break:break-word;}
+  #feeTable tr.fundSep td{border-top:2px solid #e5e7eb;}
   .big{font-size:20px;font-weight:700;}
   .chart{width:100%;height:260px;}
   .warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:8px 10px;border-radius:8px;font-size:12px;}
@@ -104,7 +109,7 @@
   <div class="card">
     <h2>⑤ 多平台费率矩阵 <span class="tag">天天基金 / 支付宝 / 理财通</span></h2>
     <table id="feeTable"><thead><tr>
-      <th>代码</th><th>平台</th><th>在售</th><th>申购费(原)</th><th>申购费(折)</th><th>管理费</th><th>托管费</th><th>销售服务费</th><th>年费合计</th>
+      <th>代码</th><th>基金名称</th><th>平台</th><th>在售</th><th>申购费(原)</th><th>申购费(折)</th><th>管理费</th><th>托管费</th><th>销售服务费</th><th>年费合计</th>
     </tr></thead><tbody></tbody></table>
     <div class="note">年费 = 管理费 + 托管费 + 销售服务费（长期定投比一次性申购费更重要）。支付宝折后价暂无法获取，以天天基金口径展示。<br>
       <b>理财通</b>：网页版已下线、仅微信 App 内提供服务且无公开接口，故标「推算」——管理费/托管费沿用同一基金合同值（全平台一致），申购费按平台常见的 <b>A 类 1 折</b>、起购按 10 元估算，申购状态跟随基金公司限购公告。</div>
@@ -281,22 +286,41 @@ function annualFee(r){
 }
 function renderFee(rows){
   const tb=el('feeTable').querySelector('tbody'); tb.innerHTML='';
+  // 同一只基金的多平台数据：把「代码」「基金名称」两格纵向合并（rowspan），
+  // 下面紧跟各平台行 —— 一眼能看出「同一只基金在哪个平台更便宜」。
+  // 前提：接口已按 code + 固定平台顺序排序（fetcher_fee.get_platform_fee 的 ORDER BY），
+  // 这里仍按首次出现顺序重新分组，防止上游改排序后合并错行。
+  const groups=[], idx={};
   rows.forEach(r=>{
-    if(r.platform==='券商') return;
-    const tr=document.createElement('tr');
-    const fee=annualFee(r);
-    const onsale = r.on_sale? '<span class="pill p-open">在售</span>' : '<span class="pill p-suspend">不可售</span>';
-    // 理财通等平台无公开接口，按平台通用规则推算 —— 明确标注，避免误当成实时抓取
-    const approx = (r.source||'').indexOf('rule:')===0
-      ? ' <span class="pill p-approx" title="该平台无公开接口，按平台通用规则推算（管理费/托管费同基金合同，申购费按 1 折）">推算</span>' : '';
-    tr.innerHTML='<td>'+r.code+'</td><td>'+r.platform+approx+'</td><td>'+onsale+'</td>'+
-      '<td>'+(r.sub_fee_rate!=null?r.sub_fee_rate+'%':'—')+'</td>'+
-      '<td>'+(r.sub_fee_discount!=null?r.sub_fee_discount+'%':'—')+'</td>'+
-      '<td>'+(r.mgmt_fee!=null?r.mgmt_fee+'%':'—')+'</td>'+
-      '<td>'+(r.custodian_fee!=null?r.custodian_fee+'%':'—')+'</td>'+
-      '<td>'+(r.sales_service_fee!=null?r.sales_service_fee+'%':'—')+'</td>'+
-      '<td><b>'+(fee?fee.toFixed(2)+'%':'—')+'</b></td>';
-    tb.appendChild(tr);
+    if(r.platform==='券商') return;            // 未接入平台的遗留行，不展示
+    if(!(r.code in idx)){ idx[r.code]=groups.length; groups.push({code:r.code, rows:[]}); }
+    groups[idx[r.code]].rows.push(r);
+  });
+  groups.forEach((g,gi)=>{
+    const f=poolName(g.code);
+    g.rows.forEach((r,i)=>{
+      const tr=document.createElement('tr');
+      if(i===0 && gi>0) tr.className='fundSep';   // 基金之间加粗分隔线
+      const fee=annualFee(r);
+      const onsale = r.on_sale? '<span class="pill p-open">在售</span>' : '<span class="pill p-suspend">不可售</span>';
+      // 理财通等平台无公开接口，按平台通用规则推算 —— 明确标注，避免误当成实时抓取
+      const approx = (r.source||'').indexOf('rule:')===0
+        ? ' <span class="pill p-approx" title="该平台无公开接口，按平台通用规则推算（管理费/托管费同基金合同，申购费按 1 折）">推算</span>' : '';
+      let html='';
+      if(i===0){
+        html='<td class="merged" rowspan="'+g.rows.length+'"><b>'+g.code+'</b></td>'+
+             '<td class="merged" rowspan="'+g.rows.length+'">'+(f.name||'—')+'</td>';
+      }
+      html+='<td>'+r.platform+approx+'</td><td>'+onsale+'</td>'+
+        '<td>'+(r.sub_fee_rate!=null?r.sub_fee_rate+'%':'—')+'</td>'+
+        '<td>'+(r.sub_fee_discount!=null?r.sub_fee_discount+'%':'—')+'</td>'+
+        '<td>'+(r.mgmt_fee!=null?r.mgmt_fee+'%':'—')+'</td>'+
+        '<td>'+(r.custodian_fee!=null?r.custodian_fee+'%':'—')+'</td>'+
+        '<td>'+(r.sales_service_fee!=null?r.sales_service_fee+'%':'—')+'</td>'+
+        '<td><b>'+(fee?fee.toFixed(2)+'%':'—')+'</b></td>';
+      tr.innerHTML=html;
+      tb.appendChild(tr);
+    });
   });
 }
 

@@ -202,7 +202,17 @@ def get_platform_fee(code=None, path: str = C.QDII_DB_PATH):
     else:
         rows = conn.execute("SELECT * FROM qdii_platform_fee").fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    # 页面要按「代码 + 基金名称」纵向合并行，所以同代码必须相邻、平台顺序固定：
+    #   · 基金顺序跟 FUND_POOL 走（标普500 → 纳指100 → 日经225 → 德国DAX），
+    #     别用 ORDER BY code —— 按代码排会把大类打乱，看不出分类；
+    #   · 平台顺序 天天基金 → 支付宝 → 理财通。
+    # 原实现没有 ORDER BY，行序是 SQLite 的物理存储序，合并单元格会错行。
+    pool_order = {f["code"]: i for i, f in enumerate(C.FUND_POOL)}
+    plat_rank = {"天天基金": 1, "支付宝": 2, "理财通": 3}
+    out.sort(key=lambda r: (pool_order.get(r["code"], 999),
+                            plat_rank.get(r["platform"], 9)))
+    return out
 
 
 if __name__ == "__main__":
