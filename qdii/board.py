@@ -12,11 +12,15 @@ import constants as C
 import db
 import fetcher_fee
 import fetcher_limit
+from functools import cmp_to_key
 
 # 平台展示顺序：天天基金（官方直销口径）→ 支付宝 → 理财通（推算）
 PLATFORM_ORDER = {"天天基金": 1, "支付宝": 2, "理财通": 3}
 
 STATUS_TEXT = {"SUSPEND": "暂停", "LIMIT": "限大额", "OPEN": "开放"}
+
+# 申购状态排序序：能买的排前面（开放 → 限大额 → 暂停）
+STATUS_RANK = {"OPEN": 0, "LIMIT": 1, "SUSPEND": 2}
 
 
 def _fmt_amount(v):
@@ -135,11 +139,95 @@ def merge_board(limit_rows, fee_rows, pool=()):
     return blocks
 
 
-def get_fund_board(path: str = C.QDII_DB_PATH):
-    """从库里取两组行合并（页面唯一数据入口）。"""
-    return merge_board(fetcher_limit.get_latest_limit_status(path=path),
-                       fetcher_fee.get_platform_fee(path=path),
-                       db.get_fund_pool(path))
+def get_fund_board(path: str = C.QDII_DB_PATH, sort=None, desc=False,
+                   psort=None, pdesc=False):
+    """从库里取两组行合并（页面唯一数据入口）。
+
+    `sort` 是基金级排序键（改变「哪只基金排前面」），`psort` 是平台级排序键
+    （只改变同一只基金内部各平台行的先后，**不改变基金之间的顺序**）。
+    两者互相独立 —— 这是丁总明确要求的：「同一基金，后面各平台的平台、在售、
+    申购费排序时，各基金顺序不变，其各平台申购内部的各行的顺序变动」。
+    """
+    blocks = merge_board(fetcher_limit.get_latest_limit_status(path=path),
+                         fetcher_fee.get_platform_fee(path=path),
+                         db.get_fund_pool(path))
+    blocks = sort_platforms(blocks, psort, pdesc)
+    blocks = sort_blocks(blocks, sort, desc)
+    return blocks
+
+
+# ---------------------------------------------------------------- 排序
+def _num(v):
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+# 类别排序沿用 FUND_POOL 的类别序（标普500 → 纳指100 → 日经225 → 德国DAX），
+# 而不是字符串码点序 —— 后者会把「日经225」排到「标普500」前面，看不出分组。
+CATEGORY_ORDER = {}
+for _f in C.FUND_POOL:
+    CATEGORY_ORDER.setdefault(_f.get("category"), len(CATEGORY_ORDER) + 1)
+
+# 基金级排序键（点这些表头 → 改变基金块先后）
+FUND_SORT_KEYS = {
+    "category": lambda b: CATEGORY_ORDER.get(b.get("category"), 99),
+    "sub_status": lambda b: STATUS_RANK.get(b.get("sub_status"), 3),
+    "limit_amount": lambda b: _num(b.get("limit_amount")),
+    "next_open_date": lambda b: b.get("next_open_date") or "",
+    "buy_start": lambda b: _num(b.get("buy_start")),
+    "mgmt_fee": lambda b: _num(b.get("mgmt_fee")),
+    "custodian_fee": lambda b: _num(b.get("custodian_fee")),
+    "sales_service_fee": lambda b: _num(b.get("sales_service_fee")),
+    "annual_fee": lambda b: _num(b.get("annual_fee")),
+}
+
+# 平台级排序键（点这些表头 → 只改变同一只基金内部各平台行的先后）
+PLAT_SORT_KEYS = {
+    "platform": lambda p: PLATFORM_ORDER.get(p.get("platform"), 9),
+    # 在售优先（0 在售 / 1 不可售），升序即「能买的排前面」
+    "on_sale": lambda p: 0 if p.get("on_sale") else 1,
+    # 用折后价排（买的时候真正付的就是折后价）；没有折后价的排最后
+    "sub_fee": lambda p: _num(p.get("sub_fee_discount")),
+}
+
+
+def _cmp(a, b, desc):
+    """比较：空值恒定排最后（不随升降序翻转），否则按类型比较。"""
+    na = a is None or a == ""
+    nb = b is None or b == ""
+    if na and nb:
+        return 0
+    if na:
+        return 1
+    if nb:
+        return -1
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        r = (a > b) - (a < b)
+    else:
+        r = (str(a) > str(b)) - (str(a) < str(b))
+    return -r if desc else r
+
+
+def sort_blocks(blocks, key=None, desc=False):
+    """按基金级键排序（稳定：同值保持原顺序）。"""
+    if not key or key not in FUND_SORT_KEYS:
+        return list(blocks or [])
+    get = FUND_SORT_KEYS[key]
+    return sorted(blocks or [],
+                  key=cmp_to_key(lambda x, y: _cmp(get(x), get(y), desc)))
+
+
+def sort_platforms(blocks, key=None, desc=False):
+    """按平台级键排序**每只基金内部**的各平台行；基金的先后顺序完全不动。"""
+    if not key or key not in PLAT_SORT_KEYS:
+        return list(blocks or [])
+    get = PLAT_SORT_KEYS[key]
+    out = []
+    for b in blocks or []:
+        nb = dict(b)
+        nb["platforms"] = sorted(b.get("platforms") or [],
+                                 key=cmp_to_key(lambda p, q: _cmp(get(p), get(q), desc)))
+        out.append(nb)
+    return out
 
 
 def board_summary(blocks):

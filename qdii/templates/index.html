@@ -52,6 +52,11 @@
   #boardTable td.name{white-space:normal;word-break:break-word;min-width:120px;}
   #boardTable td.grp,#boardTable th.grp{border-left:1px solid #e2e8f0;}
   #boardTable tr.fundSep td{border-top:2px solid #e5e7eb;}
+  /* 可排序表头：点一下按该列排，再点反向；箭头显示当前方向 */
+  #boardTable th[data-sort],#boardTable th[data-psort]{cursor:pointer;user-select:none;}
+  #boardTable th[data-sort]:hover,#boardTable th[data-psort]:hover{background:#e2e8f0;color:#1f2937;}
+  #boardTable th.sorted{background:#e2e8f0;color:#1f2937;}
+  #boardTable .sarr{font-size:10px;color:#94a3b8;margin-left:2px;}
   /* 14 列窄屏放不下：给表格单独的横向滚动容器。
      不能让它直接撑开 .card —— .wrap 是 grid，grid item 默认 min-width:auto，
      表格会把整页顶宽、所有卡片都跟着变宽（表现为整页一条横向滚动条）。 */
@@ -121,13 +126,25 @@
         <th class="tgroup" colspan="3">各平台申购</th>
       </tr>
       <tr>
-        <th>代码</th><th>基金名称</th><th>类别</th><th>申购状态</th><th>日限额(元)</th><th>下一开放日</th><th>起购(元)</th>
-        <th>管理费</th><th>托管费</th><th>销售服务费</th><th>年费合计</th>
-        <th>平台</th><th>在售</th><th>申购费 原→折</th>
+        <th>代码</th><th>基金名称</th>
+        <th data-sort="category">类别<span class="sarr"></span></th>
+        <th data-sort="sub_status">申购状态<span class="sarr"></span></th>
+        <th data-sort="limit_amount">日限额(元)<span class="sarr"></span></th>
+        <th data-sort="next_open_date">下一开放日<span class="sarr"></span></th>
+        <th data-sort="buy_start">起购(元)<span class="sarr"></span></th>
+        <th class="grp" data-sort="mgmt_fee">管理费<span class="sarr"></span></th>
+        <th data-sort="custodian_fee">托管费<span class="sarr"></span></th>
+        <th data-sort="sales_service_fee">销售服务费<span class="sarr"></span></th>
+        <th data-sort="annual_fee">年费合计<span class="sarr"></span></th>
+        <th class="grp" data-psort="platform">平台<span class="sarr"></span></th>
+        <th data-psort="on_sale">在售<span class="sarr"></span></th>
+        <th data-psort="sub_fee">申购费 原→折<span class="sarr"></span></th>
       </tr>
     </thead><tbody></tbody></table>
     </div>
-    <div class="note">年费 = 管理费 + 托管费 + 销售服务费，<b>是基金合同条款、各平台完全一致</b>，故只列一次；真正按平台变的只有「是否在售」和「申购费」。<br>
+    <div class="note"><b>点击表头可排序</b>：基金级列（类别 / 申购状态 / 日限额 / 下一开放日 / 起购 / 管理费 / 托管费 / 销售服务费 / 年费合计）改变<b>哪只基金排在前面</b>；
+      平台级列（平台 / 在售 / 申购费）只调整<b>同一只基金内部各平台行的先后</b>，各基金之间的顺序不变。
+      <br>年费 = 管理费 + 托管费 + 销售服务费，<b>是基金合同条款、各平台完全一致</b>，故只列一次；真正按平台变的只有「是否在售」和「申购费」。<br>
       「申购状态 / 日限额」是基金公司限购公告口径（全平台通用）。<b>变相暂停</b> = 名义限大额但单日不足 100 元，实际投不进去（与定投决策口径一致）。<br>
       支付宝未公开申购费（显示「—」），其余列均为公开数据；<b>理财通</b>网页版已下线、仅微信 App 内提供服务且无公开接口，故标「推算」——管理费/托管费沿用基金合同值，申购费按 <b>A 类 1 折</b>、起购按 10 元估算，申购状态跟随限购公告。</div>
   </div>
@@ -281,6 +298,82 @@ function renderPremium(rows){
 }
 
 // ④ 基金总览：申购状态 + 限额 + 多平台费率（服务端已按 code 做 join，见 qdii/board.py）
+// 排序：基金级列 → 改「哪只基金在前」；平台级列 → 只改「同一只基金内部各平台行的先后」，
+//       基金之间的顺序**不受影响**（丁总口径）。排序统一在后端做，前端只传列键，
+//       这样页面与接口口径一致，也能直接单测。
+const BOARD={fundKey:null,fundDir:1,platKey:null,platDir:1};
+
+// 排序状态与 URL 同步：刷新 / 分享链接不丢排序
+(function initSortFromUrl(){
+  if(typeof location==='undefined' || !location.search) return;
+  const m={};
+  location.search.replace(/^\?/,'').split('&').forEach(kv=>{
+    if(!kv) return;
+    const i=kv.indexOf('=');
+    if(i<0) return;
+    m[kv.slice(0,i)]=decodeURIComponent(kv.slice(i+1));
+  });
+  if(m.sort) BOARD.fundKey=m.sort;
+  if(m.dir==='desc') BOARD.fundDir=-1;
+  if(m.psort) BOARD.platKey=m.psort;
+  if(m.pdir==='desc') BOARD.platDir=-1;
+})();
+
+function syncSortUrl(){
+  if(typeof location==='undefined' || !location.history || !location.history.replaceState) return;
+  try{
+    const p=[];
+    if(BOARD.fundKey) p.push('sort='+encodeURIComponent(BOARD.fundKey)+'&dir='+(BOARD.fundDir>0?'asc':'desc'));
+    if(BOARD.platKey) p.push('psort='+encodeURIComponent(BOARD.platKey)+'&pdir='+(BOARD.platDir>0?'asc':'desc'));
+    location.history.replaceState(null,'',
+      location.pathname+(p.length?'?'+p.join('&'):''));
+  }catch(e){ /* file:// 下可能不允许改 URL，忽略即可 */ }
+}
+
+function boardUrl(){
+  const p=[];
+  if(BOARD.fundKey) p.push('sort='+encodeURIComponent(BOARD.fundKey)+'&dir='+(BOARD.fundDir>0?'asc':'desc'));
+  if(BOARD.platKey) p.push('psort='+encodeURIComponent(BOARD.platKey)+'&pdir='+(BOARD.platDir>0?'asc':'desc'));
+  return '/api/qdii/board'+(p.length?'?'+p.join('&'):'');
+}
+
+function updateSortArrows(){
+  document.querySelectorAll('#boardTable th[data-sort]').forEach(th=>{
+    const s=th.querySelector('.sarr'); if(!s) return;
+    const on=BOARD.fundKey===th.dataset.sort;
+    th.classList.toggle('sorted', on);
+    s.textContent = on ? (BOARD.fundDir>0?' ▲':' ▼') : '';
+  });
+  document.querySelectorAll('#boardTable th[data-psort]').forEach(th=>{
+    const s=th.querySelector('.sarr'); if(!s) return;
+    const on=BOARD.platKey===th.dataset.psort;
+    th.classList.toggle('sorted', on);
+    s.textContent = on ? (BOARD.platDir>0?' ▲':' ▼') : '';
+  });
+}
+
+async function loadBoard(){
+  try{
+    const b=await api(boardUrl());
+    renderBoard(b.rows||[], b.summary);
+    updateSortArrows();
+  }catch(e){}
+}
+
+// 表头点击：同一列再点一次反向；换列则默认升序
+document.addEventListener('click', function(ev){
+  const th=ev.target.closest('#boardTable th[data-sort], #boardTable th[data-psort]');
+  if(!th) return;
+  if(th.dataset.sort){
+    if(BOARD.fundKey===th.dataset.sort) BOARD.fundDir=-BOARD.fundDir;
+    else {BOARD.fundKey=th.dataset.sort; BOARD.fundDir=1;}
+  }else{
+    if(BOARD.platKey===th.dataset.psort) BOARD.platDir=-BOARD.platDir;
+    else {BOARD.platKey=th.dataset.psort; BOARD.platDir=1;}
+  }
+  syncSortUrl();
+  loadBoard();
+});
 function renderBoard(blocks, sum){
   const tb=el('boardTable').querySelector('tbody'); tb.innerHTML='';
   const num=(v,suffix)=> (v==null||v==='')?'—':(v+suffix);
@@ -381,7 +474,7 @@ function renderPool(rows){
   try{ const d=await api('/api/qdii/decision'); renderDecision(d.rows||[]); }catch(e){}
   try{ const s=await api('/api/qdii/signal'); renderSignal(s.rows||[]); }catch(e){}
   try{ const pr=await api('/api/qdii/premium'); renderPremium(pr.rows||[]); }catch(e){}
-  try{ const b=await api('/api/qdii/board'); renderBoard(b.rows||[], b.summary); }catch(e){}
+  try{ await loadBoard(); }catch(e){}
   try{ const te=await api('/api/qdii/tracking'); renderTE(te.rows||[]); }catch(e){}
 })();
 </script>

@@ -694,5 +694,124 @@ class BoardMergeTest(unittest.TestCase):
         self.assertEqual(blocks[0]["limit_text"], "不限")
 
 
+class BoardSortTest(unittest.TestCase):
+    """④ 基金总览的表头排序。
+
+    丁总口径：点**基金级**列 → 改变「哪只基金排在前面」；点**平台级**列 →
+    只改变同一只基金内部各平台行的先后，**各基金之间的顺序不变**。
+    排序统一在后端做（前端只传列键），所以口径与页面天然一致、可单测。
+    """
+
+    def _blocks(self):
+        return [
+            dict(code="161125", category="标普500", sub_status="SUSPEND",
+                 limit_amount=10.0, next_open_date="", buy_start=10.0,
+                 mgmt_fee=0.8, custodian_fee=0.2, sales_service_fee=0.0,
+                 annual_fee=1.0,
+                 platforms=[dict(platform="天天基金", on_sale=0, sub_fee_rate=1.2,
+                                 sub_fee_discount=0.12),
+                            dict(platform="支付宝", on_sale=0, sub_fee_rate=None,
+                                 sub_fee_discount=None),
+                            dict(platform="理财通", on_sale=0, sub_fee_rate=1.2,
+                                 sub_fee_discount=0.12)]),
+            dict(code="096001", category="标普500", sub_status="LIMIT",
+                 limit_amount=50.0, next_open_date="", buy_start=10.0,
+                 mgmt_fee=1.0, custodian_fee=0.2, sales_service_fee=0.0,
+                 annual_fee=1.2,
+                 platforms=[dict(platform="天天基金", on_sale=1, sub_fee_rate=1.5,
+                                 sub_fee_discount=0.15),
+                            dict(platform="支付宝", on_sale=1, sub_fee_rate=None,
+                                 sub_fee_discount=None),
+                            dict(platform="理财通", on_sale=1, sub_fee_rate=1.5,
+                                 sub_fee_discount=0.15)]),
+            dict(code="161130", category="纳斯达克100", sub_status="LIMIT",
+                 limit_amount=10.0, next_open_date="2026-11-02", buy_start=10.0,
+                 mgmt_fee=0.5, custodian_fee=0.1, sales_service_fee=0.0,
+                 annual_fee=0.6,
+                 platforms=[dict(platform="天天基金", on_sale=1, sub_fee_rate=1.2,
+                                 sub_fee_discount=0.12)]),
+        ]
+
+    def test_fund_sort_by_annual_fee(self):
+        import board
+        out = board.sort_blocks(self._blocks(), "annual_fee")
+        self.assertEqual([b["code"] for b in out], ["161130", "161125", "096001"])
+        out_desc = board.sort_blocks(self._blocks(), "annual_fee", True)
+        self.assertEqual([b["code"] for b in out_desc], ["096001", "161125", "161130"])
+
+    def test_fund_sort_by_limit_amount(self):
+        import board
+        out = board.sort_blocks(self._blocks(), "limit_amount")
+        # 10, 10, 50 → 同值保持原顺序（稳定排序）
+        self.assertEqual([b["code"] for b in out], ["161125", "161130", "096001"])
+
+    def test_fund_sort_by_status_puts_openable_first(self):
+        import board
+        out = board.sort_blocks(self._blocks(), "sub_status")
+        # 限大额(LIMIT=1) 在 暂停(SUSPEND=2) 之前
+        self.assertEqual([b["code"] for b in out], ["096001", "161130", "161125"])
+
+    def test_fund_sort_by_category_follows_pool_order(self):
+        """类别排序按 FUND_POOL 的类别序，不按字符串码点（否则日经会排到标普前面）。"""
+        import board
+        import constants as C
+        out = board.sort_blocks(self._blocks(), "category")
+        cats = [b["category"] for b in out]
+        self.assertEqual(cats[0], "标普500")
+        self.assertEqual(cats[-1], "纳斯达克100")
+        pool_cats = []
+        for f in C.FUND_POOL:
+            if f["category"] not in pool_cats:
+                pool_cats.append(f["category"])
+        self.assertLess(pool_cats.index("标普500"), pool_cats.index("纳斯达克100"))
+
+    def test_platform_sort_keeps_fund_order(self):
+        """平台级排序只动块内行序，基金的先后必须完全不变。"""
+        import board
+        blocks = self._blocks()
+        before = [b["code"] for b in blocks]
+        out = board.sort_platforms(blocks, "platform")
+        self.assertEqual([b["code"] for b in out], before)
+        # 块内平台顺序按固定秩：天天基金 → 支付宝 → 理财通
+        self.assertEqual([p["platform"] for p in out[0]["platforms"]],
+                         ["天天基金", "支付宝", "理财通"])
+        # 降序则反过来
+        out_desc = board.sort_platforms(blocks, "platform", True)
+        self.assertEqual([p["platform"] for p in out_desc[0]["platforms"]],
+                         ["理财通", "支付宝", "天天基金"])
+        self.assertEqual([b["code"] for b in out_desc], before)
+
+    def test_platform_sort_by_fee_and_onsale(self):
+        import board
+        blocks = self._blocks()
+        out = board.sort_platforms(blocks, "sub_fee")
+        # 支付宝没有折后价 → 排最后；天天基金/理财通同价，保持原顺序
+        self.assertEqual([p["platform"] for p in out[0]["platforms"]],
+                         ["天天基金", "理财通", "支付宝"])
+        out2 = board.sort_platforms(blocks, "on_sale")
+        self.assertEqual([p["platform"] for p in out2[0]["platforms"]],
+                         ["天天基金", "支付宝", "理财通"])
+
+    def test_null_values_always_last(self):
+        """空值恒定排最后，且不随升降序翻转（否则降序时空值会跑到最前面）。"""
+        import board
+        blocks = self._blocks()
+        # 161125 / 096001 的下一开放日为空，161130 有值（2026-11-02）
+        asc = board.sort_blocks(blocks, "next_open_date")
+        self.assertEqual(asc[0]["code"], "161130")
+        self.assertEqual([b["code"] for b in asc[1:]], ["161125", "096001"])
+        desc = board.sort_blocks(blocks, "next_open_date", True)
+        self.assertEqual(desc[0]["code"], "161130")
+        self.assertEqual([b["code"] for b in desc[1:]], ["161125", "096001"])
+
+    def test_unknown_key_is_noop(self):
+        import board
+        blocks = self._blocks()
+        self.assertEqual([b["code"] for b in board.sort_blocks(blocks, "nope")],
+                         [b["code"] for b in blocks])
+        self.assertEqual([b["code"] for b in board.sort_platforms(blocks, "nope")],
+                         [b["code"] for b in blocks])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,7 @@ import json
 import http.server
 import socketserver
 import datetime
+import urllib.parse
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
@@ -32,7 +33,8 @@ INDEX = os.path.join(TEMPLATES, "index.html")
 PORT = int(os.environ.get("QDII_PORT", "5001"))
 
 
-def route_api(path):
+def route_api(path, query=None):
+    query = query or {}
     if path == "/api/qdii/status":
         return {"status": "ok", "db": C.QDII_DB_PATH,
                 "pool_size": len(C.FUND_POOL), "now": _now()}
@@ -45,8 +47,19 @@ def route_api(path):
     if path == "/api/qdii/board":
         # 页面主口径：把「申购状态+限额」与「多平台费率」合并成一只基金一个块
         # （上面 limit/fee 两个接口保留为原始数据，便于排障与追溯）
-        rows = board.get_fund_board()
-        return {"rows": rows, "summary": board.board_summary(rows)}
+        # 排序参数：sort/psort = 排序列键，dir/pdir = desc
+        #   sort  基金级 → 改变基金块先后
+        #   psort 平台级 → 只改变同一只基金内部各平台行的先后，基金先后不变
+        rows = board.get_fund_board(
+            sort=query.get("sort") or None,
+            desc=(query.get("dir") == "desc"),
+            psort=query.get("psort") or None,
+            pdesc=(query.get("pdir") == "desc"))
+        return {"rows": rows, "summary": board.board_summary(rows),
+                "sort": {"fund": query.get("sort") or None,
+                         "fund_desc": query.get("dir") == "desc",
+                         "plat": query.get("psort") or None,
+                         "plat_desc": query.get("pdir") == "desc"}}
     if path == "/api/qdii/signal":
         return {"rows": fetcher_signal.get_latest_us_signal()}
     if path == "/api/qdii/premium":
@@ -76,8 +89,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        # 解析查询串（表头排序用）：sort/psort=列键，dir/pdir=asc|desc
+        query = {}
+        if "?" in self.path:
+            for kv in self.path.split("?", 1)[1].split("&"):
+                if "=" in kv:
+                    k, v = kv.split("=", 1)
+                    query[k] = urllib.parse.unquote(v)
         if path.startswith("/api/"):
-            data = route_api(path)
+            data = route_api(path, query)
             if data is None:
                 self._send(json.dumps({"error": "not found"},
                           ensure_ascii=False).encode("utf-8"),
