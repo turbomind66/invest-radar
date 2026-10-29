@@ -54,6 +54,8 @@ SCHEMA = [
         date TEXT, code TEXT, online_code TEXT,
         market_price REAL, nav REAL, nav_date TEXT,
         premium_pct REAL, source TEXT, fetched_at TEXT,
+        est_nav REAL, est_premium_pct REAL,
+        bench_label TEXT, bench_asof TEXT,
         UNIQUE(date, code)
     )""",
     """CREATE TABLE IF NOT EXISTS qdii_decision (
@@ -84,6 +86,10 @@ def init_db(path: str = DB_PATH):
     for _tbl, _col, _decl in (
         ("qdii_tracking_error", "benchmark", "TEXT"),
         ("qdii_platform_fee", "buy_start", "REAL"),
+        ("qdii_premium", "est_nav", "REAL"),
+        ("qdii_premium", "est_premium_pct", "REAL"),
+        ("qdii_premium", "bench_label", "TEXT"),
+        ("qdii_premium", "bench_asof", "TEXT"),
     ):
         try:
             cur.execute("ALTER TABLE %s ADD COLUMN %s %s" % (_tbl, _col, _decl))

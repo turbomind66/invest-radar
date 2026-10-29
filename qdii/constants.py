@@ -69,27 +69,30 @@ FUND_POOL = [
 # 这里显式维护场内可交易的主流 QDII ETF，一只一行；场外基金与 ETF 的关系
 # 用「同一指数」表达即可（同一指数可由多家 ETF 跟踪，不存在唯一映射）。
 # 名称/代码已用新浪行情（2026-10-29）逐一核对。
+# bench = (源类型, 代码)，用于「折算溢价」：QDII 净值 T+1 披露，净值日期常比场内价晚
+#   1~2 个交易日，直接相减会把溢价系统性高估；用该指数的日线把净值折算到最新收盘日，
+#   才是「今天的真实溢价」。取不到日线的品种（日经/DAX 东财接口常被断）留空不折算。
 PREMIUM_ETFS = [
     dict(code="513100", name="纳指ETF", company="国泰", index_name="纳斯达克100",
-         category="纳斯达克100"),
+         category="纳斯达克100", bench=("sina_us", ".NDX")),
     dict(code="159941", name="纳指ETF", company="广发", index_name="纳斯达克100",
-         category="纳斯达克100"),
+         category="纳斯达克100", bench=("sina_us", ".NDX")),
     dict(code="159632", name="纳斯达克", company="华安", index_name="纳斯达克100",
-         category="纳斯达克100"),
+         category="纳斯达克100", bench=("sina_us", ".NDX")),
     dict(code="513300", name="纳斯达克ETF", company="华夏", index_name="纳斯达克100",
-         category="纳斯达克100"),
+         category="纳斯达克100", bench=("sina_us", ".NDX")),
     dict(code="513110", name="纳指ETF", company="华泰柏瑞", index_name="纳斯达克100",
-         category="纳斯达克100"),
+         category="纳斯达克100", bench=("sina_us", ".NDX")),
     dict(code="513500", name="标普500ETF", company="博时", index_name="标普500",
-         category="标普500"),
+         category="标普500", bench=("sina_us", ".INX")),
     dict(code="513650", name="标普500ETF", company="南方", index_name="标普500",
-         category="标普500"),
+         category="标普500", bench=("sina_us", ".INX")),
     dict(code="159612", name="标普500ETF", company="国泰", index_name="标普500",
-         category="标普500"),
+         category="标普500", bench=("sina_us", ".INX")),
     dict(code="513880", name="日经225ETF", company="华安", index_name="日经225",
-         category="日经225"),
+         category="日经225", bench=("sina_fut", "NK")),
     dict(code="513030", name="德国ETF", company="华安", index_name="德国DAX",
-         category="德国DAX"),
+         category="德国DAX", bench=("em_us", "100.GDAXI")),
 ]
 
 # ---- 定投决策：大类 → 参考信号 ----

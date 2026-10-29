@@ -71,12 +71,15 @@
     <div class="card">
       <h2>③ 场内溢价率 <span class="tag">14:30 A股交易日</span></h2>
       <table id="premiumTable"><thead><tr>
-        <th>场内代码</th><th>ETF名称</th><th>跟踪指数</th><th>场内价</th><th>净值</th><th>净值日期</th><th>溢价率</th><th>提示</th>
+        <th>场内代码</th><th>ETF名称</th><th>场内价</th><th>净值 / 日期</th><th>溢价率</th><th>折算溢价</th><th>提示</th>
       </tr></thead><tbody></tbody></table>
       <div class="note">溢价率&gt;0：场内比净值贵（优先场外按净值买）；&lt;0：场内折价（场内更便宜）。
-        <br>口径：溢价 =（场内价 − 单位净值）/ 单位净值，按<b>场内 ETF</b> 逐只计算（不再挂在场外基金上）。
-        <br>⚠️ QDII 净值 T+1 披露、遇海外休市还会顺延，所以「净值日期」常比场内价晚 1~2 个交易日，<b>溢价率会被系统性高估</b>；
-        看趋势要看同一只 ETF 的相对高低，别拿不同净值日期的品种横向比。</div>
+        <br>两种口径：<b>溢价率</b> =（场内价 − 最新净值）/ 最新净值；<b>折算溢价</b> =（场内价 − 折算净值）/ 折算净值，
+        折算净值 = 最新净值 × 该指数从「净值日期」到「最新收盘日」的累计涨幅。
+        <br>为什么加折算：QDII 净值 T+1 披露、遇海外休市还顺延，「净值日期」常比场内价晚 1~2 个交易日，
+        直接相减会把这几天的指数涨跌混进溢价里。<b>看真实溢价以「折算溢价」为准</b>，原口径留作对照；
+        两者差距小，说明溢价是额度紧张造成的真实溢价，不是数据滞后。
+        <br>德国DAX（513030）取不到指数日线，折算列留空；提示按折算溢价判断，缺折算时回退原口径。</div>
     </div>
   </div>
 
@@ -184,18 +187,28 @@ function renderPremium(rows){
   const tb=el('premiumTable').querySelector('tbody'); tb.innerHTML='';
   rows.forEach(r=>{
     const p=r.premium_pct||0;
+    // 折算溢价：净值按指数涨幅折到最新收盘日后的溢价；缺指数日线时为空
+    const ep=(r.est_premium_pct===null||r.est_premium_pct===undefined)?null:r.est_premium_pct;
+    const judge=(ep!==null)?ep:p;          // 提示以折算溢价为准，缺折算时回退原口径
     let tip,cls;
-    if(p<-0.5){tip='场内折价·更划算';cls='p-green';}
-    else if(p>3){tip='高溢价·抢手';cls='p-red';}
+    if(judge<-0.5){tip='场内折价·更划算';cls='p-green';}
+    else if(judge>3){tip='高溢价·抢手';cls='p-red';}
     else {tip='基本持平';cls='';}
+    const navCell=(r.nav!=null?r.nav.toFixed(3):'—')+
+      '<br><small style="color:#94a3b8">'+(r.nav_date||'—')+'</small>';
+    const estCell=(ep!==null)
+      ? '<span class="'+clsPct(ep)+'">'+fmtPct(ep)+'</span>'+
+        '<br><small style="color:#94a3b8">净值折至 '+(r.bench_asof||'—')+'</small>'
+      : '<span style="color:#94a3b8">—</span>'+
+        '<br><small style="color:#94a3b8">无指数日线</small>';
     const tr=document.createElement('tr');
     tr.innerHTML='<td>'+r.code+'</td>'+
-      '<td>'+r.etf_name+'<br><small style="color:#94a3b8">'+r.company+'</small></td>'+
-      '<td>'+(r.index_name||'')+'</td>'+
+      '<td>'+r.etf_name+'<br><small style="color:#94a3b8">'+r.company+
+        (r.index_name?' · '+r.index_name:'')+'</small></td>'+
       '<td>'+(r.market_price!=null?r.market_price.toFixed(3):'—')+'</td>'+
-      '<td>'+(r.nav!=null?r.nav.toFixed(3):'—')+'</td>'+
-      '<td>'+(r.nav_date||'—')+'</td>'+
+      '<td>'+navCell+'</td>'+
       '<td class="'+clsPct(p)+'">'+fmtPct(p)+'</td>'+
+      '<td>'+estCell+'</td>'+
       '<td><span class="pill '+cls+'">'+tip+'</span></td>';
     tb.appendChild(tr);
   });

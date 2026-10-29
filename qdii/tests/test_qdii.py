@@ -327,5 +327,64 @@ class PremiumEtfListTest(unittest.TestCase):
         self.assertAlmostEqual((price - nav) / nav * 100, 13.97, places=1)
 
 
+class PremiumAdjustedTest(unittest.TestCase):
+    """折算溢价：把滞后净值按指数涨幅折到最新收盘日。
+
+    场景：净值日 10-27、指数最新 10-28 涨 0.55%，则折算净值 = 净值 × 1.0055，
+    折算溢价应低于原溢价 0.3~0.9 个点——用来确认「高溢价是真实的，不是滞后造成的」。
+    """
+
+    def setUp(self):
+        import fetcher_premium as fp
+        self.fp = fp
+        self._orig = fp.tracking_error.fetch_benchmark_daily
+        self.series = [("2026-10-24", 100.0), ("2026-10-27", 200.0),
+                       ("2026-10-28", 202.0)]
+        fp.tracking_error.fetch_benchmark_daily = lambda *a, **k: self.series
+
+    def tearDown(self):
+        self.fp.tracking_error.fetch_benchmark_daily = self._orig
+        self.fp._FUT_BENCH_CACHE.clear()
+
+    def test_ratio_from_nav_date_to_latest(self):
+        ratio, asof = self.fp.index_cum_ratio(("sina_us", ".NDX"), "2026-10-27")
+        self.assertAlmostEqual(ratio, 202.0 / 200.0, places=6)
+        self.assertEqual(asof, "2026-10-28")
+
+    def test_ratio_is_one_when_nav_is_latest(self):
+        ratio, asof = self.fp.index_cum_ratio(("sina_us", ".NDX"), "2026-10-28")
+        self.assertAlmostEqual(ratio, 1.0, places=9)
+        self.assertEqual(asof, "2026-10-28")
+
+    def test_missing_bench_returns_none(self):
+        self.assertEqual(self.fp.index_cum_ratio(None, "2026-10-27"), (None, None))
+        self.assertEqual(self.fp.index_cum_ratio(("sina_us", ".NDX"), None), (None, None))
+
+    def test_failed_source_returns_none_not_raise(self):
+        def boom(*a, **k):
+            raise RuntimeError("blocked")
+        self.fp.tracking_error.fetch_benchmark_daily = boom
+        self.assertEqual(self.fp.index_cum_ratio(("em_us", "100.GDAXI"), "2026-10-27"),
+                         (None, None))
+
+    def test_adjusted_premium_lower_than_raw(self):
+        """折算后溢价应低于原口径，且差额接近净值区间内的指数涨幅。"""
+        nav, price = 1.9836, 2.29
+        ratio, _ = self.fp.index_cum_ratio(("sina_us", ".NDX"), "2026-10-27")
+        raw = (price - nav) / nav * 100
+        est_nav = nav * ratio
+        adj = (price - est_nav) / est_nav * 100
+        self.assertAlmostEqual(adj, (price / est_nav - 1) * 100, places=6)
+        self.assertLess(adj, raw)
+        # 指数涨 1% → 溢价被削掉的点数 ≈ 1% × 场内价/净值（此处约 1.15 个点）
+        self.assertAlmostEqual(raw - adj, 100 * (price / nav) * (1 - 1 / ratio), places=6)
+
+    def test_every_etf_has_bench(self):
+        for e in C.PREMIUM_ETFS:
+            self.assertTrue(e.get("bench"), "%s 缺 bench，折算列会永远为空" % e["code"])
+            self.assertIn(e["bench"][0], ("sina_us", "em_us", "sina_fut"),
+                          "未知的基准源类型")
+
+
 if __name__ == "__main__":
     unittest.main()
