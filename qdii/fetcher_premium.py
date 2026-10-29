@@ -65,26 +65,30 @@ def fetch_nav(code):
 
 
 def fetch_premium(date: str = None, path: str = C.QDII_DB_PATH):
+    """按**场内 ETF 清单**抓取溢价（一只 ETF 一行）。
+
+    ⚠️ 不要改回「遍历场外基金 + online_code」：场外联接基金与其 ETF 不存在唯一映射，
+    旧写法让纳指 5 只场外基金全部指向 513100，159941 永远不出现、5 行溢价率完全相同。
+    """
     date = date or datetime.date.today().isoformat()
     now = datetime.datetime.now().isoformat(timespec="seconds")
-    # 收集所有 online_code
-    codes = sorted({f["online_code"] for f in C.FUND_POOL if f["online_code"]})
+    etfs = C.PREMIUM_ETFS
+    codes = [e["code"] for e in etfs]
     market_codes = [market_prefix(c) + c for c in codes]
     prices = fetch_a_share_prices(market_codes)
     conn = db.get_conn(path)
     cnt = 0
-    for f in C.FUND_POOL:
-        oc = f["online_code"]
-        if not oc:
-            continue
-        sym = market_prefix(oc) + oc
+    got = []
+    for e in etfs:
+        code = e["code"]
+        sym = market_prefix(code) + code
         market_price = prices.get(sym)
         if market_price is None:
             continue
         try:
-            nav, nav_date = fetch_nav(oc)
-        except Exception as e:  # noqa: BLE001
-            print("[premium] nav failed for %s:" % oc, e)
+            nav, nav_date = fetch_nav(code)
+        except Exception as ex:  # noqa: BLE001
+            print("[premium] nav failed for %s:" % code, ex)
             continue
         if not nav:
             continue
@@ -92,14 +96,23 @@ def fetch_premium(date: str = None, path: str = C.QDII_DB_PATH):
         db.upsert_row(conn, "qdii_premium",
                       ["date", "code", "online_code", "market_price", "nav",
                        "nav_date", "premium_pct", "source", "fetched_at"],
-                      [date, f["code"], oc, market_price, nav, nav_date,
+                      [date, code, code, market_price, nav, nav_date,
                        round(premium_pct, 2), "sina_eastmoney", now],
                       "date,code")
+        got.append(code)
         cnt += 1
+    # 清理当日残留：旧版本按场外基金代码写入的行（513100 之外的 161125 等）会与新口径混在一起
+    if got:
+        marks = ",".join("?" for _ in got)
+        conn.execute("DELETE FROM qdii_premium WHERE date=? AND code NOT IN (%s)"
+                     % marks, [date] + got)
     conn.commit()
     conn.close()
     db.set_meta("last_premium_fetch", now, path)
     return cnt
+
+
+_PREMIUM_META = {e["code"]: e for e in C.PREMIUM_ETFS}
 
 
 def get_latest_premium(path: str = C.QDII_DB_PATH):
@@ -112,7 +125,17 @@ def get_latest_premium(path: str = C.QDII_DB_PATH):
     rows = conn.execute(
         "SELECT * FROM qdii_premium WHERE date=?", (drow["date"],)).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        meta = _PREMIUM_META.get(d["code"], {})
+        d["etf_name"] = meta.get("name") or ""
+        d["company"] = meta.get("company") or ""
+        d["index_name"] = meta.get("index_name") or ""
+        d["category"] = meta.get("category") or ""
+        out.append(d)
+    out.sort(key=lambda x: -(x.get("premium_pct") or 0))
+    return out
 
 
 if __name__ == "__main__":

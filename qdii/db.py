@@ -62,6 +62,14 @@ SCHEMA = [
         suggested_multiple REAL, reason_json TEXT,
         UNIQUE(date, code)
     )""",
+    # 大类维度决策（2026-10-29 起为页面主口径，逐基金决策仍保留在 qdii_decision 供追溯）
+    """CREATE TABLE IF NOT EXISTS qdii_decision_cat (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT, category TEXT, strategy TEXT,
+        suggested_multiple REAL, status_text TEXT, reason_json TEXT,
+        total INTEGER, open_cnt INTEGER, suspend_cnt INTEGER, limit_cnt INTEGER,
+        UNIQUE(date, category)
+    )""",
     """CREATE TABLE IF NOT EXISTS qdii_meta (k TEXT PRIMARY KEY, v TEXT)""",
 ]
 

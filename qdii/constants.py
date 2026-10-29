@@ -32,10 +32,10 @@ FUND_POOL = [
          online_code="513500", is_offline=1, note="对应博时标普500ETF"),
     dict(code="007721", name="天弘标普500发起(QDII-FOF)A", index_name="标普500",
          category="标普500", company="天弘", fund_type="FOF联接",
-         online_code="513500", is_offline=1, note="对应标普500ETF"),
-    dict(code="096001", name="大成标普500等权重指数(QDII)A", index_name="标普500",
-         category="标普500", company="大成", fund_type="ETF联接",
-         online_code="513500", is_offline=1, note="对应标普500ETF"),
+         online_code="", is_offline=1, note="FOF（无跟踪标的），无场内对应ETF"),
+    dict(code="096001", name="大成标普500等权重指数(QDII)A", index_name="标普500等权",
+         category="标普500", company="大成", fund_type="指数",
+         online_code="", is_offline=1, note="等权重指数，无对应场内ETF"),
     # ===== 纳斯达克100 =====
     dict(code="161130", name="易方达纳斯达克100ETF联接(QDII-LOF)A", index_name="纳斯达克100",
          category="纳斯达克100", company="易方达", fund_type="LOF",
@@ -45,13 +45,13 @@ FUND_POOL = [
          online_code="160213", is_offline=1, note="LOF：场内场外同代码"),
     dict(code="270042", name="广发纳斯达克100ETF联接人民币(QDII)A", index_name="纳斯达克100",
          category="纳斯达克100", company="广发", fund_type="ETF联接",
-         online_code="513100", is_offline=1, note="对应国泰纳指100ETF"),
+         online_code="159941", is_offline=1, note="对应广发纳指ETF 159941"),
     dict(code="000834", name="大成纳斯达克100ETF联接(QDII)A", index_name="纳斯达克100",
          category="纳斯达克100", company="大成", fund_type="ETF联接",
-         online_code="513100", is_offline=1, note="对应纳指100ETF"),
+         online_code="", is_offline=1, note="大成无自家场内纳指ETF，溢价看清单同类ETF"),
     dict(code="040046", name="华安纳斯达克100ETF联接(QDII)A", index_name="纳斯达克100",
          category="纳斯达克100", company="华安", fund_type="ETF联接",
-         online_code="513100", is_offline=1, note="对应纳指100ETF"),
+         online_code="159632", is_offline=1, note="对应华安纳指ETF 159632"),
     # ===== 日经225 =====
     dict(code="020712", name="华安三菱日联日经225ETF发起式联接(QDII)A", index_name="日经225",
          category="日经225", company="华安", fund_type="ETF联接",
@@ -61,6 +61,50 @@ FUND_POOL = [
          category="德国DAX", company="华安", fund_type="ETF联接",
          online_code="513030", is_offline=1, note="对应华安德国30(DAX)ETF"),
 ]
+
+# ---- 场内溢价监控清单（模块G） ----
+# ⚠️ 溢价率必须按「场内 ETF 代码」计算，不能按场外基金遍历 online_code：
+#    旧实现把 5 只纳指场外基金全指向 513100，导致表里 5 行溢价率一模一样，
+#    而广发 159941（溢价常年在 10% 以上、最需要看的品种）从未出现过。
+# 这里显式维护场内可交易的主流 QDII ETF，一只一行；场外基金与 ETF 的关系
+# 用「同一指数」表达即可（同一指数可由多家 ETF 跟踪，不存在唯一映射）。
+# 名称/代码已用新浪行情（2026-10-29）逐一核对。
+PREMIUM_ETFS = [
+    dict(code="513100", name="纳指ETF", company="国泰", index_name="纳斯达克100",
+         category="纳斯达克100"),
+    dict(code="159941", name="纳指ETF", company="广发", index_name="纳斯达克100",
+         category="纳斯达克100"),
+    dict(code="159632", name="纳斯达克", company="华安", index_name="纳斯达克100",
+         category="纳斯达克100"),
+    dict(code="513300", name="纳斯达克ETF", company="华夏", index_name="纳斯达克100",
+         category="纳斯达克100"),
+    dict(code="513110", name="纳指ETF", company="华泰柏瑞", index_name="纳斯达克100",
+         category="纳斯达克100"),
+    dict(code="513500", name="标普500ETF", company="博时", index_name="标普500",
+         category="标普500"),
+    dict(code="513650", name="标普500ETF", company="南方", index_name="标普500",
+         category="标普500"),
+    dict(code="159612", name="标普500ETF", company="国泰", index_name="标普500",
+         category="标普500"),
+    dict(code="513880", name="日经225ETF", company="华安", index_name="日经225",
+         category="日经225"),
+    dict(code="513030", name="德国ETF", company="华安", index_name="德国DAX",
+         category="德国DAX"),
+]
+
+# ---- 定投决策：大类 → 参考信号 ----
+# 按「大类」给建议，不落到具体基金（同一大类下各家基金同涨同跌，差别只在费率和限额）。
+# 日经225 / 德国DAX 没有对应的美股信号源 → 用美股整体（纳指优先）作宏观风向参考。
+# CATEGORY_OWN_SIGNAL 标记「哪些大类有自己的指数信号」，其余为借用，页面理由会标注。
+CATEGORY_SIGNAL = {
+    "标普500": ["SPX"],
+    "纳斯达克100": ["IXIC", "NDX"],
+    "日经225": ["IXIC", "NDX", "SPX"],
+    "德国DAX": ["IXIC", "NDX", "SPX"],
+}
+CATEGORY_OWN_SIGNAL = {"标普500": "SPX", "纳斯达克100": "IXIC"}
+# 估值百分位（大类级）：只有标普500 / 纳斯达克100 有维护值，其余按中性处理
+CATEGORY_ORDER = ["纳斯达克100", "标普500", "日经225", "德国DAX"]
 
 # ---- 策略参数（全部可配置，不硬编码到逻辑里） ----
 STRATEGY_PARAMS = {

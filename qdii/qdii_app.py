@@ -48,6 +48,10 @@ def route_api(path):
     if path == "/api/qdii/tracking":
         return {"rows": tracking_error.get_tracking_error()}
     if path == "/api/qdii/decision":
+        # 主口径：按大类（标普500/纳斯达克100/日经225/德国DAX）
+        return {"rows": strategy.get_latest_category_decisions()}
+    if path == "/api/qdii/decision_fund":
+        # 逐基金明细（追溯用，页面不展示）
         return {"rows": strategy.get_latest_decision()}
     return None
 

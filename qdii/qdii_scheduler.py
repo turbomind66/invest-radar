@@ -77,14 +77,16 @@ def run_limit():
 def run_signal():
     with L.FileLock(LOCK_PATH):
         n = fetcher_signal.fetch_us_signal()
-        strategy.run_daily_decision()
-        print("[sched] signal+decision done: %d" % n)
+        strategy.run_daily_decision()          # 逐基金（追溯用）
+        nc = strategy.run_category_decision()  # 大类（页面主口径）
+        print("[sched] signal+decision done: %d, categories=%d" % (n, nc))
 
 
 def run_premium():
     with L.FileLock(LOCK_PATH):
         n = fetcher_premium.fetch_premium()
         strategy.run_daily_decision()
+        strategy.run_category_decision()
         print("[sched] premium+decision done: %d" % n)
 
 

@@ -248,5 +248,84 @@ class StrategyTest(unittest.TestCase):
         self.assertLessEqual(r["multiple"], cap)
 
 
+class CategoryDecisionTest(unittest.TestCase):
+    """大类维度决策（2026-10-29 起为页面主口径）。"""
+
+    def _stats(self, total=3, open_=1, limit=1, suspend=1, min_limit=1000.0):
+        return dict(total=total, open=open_, limit=limit, suspend=suspend,
+                    min_limit=min_limit, companies=["测试"])
+
+    def _us(self, **kw):
+        base = {"IXIC": {"symbol": "IXIC", "name": "纳指现货", "change_pct": 0.5},
+                "SPX": {"symbol": "SPX", "name": "标普500现货", "change_pct": 0.3},
+                "VIX": {"last_price": 15.0}}
+        base.update(kw)
+        return base
+
+    def test_all_suspend_gives_zero(self):
+        r = strategy.recommend_category("纳斯达克100", self._stats(suspend=3, open_=0, limit=0),
+                                        self._us(), None)
+        self.assertEqual(r["multiple"], 0.0)
+        self.assertEqual(r["status_text"], "全部暂停")
+
+    def test_category_drop_tier_uses_own_index(self):
+        # 标普跌 4.2% → 命中 -4% 档 +1.0；纳指涨，不能串用
+        us = self._us(SPX={"symbol": "SPX", "name": "标普500现货", "change_pct": -4.2})
+        r = strategy.recommend_category("标普500", self._stats(), us, None)
+        self.assertAlmostEqual(r["multiple"], 2.0)
+        self.assertTrue(any("跌 4.20%" in x for x in r["reasons"]))
+
+    def test_borrowed_signal_is_labelled(self):
+        # 日经没有本地信号，借用纳指时理由必须写明，避免误读成本地数据
+        r = strategy.recommend_category("日经225", self._stats(), self._us(), None)
+        self.assertTrue(any("无本地指数信号" in x for x in r["reasons"]))
+
+    def test_own_signal_not_labelled(self):
+        r = strategy.recommend_category("纳斯达克100", self._stats(), self._us(), None)
+        self.assertFalse(any("无本地指数信号" in x for x in r["reasons"]))
+        self.assertTrue(any("纳指现货" in x for x in r["reasons"]))
+
+    def test_no_amount_in_reasons(self):
+        # 用户口径：决策不再落到金额
+        r = strategy.recommend_category("纳斯达克100", self._stats(), self._us(), 65.0)
+        self.assertFalse(any("建议投入" in x or "基准额" in x for x in r["reasons"]))
+
+    def test_status_text_prefers_configurable_limit(self):
+        r = strategy.recommend_category("纳斯达克100", self._stats(min_limit=10.0),
+                                        self._us(), None)
+        self.assertIn("限额 10 元", r["status_text"])
+
+
+class PremiumEtfListTest(unittest.TestCase):
+    """场内溢价：按 ETF 清单逐只计算（修复 159941 缺失）。"""
+
+    def test_159941_included(self):
+        codes = [e["code"] for e in C.PREMIUM_ETFS]
+        self.assertIn("159941", codes, "159941（广发纳指ETF）必须在溢价清单里")
+        self.assertIn("513100", codes)
+
+    def test_codes_unique_and_wellformed(self):
+        codes = [e["code"] for e in C.PREMIUM_ETFS]
+        self.assertEqual(len(codes), len(set(codes)))
+        for c in codes:
+            self.assertEqual(len(c), 6)
+            self.assertTrue(c.isdigit())
+
+    def test_metadata_complete(self):
+        for e in C.PREMIUM_ETFS:
+            for k in ("code", "name", "company", "index_name", "category"):
+                self.assertTrue(e.get(k), "%s 缺少字段 %s" % (e.get("code"), k))
+
+    def test_every_category_has_etf(self):
+        cats = {e["category"] for e in C.PREMIUM_ETFS}
+        for c in C.CATEGORY_ORDER:
+            self.assertIn(c, cats, "大类 %s 至少要有一只场内 ETF" % c)
+
+    def test_premium_math(self):
+        # (场内价 - 净值) / 净值
+        price, nav = 1.691, 1.4837
+        self.assertAlmostEqual((price - nav) / nav * 100, 13.97, places=1)
+
+
 if __name__ == "__main__":
     unittest.main()

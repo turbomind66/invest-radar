@@ -4,8 +4,8 @@
 「上一交易日收盘（非实时）」；美股期货（CME Globex 近24h）为实时。
 
 数据源（国内友好、实测可达，替代被封的雅虎）：
-- 期货实时：新浪 `hf_ES`(标普500指数期货) / `hf_NQ`(纳斯达克指数期货)
-- 现货昨收（非实时）：腾讯财经 `usSPX`(标普500) / `usNDX`(纳斯达克100)
+- 期货实时：新浪 `hf_ES`(标普500指数期货) / `hf_NQ`(纳指期货，标的为 CME 纳指100期货)
+- 现货昨收（非实时）：新浪 `gb_inx`(标普500) / 腾讯 `usIXIC`(纳斯达克综合指数＝口语「纳指」)
 - VIX（避险情绪开关源，非实时）：腾讯 `usVIX`
 - 美债10Y（情绪/宏观参考，非实时）：腾讯 `usTNX`（无则降级标"暂不可用"）
 """
@@ -26,19 +26,25 @@ import db
 import constants as C
 
 # 新浪期货代码 -> (symbol, name)
+# hf_NQ 的官方名称是「纳斯达克指数期货」，标的即 CME 纳指100期货（全球唯一的纳指期货品种），
+# 页面按用户口径统一叫「纳指期货」。
 FUTURES_MAP = {
     "hf_ES": ("SPX_FUT", "标普500期货"),
-    "hf_NQ": ("NDX_FUT", "纳斯达克100期货"),
+    "hf_NQ": ("NDX_FUT", "纳指期货"),
 }
 # 新浪美股指数（标普500 现货，上一交易日收盘）
 SINA_INDEX_URL = "https://hq.sinajs.cn/list=gb_inx,gb_ixic"
 # 腾讯财经美股代码 -> (symbol, name, is_realtime)
-TENCENT_URL = "https://qt.gtimg.cn/q=usNDX,usVIX,usTNX"
+# usIXIC = 纳斯达克综合指数（口语「纳指」）；usNDX = 纳斯达克100，两者不同：
+# 综合指数含全部纳斯达克上市股票（约 3300 只），纳指100 只含 100 只非金融大盘股。
+TENCENT_URL = "https://qt.gtimg.cn/q=usIXIC,usTNX"
 TENCENT_SYMBOLS = {
-    "usNDX": ("NDX", "纳斯达克100现货", 0),
-    "usVIX": ("VIX", "VIX波动率", 0),
+    "usIXIC": ("IXIC", "纳指现货", 0),
     "usTNX": ("UST10Y", "美债10Y收益率", 0),
 }
+# VIX：腾讯 usVIX 的数值自 2026-09-15 起就不再更新（实测长期停在 21.67），
+# 拿它当避险开关等于开关永远不动。改用 CBOE 官方日收盘 CSV（权威、日频、T+1）。
+CBOE_VIX_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
 
 
 def fetch_sina_futures():
@@ -77,9 +83,10 @@ def fetch_sina_futures():
     return res
 
 
-def fetch_tencent_us():
-    """腾讯财经美股行情（~ 分隔），含纳指100现货/VIX/美债；数据为上一交易日收盘。"""
-    txt = fetch_text(TENCENT_URL, use_proxy=None, retries=2)
+def fetch_tencent_us(codes=None):
+    """腾讯财经美股行情（~ 分隔）。codes 形如 'usVIX'，默认取 TENCENT_SYMBOLS 那批。"""
+    url = TENCENT_URL if not codes else ("https://qt.gtimg.cn/q=" + codes)
+    txt = fetch_text(url, use_proxy=None, retries=2)
     res = {}
     for m in re.finditer(r'v_(\w+)="([^"]*)"', txt):
         sym, body = m.group(1), m.group(2)
@@ -116,6 +123,24 @@ def fetch_sina_us_index():
     return res
 
 
+def fetch_cboe_vix():
+    """CBOE 官方 VIX 日收盘 CSV → (收盘价, 涨跌幅%, 日期ISO)。
+
+    取最后一条完整记录；CSV 首行是表头 `DATE,OPEN,HIGH,LOW,CLOSE`，日期格式 MM/DD/YYYY。
+    """
+    txt = fetch_text(CBOE_VIX_URL, timeout=40, retries=2)
+    lines = [ln.strip() for ln in txt.strip().split("\n") if ln.strip()]
+    rows = [ln.split(",") for ln in lines[1:] if len(ln.split(",")) >= 5]
+    if len(rows) < 2:
+        raise ValueError("CBOE VIX csv 行数不足")
+    last, prev = rows[-1], rows[-2]
+    close = float(last[4])
+    prev_close = float(prev[4])
+    chg = (close / prev_close - 1) * 100 if prev_close else 0.0
+    m, d, y = last[0].split("/")
+    return close, round(chg, 4), "%s-%s-%s" % (y, m, d)
+
+
 def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
     date = date or datetime.date.today().isoformat()
     now = datetime.datetime.now().isoformat(timespec="seconds")
@@ -142,6 +167,19 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
                 rows.append((date, symbol, name, price, chg, is_rt, now, now))
     except Exception as e:  # noqa: BLE001
         print("[signal] tencent failed:", e)
+    # VIX（避险开关）：CBOE 官方 CSV 优先，失败再退回腾讯（可能停在旧值）
+    try:
+        vix_close, vix_chg, vix_date = fetch_cboe_vix()
+        rows.append((date, "VIX", "VIX波动率", vix_close, vix_chg, 0, vix_date, now))
+    except Exception as e:  # noqa: BLE001
+        print("[signal] cboe vix failed, fallback tencent:", e)
+        try:
+            t2 = fetch_tencent_us("usVIX")
+            if "usVIX" in t2:
+                price, chg = t2["usVIX"]
+                rows.append((date, "VIX", "VIX波动率", price, chg, 0, now, now))
+        except Exception as e2:  # noqa: BLE001
+            print("[signal] vix unavailable:", e2)
     # 新浪（非实时：标普500 现货）
     try:
         sina_idx = fetch_sina_us_index()
@@ -151,6 +189,9 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
     except Exception as e:  # noqa: BLE001
         print("[signal] sina index failed:", e)
     conn = db.get_conn(path)
+    # 同日重跑先清当日旧行：symbol 口径变过（NDX → IXIC），不清理会让面板
+    # 同时出现「纳指现货」与旧的「纳斯达克100现货」两条。
+    conn.execute("DELETE FROM qdii_us_signal WHERE date=?", (date,))
     for r in rows:
         db.upsert_row(conn, "qdii_us_signal",
                       ["date", "symbol", "name", "last_price", "change_pct",

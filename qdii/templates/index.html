@@ -50,10 +50,10 @@
 <div class="wrap">
 
   <div class="card">
-    <h2>① 定投决策 <span class="tag">固定周期 + 信号增强 + 跟跌加仓 + 避险防御</span></h2>
+    <h2>① 定投决策 <span class="tag">按大类 · 固定周期 + 信号增强 + 跟跌加仓 + 避险防御</span></h2>
     <div id="decisionChart" class="chart"></div>
     <table id="decisionTable"><thead><tr>
-      <th>代码</th><th>名称</th><th>类别</th><th>状态</th><th>建议倍数</th><th>建议金额</th><th>理由</th>
+      <th>大类</th><th>可买情况</th><th>建议倍数</th><th>理由</th>
     </tr></thead><tbody></tbody></table>
     <div class="note" id="decisionNote"></div>
   </div>
@@ -71,11 +71,12 @@
     <div class="card">
       <h2>③ 场内溢价率 <span class="tag">14:30 A股交易日</span></h2>
       <table id="premiumTable"><thead><tr>
-        <th>场外代码</th><th>基金名称</th><th>场内</th><th>场内价</th><th>对应ETF净值</th><th>溢价率</th><th>提示</th>
+        <th>场内代码</th><th>ETF名称</th><th>跟踪指数</th><th>场内价</th><th>净值</th><th>净值日期</th><th>溢价率</th><th>提示</th>
       </tr></thead><tbody></tbody></table>
-      <div class="note">溢价率&gt;0：场内比净值贵（优先场外按净值买）；&lt;0：场内折价（场内更便宜）。高溢价常意味限购抢手。
-        <br>口径：溢价 =（场内价 − <b>对应 ETF 净值</b>）/ ETF 净值。多只场外联接基金对应同一只 ETF（如 000834 / 040046 / 270042 都对应 513100）时，溢价率必然相同；
-        161125 / 161130 为 LOF，场内场外同一代码。</div>
+      <div class="note">溢价率&gt;0：场内比净值贵（优先场外按净值买）；&lt;0：场内折价（场内更便宜）。
+        <br>口径：溢价 =（场内价 − 单位净值）/ 单位净值，按<b>场内 ETF</b> 逐只计算（不再挂在场外基金上）。
+        <br>⚠️ QDII 净值 T+1 披露、遇海外休市还会顺延，所以「净值日期」常比场内价晚 1~2 个交易日，<b>溢价率会被系统性高估</b>；
+        看趋势要看同一只 ETF 的相对高低，别拿不同净值日期的品种横向比。</div>
     </div>
   </div>
 
@@ -113,7 +114,6 @@
 </div>
 
 <script>
-const UP='var(--up)', DOWN='var(--down)';
 function fmtPct(v){ if(v===null||v===undefined||isNaN(v)) return '—'; return (v>=0?'+':'')+v.toFixed(2)+'%'; }
 function clsPct(v){ if(v===null||v===undefined||isNaN(v)) return ''; return v>=0?'up':'down'; }
 function el(id){ return document.getElementById(id); }
@@ -140,32 +140,30 @@ async function loadStatus(){
   }catch(e){ el('status').textContent='状态接口不可用'; }
 }
 
-function renderDecision(decisions){
+function renderDecision(rows){
   const tb=el('decisionTable').querySelector('tbody'); tb.innerHTML='';
-  const cats={};
-  decisions.forEach(d=>{
-    const f=poolName(d.code); const mult=d.suggested_multiple||0;
+  rows.forEach(r=>{
+    const m=r.suggested_multiple||0;
     const tr=document.createElement('tr');
-    const amt=(mult*1000).toFixed(0);
-    tr.innerHTML='<td>'+d.code+'</td><td>'+(f.name||'')+'</td><td>'+(f.category||'')+'</td>'+
-      '<td>'+(f.sub_status||'')+'</td>'+
-      '<td class="'+(mult>1?'up':(mult<1?'down':''))+'">'+mult.toFixed(2)+'×</td>'+
-      '<td>'+amt+' 元</td>'+
-      '<td class="reason">'+(d.reasons?d.reasons.join('；'):'')+'</td>';
+    tr.innerHTML='<td><b>'+r.category+'</b></td>'+
+      '<td>'+r.status_text+'</td>'+
+      '<td class="'+(m>1?'up':(m<1?'down':''))+'">'+m.toFixed(2)+'×</td>'+
+      '<td class="reason">'+(r.reasons?r.reasons.join('；'):'')+'</td>';
     tb.appendChild(tr);
-    cats[f.category||'其它']=(cats[f.category||'其它']||0)+mult;
   });
-  // chart
+  // chart：按大类
   const chart=echarts.init(el('decisionChart'));
-  const codes=decisions.map(d=>d.code);
-  const mults=decisions.map(d=>d.suggested_multiple);
   chart.setOption({
-    grid:{left:50,right:20,top:20,bottom:60},
-    xAxis:{type:'category',data:codes,axisLabel:{rotate:45,fontSize:10}},
+    grid:{left:50,right:20,top:20,bottom:50},
+    xAxis:{type:'category',data:rows.map(r=>r.category),axisLabel:{fontSize:11}},
     yAxis:{type:'value',name:'倍数'},
-    series:[{type:'bar',data:mults.map(v=>({value:v,itemStyle:{color:v>1?UP:(v<1?DOWN:'#94a3b8')}}))}]
+    series:[{type:'bar',barWidth:'36%',
+      // ⚠️ ECharts 是 canvas 渲染，不能吃 CSS 变量（写 var(--up) 会静默变成默认灰蓝），
+      // 必须给真实色值。A 股习惯：加仓/上涨=红，减仓=绿。
+      data:rows.map(r=>{const v=r.suggested_multiple||0;
+        return {value:v,itemStyle:{color:v>1?'#dc2626':(v<1?'#16a34a':'#94a3b8')}};})}]
   });
-  el('decisionNote').textContent='基准额 1000 元。倍数=1 为基准；>1 跟跌加仓/低估；<1 高估/避险防御。暂停申购归零。';
+  el('decisionNote').textContent='倍数 = 1 为基准（照常投）；>1 为跟跌加仓或低估；<1 为高估或避险防御；全部暂停申购的类别归零。金额随各人基准额换算，故不在此列出。';
 }
 
 function renderSignal(rows){
@@ -173,7 +171,8 @@ function renderSignal(rows){
   rows.forEach(r=>{
     const tr=document.createElement('tr');
     const rt=r.is_realtime? '<span class="pill p-green">实时</span>' : '<span class="pill" style="background:#f1f5f9;color:#475569">昨收·非实时</span>';
-    tr.innerHTML='<td>'+r.name+'<br><small style="color:#94a3b8">'+r.symbol+'</small></td>'+
+    tr.innerHTML='<td>'+r.name+'<br><small style="color:#94a3b8">'+
+      (r.is_realtime?'期货 · 24h 连续':'现货 · 上一交易日收盘')+'</small></td>'+
       '<td>'+(r.last_price!=null?r.last_price.toFixed(2):'—')+'</td>'+
       '<td class="'+clsPct(r.change_pct)+'">'+fmtPct(r.change_pct)+'</td>'+
       '<td>'+rt+'</td>';
@@ -183,20 +182,19 @@ function renderSignal(rows){
 
 function renderPremium(rows){
   const tb=el('premiumTable').querySelector('tbody'); tb.innerHTML='';
-  rows.sort((a,b)=>(a.premium_pct||0)-(b.premium_pct||0));
   rows.forEach(r=>{
-    const f=poolName(r.code);
     const p=r.premium_pct||0;
     let tip,cls;
     if(p<-0.5){tip='场内折价·更划算';cls='p-green';}
-    else if(p>3){tip='高溢价·限购抢手';cls='p-red';}
+    else if(p>3){tip='高溢价·抢手';cls='p-red';}
     else {tip='基本持平';cls='';}
     const tr=document.createElement('tr');
     tr.innerHTML='<td>'+r.code+'</td>'+
-      '<td>'+(f.name||'')+(f.category?'<br><small style="color:#94a3b8">'+f.category+'</small>':'')+'</td>'+
-      '<td>'+(r.online_code||'')+'</td>'+
+      '<td>'+r.etf_name+'<br><small style="color:#94a3b8">'+r.company+'</small></td>'+
+      '<td>'+(r.index_name||'')+'</td>'+
       '<td>'+(r.market_price!=null?r.market_price.toFixed(3):'—')+'</td>'+
       '<td>'+(r.nav!=null?r.nav.toFixed(3):'—')+'</td>'+
+      '<td>'+(r.nav_date||'—')+'</td>'+
       '<td class="'+clsPct(p)+'">'+fmtPct(p)+'</td>'+
       '<td><span class="pill '+cls+'">'+tip+'</span></td>';
     tb.appendChild(tr);
