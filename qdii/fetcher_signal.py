@@ -42,6 +42,16 @@ TENCENT_SYMBOLS = {
 
 
 def fetch_sina_futures():
+    """新浪环球期货（hf_*）实时行情。
+
+    ⚠️ 字段位置（2026-10-29 实测 15 段，勿凭印象改）：
+        [0] 现价  [2] 买价  [3] 卖价  [4] 最高  [5] 最低
+        [6] 时间  [7] **昨收**  [8] 开盘  [12] 日期  [13] **名称**  [14] 占位 0
+    历史 bug：曾把 parts[5] 当价格（实际是当日最低价）、把 parts[-1] 当名称
+    （实际是占位 "0"），导致页面出现「名称 0、价格恒为最低价、涨跌 0.00%」。
+
+    返回 {hf_code: (名称, 现价, 昨收, 日期时间)}
+    """
     txt = fetch_text(C.URL_SINA_FUTURE,
                      referer="https://finance.sina.com.cn/",
                      encoding="gbk", use_proxy=None, retries=2)
@@ -49,14 +59,21 @@ def fetch_sina_futures():
     for m in re.finditer(r'var hq_str_(hf_\w+)="([^"]*)"', txt):
         sym, body = m.group(1), m.group(2)
         parts = body.split(",")
-        price = None
-        name = parts[-1] if parts else ""
-        if len(parts) > 5:
+        if len(parts) < 14:
+            continue
+
+        def f(i):
             try:
-                price = float(parts[5])
-            except (ValueError, TypeError):
-                price = None
-        res[sym] = (name, price)
+                return float(parts[i])
+            except (ValueError, TypeError, IndexError):
+                return None
+
+        price, prev = f(0), f(7)
+        if not price:
+            continue
+        name = (parts[13] or "").strip()
+        ts = "%s %s" % ((parts[12] or "").strip(), (parts[6] or "").strip())
+        res[sym] = (name, price, prev, ts.strip())
     return res
 
 
@@ -107,9 +124,13 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
     try:
         futures = fetch_sina_futures()
         for hf_code, (symbol, name) in FUTURES_MAP.items():
-            name_f, price = futures.get(hf_code, ("", None))
-            if price is not None:
-                rows.append((date, symbol, name_f or name, price, 0.0, 1, now, now))
+            got = futures.get(hf_code)
+            if not got:
+                continue
+            _n, price, prev, ts = got
+            # 涨跌幅按「现价 vs 昨收」真实计算（此前写死 0.00%，等于没有信息）
+            chg = round((price / prev - 1) * 100, 4) if prev else None
+            rows.append((date, symbol, name, price, chg, 1, ts or now, now))
     except Exception as e:  # noqa: BLE001
         print("[signal] futures failed:", e)
     # 腾讯（非实时：纳指100现货/VIX/美债）

@@ -26,6 +26,7 @@
   .p-open{background:#ecfdf5;color:#047857;}
   .p-suspend{background:#fef2f2;color:#b91c1c;}
   .p-limit{background:#fff7ed;color:#c2410c;}
+  .p-approx{background:#eef2f7;color:#475569;}
   .p-red{background:#fef2f2;color:#b91c1c;}
   .p-green{background:#ecfdf5;color:#047857;}
   .note{font-size:12px;color:var(--t2);margin-top:8px;line-height:1.6;}
@@ -40,7 +41,11 @@
 <body>
 <header>
   <h1>海外 QDII 定投决策面板</h1>
-  <div class="status" id="status">加载中…</div>
+  <div style="display:flex;align-items:center;gap:16px">
+    <a id="peerLink" href="#" title="同一主机的国家队看板（端口 -1）"
+       style="display:none;color:#93c5fd;font-size:13px;text-decoration:none">🛡️ 国家队看板</a>
+    <div class="status" id="status">加载中…</div>
+  </div>
 </header>
 <div class="wrap">
 
@@ -66,9 +71,11 @@
     <div class="card">
       <h2>③ 场内溢价率 <span class="tag">14:30 A股交易日</span></h2>
       <table id="premiumTable"><thead><tr>
-        <th>场外代码</th><th>场内</th><th>场内价</th><th>净值</th><th>溢价率</th><th>提示</th>
+        <th>场外代码</th><th>基金名称</th><th>场内</th><th>场内价</th><th>对应ETF净值</th><th>溢价率</th><th>提示</th>
       </tr></thead><tbody></tbody></table>
-      <div class="note">溢价率&gt;0：场内比净值贵（优先场外按净值买）；&lt;0：场内折价（场内更便宜）。高溢价常意味限购抢手。</div>
+      <div class="note">溢价率&gt;0：场内比净值贵（优先场外按净值买）；&lt;0：场内折价（场内更便宜）。高溢价常意味限购抢手。
+        <br>口径：溢价 =（场内价 − <b>对应 ETF 净值</b>）/ ETF 净值。多只场外联接基金对应同一只 ETF（如 000834 / 040046 / 270042 都对应 513100）时，溢价率必然相同；
+        161125 / 161130 为 LOF，场内场外同一代码。</div>
     </div>
   </div>
 
@@ -80,11 +87,12 @@
   </div>
 
   <div class="card">
-    <h2>⑤ 多平台费率矩阵 <span class="tag">基金公司 / 天天基金 / 支付宝</span></h2>
+    <h2>⑤ 多平台费率矩阵 <span class="tag">天天基金 / 支付宝 / 理财通</span></h2>
     <table id="feeTable"><thead><tr>
       <th>代码</th><th>平台</th><th>在售</th><th>申购费(原)</th><th>申购费(折)</th><th>管理费</th><th>托管费</th><th>销售服务费</th><th>年费合计</th>
     </tr></thead><tbody></tbody></table>
-    <div class="note">年费 = 管理费 + 托管费 + 销售服务费（长期定投比一次性申购费更重要）。支付宝折后价暂无法获取，以天天基金口径展示。</div>
+    <div class="note">年费 = 管理费 + 托管费 + 销售服务费（长期定投比一次性申购费更重要）。支付宝折后价暂无法获取，以天天基金口径展示。<br>
+      <b>理财通</b>：网页版已下线、仅微信 App 内提供服务且无公开接口，故标「推算」——管理费/托管费沿用同一基金合同值（全平台一致），申购费按平台常见的 <b>A 类 1 折</b>、起购按 10 元估算，申购状态跟随基金公司限购公告。</div>
   </div>
 
   <div class="card">
@@ -112,6 +120,18 @@ function el(id){ return document.getElementById(id); }
 function poolName(code){ return (window.__pool||[]).find(f=>f.code===code)||{}; }
 
 async function api(path){ const r=await fetch(path); return await r.json(); }
+
+// 模块互跳：国家队看板默认在同一主机的「本端口 -1」（5001→5000，容器映射 18081→18080）。
+(function initPeerLink(){
+  const a = el('peerLink');
+  if(!a || typeof location === 'undefined') return;
+  const host = location.hostname || '';
+  if(location.protocol === 'file:' || /\.github\.io$/i.test(host)) return;
+  const port = parseInt(location.port, 10);
+  if(!port) return;
+  a.href = location.protocol + '//' + host + ':' + (port - 1);
+  a.style.display = '';
+})();
 
 async function loadStatus(){
   try{
@@ -172,7 +192,9 @@ function renderPremium(rows){
     else if(p>3){tip='高溢价·限购抢手';cls='p-red';}
     else {tip='基本持平';cls='';}
     const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+r.code+'</td><td>'+(r.online_code||'')+'</td>'+
+    tr.innerHTML='<td>'+r.code+'</td>'+
+      '<td>'+(f.name||'')+(f.category?'<br><small style="color:#94a3b8">'+f.category+'</small>':'')+'</td>'+
+      '<td>'+(r.online_code||'')+'</td>'+
       '<td>'+(r.market_price!=null?r.market_price.toFixed(3):'—')+'</td>'+
       '<td>'+(r.nav!=null?r.nav.toFixed(3):'—')+'</td>'+
       '<td class="'+clsPct(p)+'">'+fmtPct(p)+'</td>'+
@@ -208,8 +230,11 @@ function renderFee(rows){
     if(r.platform==='券商') return;
     const tr=document.createElement('tr');
     const fee=annualFee(r);
-    const onsale = r.on_sale? '<span class="pill p-open">在售</span>' : (r.platform==='支付宝'?'<span class="pill p-suspend">不可售</span>':'');
-    tr.innerHTML='<td>'+r.code+'</td><td>'+r.platform+'</td><td>'+onsale+'</td>'+
+    const onsale = r.on_sale? '<span class="pill p-open">在售</span>' : '<span class="pill p-suspend">不可售</span>';
+    // 理财通等平台无公开接口，按平台通用规则推算 —— 明确标注，避免误当成实时抓取
+    const approx = (r.source||'').indexOf('rule:')===0
+      ? ' <span class="pill p-approx" title="该平台无公开接口，按平台通用规则推算（管理费/托管费同基金合同，申购费按 1 折）">推算</span>' : '';
+    tr.innerHTML='<td>'+r.code+'</td><td>'+r.platform+approx+'</td><td>'+onsale+'</td>'+
       '<td>'+(r.sub_fee_rate!=null?r.sub_fee_rate+'%':'—')+'</td>'+
       '<td>'+(r.sub_fee_discount!=null?r.sub_fee_discount+'%':'—')+'</td>'+
       '<td>'+(r.mgmt_fee!=null?r.mgmt_fee+'%':'—')+'</td>'+

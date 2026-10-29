@@ -167,6 +167,26 @@ def fetch_platform_fee(date: str = None, path: str = C.QDII_DB_PATH):
                           ["code", "platform", "on_sale", "source", "fetched_at"],
                           [code, "支付宝", 0, "fund123_cn", now],
                           "code,platform")
+        # ---- 理财通行（按平台通用规则推算，非实时抓取）----
+        # 事实（2026-10-29 实测）：理财通网页版 fund.qq.com / licai.qq.com 域名已下线，
+        # 只在微信 App 内提供服务，且无公开 API（需登录态），无法逐只抓取。
+        # 但平台之间的差异是结构性的，可以按规则推算：
+        #   · 管理费/托管费：基金合同约定，全平台一致 → 直接沿用同一基金值
+        #   · 申购费：理财通 A 类长期 1 折（促销可 0 元购）→ 按原费率 × 0.1
+        #   · 申购状态：跟随基金公司限购公告（与天天基金同源）
+        #   · 起购：理财通常见 10 元
+        # source 标 rule:licai，前端据此显示「规则推算」徽标，不伪装成实时数据。
+        base_rate = info.get("sub_fee_rate")      # 原申购费率（与天天基金同列语义）
+        licai_rate = round(base_rate * 0.1, 4) if base_rate else None   # 1 折后
+        licai_on_sale = 0 if lmap.get(code) == "SUSPEND" else 1
+        db.upsert_row(conn, "qdii_platform_fee",
+                      ["code", "platform", "on_sale", "sub_fee_rate",
+                       "sub_fee_discount", "mgmt_fee", "custodian_fee",
+                       "buy_start", "source", "fetched_at"],
+                      [code, "理财通", licai_on_sale, base_rate, licai_rate,
+                       info.get("mgmt_fee"), info.get("custodian_fee"),
+                       10.0, "rule:licai", now],
+                      "code,platform")
         cnt += 1
     conn.commit()
     conn.close()
