@@ -472,5 +472,69 @@ class Ust10yTest(unittest.TestCase):
                 os.remove(p)
 
 
+class RiskOffAssessTest(unittest.TestCase):
+    """避险防御：VIX（绝对水平/跳升）与美债10Y（单日 bp）并列、各自归因。
+
+    踩坑回归：旧实现把两者写进同一句且只输出 VIX 数值，于是美债触发时理由会写
+    「避险升温（VIX 15.0）→ ×0.5」——一个低于 30 阈值的数字却减了半，看着就是算错。
+    """
+
+    def test_nothing_triggers(self):
+        f, hits, warns = strategy.risk_off_assess(vix=15.0, ust_bp=-2.0)
+        self.assertEqual(f, 1.0)
+        self.assertEqual(hits, [])
+        self.assertEqual(warns, [])
+
+    def test_vix_warn_zone_only_warns(self):
+        f, hits, warns = strategy.risk_off_assess(vix=25.0)
+        self.assertEqual(f, 1.0)            # 预警区不减额
+        self.assertEqual(hits, [])
+        self.assertTrue(any("预警区" in w for w in warns))
+
+    def test_vix_hard_triggers(self):
+        f, hits, _ = strategy.risk_off_assess(vix=32.0)
+        self.assertEqual(f, 0.5)
+        self.assertTrue(any("VIX" in h for h in hits))
+
+    def test_vix_jump_warns(self):
+        _f, hits, warns = strategy.risk_off_assess(vix=18.0, vix_chg=25.0)
+        self.assertEqual(hits, [])
+        self.assertTrue(any("跳升" in w for w in warns))
+
+    def test_ust_hard_triggers_and_attribution(self):
+        f, hits, _ = strategy.risk_off_assess(vix=15.0, ust_bp=35.0)
+        self.assertEqual(f, 0.5)
+        self.assertTrue(any("美债10Y" in h for h in hits))
+        self.assertFalse(any("VIX" in h for h in hits))   # 不能把美债的锅甩给 VIX
+
+    def test_ust_warn_zone_only_warns(self):
+        f, hits, warns = strategy.risk_off_assess(vix=15.0, ust_bp=20.0)
+        self.assertEqual(f, 1.0)
+        self.assertEqual(hits, [])
+        self.assertTrue(any("逼近" in w for w in warns))
+
+    def test_both_trigger_listed(self):
+        f, hits, _ = strategy.risk_off_assess(vix=40.0, ust_bp=50.0)
+        self.assertEqual(f, 0.5)                              # 只乘一次 0.5，不叠加
+        self.assertTrue(any("VIX" in h for h in hits))
+        self.assertTrue(any("美债10Y" in h for h in hits))
+
+    def test_missing_values_are_safe(self):
+        f, hits, warns = strategy.risk_off_assess(None, None, None)
+        self.assertEqual((f, hits, warns), (1.0, [], []))
+
+    def test_category_reason_attributes_ust_when_vix_norm(self):
+        stats = dict(total=2, open=2, limit=0, suspend=0, min_limit=None, companies=["x"])
+        us = {"IXIC": {"symbol": "IXIC", "name": "纳指现货", "change_pct": 0.4},
+              "VIX": {"last_price": 15.0, "change_pct": 3.0},
+              "UST10Y": {"last_price": 5.0, "change_bp": 40.0}}
+        r = strategy.recommend_category("纳斯达克100", stats, us, None)
+        self.assertAlmostEqual(r["multiple"], 0.5)
+        line = [x for x in r["reasons"] if "避险防御" in x]
+        self.assertTrue(line)
+        self.assertIn("美债10Y", line[0])
+        self.assertNotIn("VIX", line[0])
+
+
 if __name__ == "__main__":
     unittest.main()

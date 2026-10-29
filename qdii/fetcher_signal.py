@@ -7,7 +7,7 @@
 - 期货实时：新浪 `hf_ES`(标普500指数期货) / `hf_NQ`(纳指期货，标的为 CME 纳指100期货)
 - 现货昨收（非实时）：新浪 `gb_inx`(标普500) / 腾讯 `usIXIC`(纳斯达克综合指数＝口语「纳指」)
 - **美债10年期收益率（实时）**：CNBC 报价服务（腾讯 `usTNX` 已失效，2026-10-29 实测不返回）
-- VIX（**仅后台参与避险判断，面板不展示**）：CBOE 官方日收盘 CSV
+- **VIX（日频收盘，参与避险判断 + 面板展示）**：CBOE 官方日收盘 CSV
 """
 import os
 import sys
@@ -204,9 +204,9 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
                      ust_ts or now, now, ust_bp))
     except Exception as e:  # noqa: BLE001
         print("[signal] cnbc ust10y failed:", e)
-    # VIX（避险开关）：CBOE 官方 CSV 优先，失败再退回腾讯（可能停在旧值）。
-    # 面板不再展示 VIX（丁总 2026-10-29 明确改用美债10Y），但仍抓取——它是策略
-    # 「避险防御」的判据之一，少了它 VIX 飙升时不会触发倍数 ×0.5。
+    # VIX（避险开关 + 面板展示）：CBOE 官方 CSV 优先，失败再退回腾讯（可能停在旧值）。
+    # 美债10Y 是「原因」（贴现率上行压制估值），VIX 是「结果」（恐慌程度已到多少），
+    # 两者维度不同、并列参与避险判断（见 strategy.risk_off_assess），缺一个都不完整。
     try:
         vix_close, vix_chg, vix_date = fetch_cboe_vix()
         rows.append((date, "VIX", "VIX波动率", vix_close, vix_chg, 0, vix_date, now, None))

@@ -32,7 +32,14 @@
   .note{font-size:12px;color:var(--t2);margin-top:8px;line-height:1.6;}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
   @media(max-width:860px){.grid2{grid-template-columns:1fr;}}
-  .reason{font-size:12px;color:var(--t2);}
+  /* 理由列必须允许换行：全局 th,td 是 nowrap，而理由含「跌档+估值+避险+限额」多句，
+     不换行会整行溢出卡片右侧被裁掉。不设 min-width——设大了窄屏会顶出横向滚动条，
+     表格 width:100% 会把剩余宽度自然分给它。 */
+  .reason{font-size:12px;color:var(--t2);white-space:normal;word-break:break-word;}
+  /* 「可买 1/5 · 限额 10 元 · 暂停 4」这种长状态在窄屏也会把表格顶出横向滚动条，
+     决策表整体放开换行（其余表格不受影响）。 */
+  #decisionTable td{white-space:normal;}
+  #decisionTable td:first-child{white-space:nowrap;}   /* 大类名不许被拆成两行 */
   .big{font-size:20px;font-weight:700;}
   .chart{width:100%;height:260px;}
   .warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:8px 10px;border-radius:8px;font-size:12px;}
@@ -61,14 +68,15 @@
   <div class="grid2">
     <div class="card">
       <h2>② 美股信号 <span class="tag">14:30 北京时间</span></h2>
-      <div class="warn" style="margin-bottom:8px;">⚠️ 现货/美债为「上一交易日·非实时」（北京时间14:30美东已收盘）；仅<b>期货</b>为实时（CME Globex 近24h）。</div>
+      <div class="warn" style="margin-bottom:8px;">⚠️ <b>现货、VIX</b> 为「上一交易日·非实时」（北京时间14:30美东已收盘）；
+        <b>期货</b>（CME Globex 近24h）与 <b>美债10Y</b>（CNBC 报价）为<b>实时</b>。</div>
       <table id="signalTable"><thead><tr>
         <th>标的</th><th>最新价</th><th>涨跌</th><th>实时?</th>
       </tr></thead><tbody></tbody></table>
-      <div class="note">现货昨收方向 = 本次申购将成交的净值方向；期货实时 = 今晚开盘前瞻。
-        <br><b>美债10Y</b> 为<b>实时</b>收益率，涨跌用 <b>bp</b> 表示（+10bp = 收益率上行 0.10 个百分点）；
-        收益率上行会压制股票估值，单日上行超 30bp 触发避险防御。
-        <br>VIX 不在本面板展示，但仍作为后台避险判据参与倍数计算。</div>
+      <div class="note">现货昨收方向 = 本次申购将成交的净值方向（<b>跟跌加仓</b>的输入）；期货实时 = 今晚开盘前瞻。<br>
+        <b>VIX</b>：日频收盘，看<b>绝对水平</b>——市场「已经」恐慌到什么程度（结果）。&gt;30 触发防御 ×0.5；20~30 为预警区（只提示）；单日跳升 ≥20% 提示情绪急变。
+        <br><b>美债10Y</b>：<b>实时</b>收益率，看<b>单日变动 bp</b>——无风险利率跳升压制估值（原因，贴现率上行先杀高估值资产）。单日上行 &gt;30bp 触发防御 ×0.5；+15~30bp 提示逼近。
+        <br>两者维度不同、并列触发、互不替代，理由里会写明是哪一项触发的。</div>
     </div>
 
     <div class="card">
@@ -182,12 +190,15 @@ function renderDecision(rows){
 
 function renderSignal(rows){
   const tb=el('signalTable').querySelector('tbody'); tb.innerHTML='';
-  // VIX 只作后台避险判据，面板不展示（口径：美股信号看纳指 + 美债10Y）
-  rows.filter(r=>r.symbol!=='VIX').forEach(r=>{
-    const isUst=(r.symbol==='UST10Y');
+  // 避险阈值（与 qdii/constants.py 的 STRATEGY_PARAMS 保持一致）
+  const VIX_WARN=20, VIX_HARD=30, UST_WARN_BP=15, UST_HARD_BP=30;
+  rows.forEach(r=>{
+    const isUst=(r.symbol==='UST10Y'), isVix=(r.symbol==='VIX');
     const tr=document.createElement('tr');
     const rt=r.is_realtime? '<span class="pill p-green">实时</span>' : '<span class="pill" style="background:#f1f5f9;color:#475569">昨收·非实时</span>';
-    const sub = isUst ? '实时 · 收益率' : (r.is_realtime?'期货 · 24h 连续':'现货 · 上一交易日收盘');
+    let sub = r.is_realtime?'期货 · 24h 连续':'现货 · 上一交易日收盘';
+    if(isUst) sub='实时 · 收益率 · 防御阈值 日升 '+UST_HARD_BP+'bp';
+    if(isVix) sub='日频 · 上一交易日收盘 · 防御阈值 '+VIX_HARD;
     // 收益率保留 3 位小数 + %；涨跌用 bp —— 收益率算「相对涨跌%」没有经济含义
     //（4.00%→4.04% 只算 +1%，实际是 +4bp）。
     const price = isUst
@@ -197,7 +208,18 @@ function renderSignal(rows){
       ? '<span class="'+clsPct(r.change_bp)+'">'+
         (r.change_bp!=null? (r.change_bp>0?'+':'')+r.change_bp.toFixed(1)+'bp' : '—')+'</span>'
       : '<span class="'+clsPct(r.change_pct)+'">'+fmtPct(r.change_pct)+'</span>';
-    tr.innerHTML='<td>'+r.name+'<br><small style="color:#94a3b8">'+sub+'</small></td>'+
+    // 避险状态标注：VIX 看绝对水平（预警区/已触发），美债看 bp 逼近程度
+    let flag='';
+    if(isVix && r.last_price!=null){
+      if(r.last_price>VIX_HARD) flag='<span class="pill p-red">已触发防御 ×0.5</span>';
+      else if(r.last_price>=VIX_WARN) flag='<span class="pill p-limit">预警区</span>';
+    }
+    if(isUst && r.change_bp!=null){
+      if(r.change_bp>UST_HARD_BP) flag='<span class="pill p-red">已触发防御 ×0.5</span>';
+      else if(r.change_bp>=UST_WARN_BP) flag='<span class="pill p-limit">逼近阈值</span>';
+    }
+    tr.innerHTML='<td>'+r.name+(flag?' '+flag:'')+
+      '<br><small style="color:#94a3b8">'+sub+'</small></td>'+
       '<td>'+price+'</td>'+
       '<td>'+chgHtml+'</td>'+
       '<td>'+rt+'</td>';

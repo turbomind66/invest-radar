@@ -3,11 +3,12 @@
 采纳的策略组合（用户确认）：
 - 骨架 = 固定周期 + 信号增强：固定每周投基准额，用信号微调当期额度。
 - 加仓量依据 = 跟跌加仓 + 估值百分位：跌越多/估值越低 → 倍数越高。
-- 防御开关 = 避险情绪：美债避险信号极端时 → 临时减额。
+- 防御开关 = 避险情绪：VIX（绝对水平/单日跳升）+ 美债10Y（单日上行 bp）任一极端
+  → 临时减额（×0.5），软阈值只提示不减额。
 
-输入：基金申购状态/限额 + 美股信号(现货昨收/期货实时/美债/VIX)
+输入：基金申购状态/限额 + 美股信号(现货昨收/期货实时/美债10Y/VIX)
       + 估值百分位 + 跟踪误差。
-输出：每只基金「建议投入倍数 + 理由」。
+输出：每只基金「建议投入倍数 + 理由」；大类维度另出「可买情况 + 倍数 + 理由」。
 """
 import os
 import sys
@@ -28,9 +29,70 @@ import fetcher_premium
 import tracking_error
 
 
+def risk_off_assess(vix=None, ust_bp=None, vix_chg=None, params=None):
+    """避险防御评估 → (倍数系数, 触发说明[list], 预警说明[list])。
+
+    两个判据**维度不同、不能互相替代**，所以并列（OR）而不是加权平均：
+    - **VIX**：绝对水平（日频，CBOE 收盘）—— 衡量「市场已经恐慌到什么程度」，
+      是恐慌的**结果**；VIX 单日跳升幅度则代表情绪急变速度。
+    - **美债10Y**：单日变动 **bp**（实时）—— 衡量「无风险利率是否在跳升」，
+      是压制股票估值的**原因**（贴现率上行 → 高估值资产先杀）。
+
+    旧实现把两者塞进同一句、且只显示 VIX 数值，于是出现过自相矛盾的文案：
+    真正触发的是美债（+35bp），理由里却写「VIX 15.0」——低于 30 阈值却减了半，
+    用户看到只会怀疑策略算错了。这里改成「谁触发写谁」。
+
+    分级：硬阈值触发 → ×0.5；软阈值（预警区）只提示、不动倍数，
+    让趋势在理由里可见，避免「阈值是一刀切、看不见逼近过程」。
+    """
+    P = params or C.STRATEGY_PARAMS
+    vix_hard = P.get("risk_off_vix", 30.0)
+    vix_warn = P.get("risk_off_vix_warn", 20.0)
+    ust_hard = P.get("risk_off_ust_bp", 30.0)
+    ust_warn = P.get("risk_off_ust_warn_bp", 15.0)
+    hits, warns = [], []
+
+    if vix is not None:
+        vix = float(vix)
+        if vix > vix_hard:
+            hits.append("VIX %.1f 高于 %g（市场恐慌）" % (vix, vix_hard))
+        elif vix >= vix_warn:
+            warns.append("VIX %.1f 处于 %g~%g 预警区（未达防御阈值，不减额）"
+                         % (vix, vix_warn, vix_hard))
+    if vix_chg is not None and float(vix_chg) >= P.get("risk_off_vix_jump", 20.0):
+        warns.append("VIX 单日跳升 %+.1f%%（情绪急变，未达防御阈值）" % float(vix_chg))
+    if ust_bp is not None:
+        ust_bp = float(ust_bp)
+        if ust_bp > ust_hard:
+            hits.append("美债10Y 单日上行 %+.0fbp 超 %gbp（利率冲击）" % (ust_bp, ust_hard))
+        elif ust_bp >= ust_warn:
+            warns.append("美债10Y 单日上行 %+.0fbp，逼近 %gbp 阈值（未减额）"
+                         % (ust_bp, ust_hard))
+
+    factor = 0.5 if hits else 1.0
+    return factor, hits, warns
+
+
+def risk_off_status_text(vix=None, ust_bp=None, params=None):
+    """避险指标「未触发」时的一句话状态。
+
+    为什么要有：判据只在触发时才出现在理由里，没触发时用户看不出来 VIX / 美债
+    到底有没有被使用、当前取值多少。每天都写一句当前值，「策略在用它们」才可验证。
+    取不到的项直接跳过，不写「—」占位。
+    """
+    P = params or C.STRATEGY_PARAMS
+    parts = []
+    if vix is not None:
+        parts.append("VIX %.1f（阈值 %g）" % (float(vix), P.get("risk_off_vix", 30.0)))
+    if ust_bp is not None:
+        parts.append("美债10Y 单日 %+.0fbp（阈值 +%gbp）"
+                     % (float(ust_bp), P.get("risk_off_ust_bp", 30.0)))
+    return "避险指标正常：" + "、".join(parts) if parts else ""
+
+
 def recommend(ctx):
-    """ctx 含: code, sub_status, limit_amount, spx_chg, ndx_chg, vix, ust_bp, valuation_pct。
-    返回 {'multiple': float, 'reasons': [str]}。
+    """ctx 含: code, sub_status, limit_amount, spx_chg, ndx_chg, vix, vix_chg, ust_bp,
+    valuation_pct。返回 {'multiple': float, 'reasons': [str]}。
     """
     P = C.STRATEGY_PARAMS
     reasons = []
@@ -68,13 +130,17 @@ def recommend(ctx):
             multiple -= 0.5
             reasons.append("估值百分位 %.0f%% 偏高，-0.5" % vp)
 
-    # 4. 避险情绪防御开关（VIX 或 美债10Y 单日大幅上行）
-    vix = ctx.get("vix") or 0.0
-    ust_bp = ctx.get("ust_bp") or 0.0
-    if vix > P["risk_off_vix"] or ust_bp > P["risk_off_ust_bp"]:
-        multiple *= 0.5
-        reasons.append("避险升温（VIX %.1f / 美债10Y %+.0fbp）→ 防御 ×0.5"
-                       % (vix, ust_bp))
+    # 4. 避险情绪防御开关（VIX 绝对水平 / VIX 单日跳升 / 美债10Y 单日上行 bp）
+    factor, hits, warns = risk_off_assess(ctx.get("vix"), ctx.get("ust_bp"),
+                                          ctx.get("vix_chg"))
+    if factor < 1.0:
+        multiple *= factor
+        reasons.append("避险防御 ×%.1f：%s" % (factor, "；".join(hits)))
+    else:
+        ok = risk_off_status_text(ctx.get("vix"), ctx.get("ust_bp"))
+        if ok:
+            reasons.append(ok)
+    reasons.extend(warns)
 
     # 5. 限额封顶（限大额时按限额/基准额封顶）
     if sub == "LIMIT" and limit_amount > 0:
@@ -196,16 +262,20 @@ def recommend_category(cat, stats, us_map, valuation_pct=None):
         else:
             reasons.append("PE 分位 %.0f%%，估值中性" % valuation_pct)
 
-    # 3) 避险开关（VIX / 美债10Y 上行 bp）
+    # 3) 避险开关（VIX 绝对水平/跳升 + 美债10Y 单日上行 bp），谁触发写谁
     vix_row = us_map.get("VIX") or {}
     ust_row = us_map.get("UST10Y") or {}
-    vix = vix_row.get("last_price") or 0.0
-    ust_bp = ust_row.get("change_bp") or 0.0
-    if vix > P["risk_off_vix"] or ust_bp > P["risk_off_ust_bp"]:
-        multiple *= 0.5
-        reasons.append("避险升温（VIX %.1f%s）→ 倍数 ×0.5"
-                       % (vix, "，美债10Y 上行 %+.0fbp" % ust_bp
-                          if ust_bp > P["risk_off_ust_bp"] else ""))
+    factor, hits, warns = risk_off_assess(vix_row.get("last_price"),
+                                          ust_row.get("change_bp"),
+                                          vix_row.get("change_pct"))
+    if factor < 1.0:
+        multiple *= factor
+        reasons.append("避险防御 ×%.1f：%s" % (factor, "；".join(hits)))
+    else:
+        ok = risk_off_status_text(vix_row.get("last_price"), ust_row.get("change_bp"))
+        if ok:
+            reasons.append(ok)
+    reasons.extend(warns)
 
     # 4) 可买性说明（不封顶倍数，只提示）
     if stats["limit"] and stats["min_limit"] is not None:
@@ -313,6 +383,7 @@ def build_contexts(date: str = None, path: str = C.QDII_DB_PATH):
             spx_chg=spx.get("change_pct"),
             ndx_chg=ndx.get("change_pct"),
             vix=vix_row.get("last_price"),
+            vix_chg=vix_row.get("change_pct"),
             ust_bp=ust.get("change_bp"),
             valuation_pct=C.STATIC_VALUATION_PCT.get(f["category"]),
         ))
