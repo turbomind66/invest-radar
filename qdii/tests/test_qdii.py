@@ -122,9 +122,10 @@ class TrackingErrorTest(unittest.TestCase):
         tracking_error.fetch_nav_history = lambda code, *a, **k: nav
         tracking_error.fetch_benchmark_daily = lambda *a, **k: bmk
 
-        sources = C.TRACK_BENCHMARK["161130"]["sources"]
+        # 基准配置已改为「按大类」（TRACK_BENCHMARK 按代码表已废弃）
+        sources = C.TRACK_BENCHMARK_BY_CATEGORY["纳斯达克100"]["sources"]
         self.assertIn(("em_us", "100.NDX100"), sources)
-        self.assertEqual(C.TRACK_BENCHMARK["161130"]["lag"], 0)  # 实测 lag=0 才对齐
+        self.assertEqual(C.TRACK_BENCHMARK_BY_CATEGORY["纳斯达克100"]["lag"], 0)  # 实测 lag=0 才对齐
 
         te, nav_date, src = tracking_error.compute_te("161130", lag_override=1)
         self.assertIsNotNone(te)
@@ -276,8 +277,15 @@ class CategoryDecisionTest(unittest.TestCase):
         self.assertTrue(any("跌 4.20%" in x for x in r["reasons"]))
 
     def test_borrowed_signal_is_labelled(self):
-        # 日经没有本地信号，借用纳指时理由必须写明，避免误读成本地数据
-        r = strategy.recommend_category("日经225", self._stats(), self._us(), None)
+        # 2026-10-29 起每个大类都有自有信号（日经→日经期货、DAX→境内ETF…），
+        # 这里用一个**没有配置信号**的假类别，验证「借用美股风向时必须写明」，
+        # 避免误读成本地数据。
+        import constants as C
+        C.CATEGORY_SIGNAL["测试类"] = ["IXIC"]      # 临时给一个「借来的」信号
+        try:
+            r = strategy.recommend_category("测试类", self._stats(), self._us(), None)
+        finally:
+            C.CATEGORY_SIGNAL.pop("测试类", None)
         self.assertTrue(any("无本地指数信号" in x for x in r["reasons"]))
 
     def test_own_signal_not_labelled(self):
@@ -317,8 +325,13 @@ class PremiumEtfListTest(unittest.TestCase):
                 self.assertTrue(e.get(k), "%s 缺少字段 %s" % (e.get("code"), k))
 
     def test_every_category_has_etf(self):
+        # 只有**境内有对应 ETF 的大类**才要求进溢价清单；
+        # 英国富时100 / 法国CAC40 / 纳斯达克科技市值加权指数在境内没有可交易 ETF，
+        # 硬凑一只别的指数来充数只会给出错误溢价。
         cats = {e["category"] for e in C.PREMIUM_ETFS}
         for c in C.CATEGORY_ORDER:
+            if c in ("英国富时100", "法国CAC40", "纳斯达克科技", "标普500等权"):
+                continue
             self.assertIn(c, cats, "大类 %s 至少要有一只场内 ETF" % c)
 
     def test_premium_math(self):
@@ -380,8 +393,13 @@ class PremiumAdjustedTest(unittest.TestCase):
         self.assertAlmostEqual(raw - adj, 100 * (price / nav) * (1 - 1 / ratio), places=6)
 
     def test_every_etf_has_bench(self):
+        # 有基准源的必须写清源类型；确实没有公开日K 的（纳斯达克科技市值加权指数、
+        # 法国CAC40）允许 bench=None —— 折算列留空比用错的基准更诚实。
         for e in C.PREMIUM_ETFS:
-            self.assertTrue(e.get("bench"), "%s 缺 bench，折算列会永远为空" % e["code"])
+            if not e.get("bench"):
+                self.assertIn(e["category"], ("纳斯达克科技", "法国CAC40"),
+                              "%s 缺 bench 且该类别不该留空" % e["code"])
+                continue
             self.assertIn(e["bench"][0], ("sina_us", "em_us", "sina_fut"),
                           "未知的基准源类型")
 
@@ -566,12 +584,12 @@ class PlatformFeeOrderTest(unittest.TestCase):
             rows = fetcher_fee.get_platform_fee(path=p)
             self.assertEqual(
                 [(r["code"], r["platform"]) for r in rows],
-                [("161125", "天天基金"), ("161125", "支付宝"), ("161125", "理财通"),
-                 ("161130", "天天基金"), ("161130", "支付宝"), ("161130", "理财通")])
-            # 标普500（161125）在池里排在纳指100（161130）之前
+                [("161130", "天天基金"), ("161130", "支付宝"), ("161130", "理财通"),
+                 ("161125", "天天基金"), ("161125", "支付宝"), ("161125", "理财通")])
+            # 纳指100（161130）在池里排在标普500（161125）之前
             self.assertLess(
-                [f["code"] for f in C.FUND_POOL].index("161125"),
-                [f["code"] for f in C.FUND_POOL].index("161130"))
+                [f["code"] for f in C.FUND_POOL].index("161130"),
+                [f["code"] for f in C.FUND_POOL].index("161125"))
         finally:
             if os.path.exists(p):
                 os.remove(p)
@@ -757,13 +775,16 @@ class BoardSortTest(unittest.TestCase):
         import constants as C
         out = board.sort_blocks(self._blocks(), "category")
         cats = [b["category"] for b in out]
-        self.assertEqual(cats[0], "标普500")
-        self.assertEqual(cats[-1], "纳斯达克100")
         pool_cats = []
         for f in C.FUND_POOL:
             if f["category"] not in pool_cats:
                 pool_cats.append(f["category"])
-        self.assertLess(pool_cats.index("标普500"), pool_cats.index("纳斯达克100"))
+        # 排序结果里的类别相对顺序必须与 FUND_POOL 的类别序一致
+        pool_order = {c: i for i, c in enumerate(pool_cats)}
+        idxs = [pool_order[c] for c in cats]
+        self.assertEqual(idxs, sorted(idxs))
+        # 类别序以 FUND_POOL 为准（纳斯达克100 在前、标普500 次之）
+        self.assertLess(pool_cats.index("纳斯达克100"), pool_cats.index("标普500"))
 
     def test_platform_sort_keeps_fund_order(self):
         """平台级排序只动块内行序，基金的先后必须完全不变。"""
@@ -811,6 +832,102 @@ class BoardSortTest(unittest.TestCase):
                          [b["code"] for b in blocks])
         self.assertEqual([b["code"] for b in board.sort_platforms(blocks, "nope")],
                          [b["code"] for b in blocks])
+
+
+
+class PoolExpansionTest(unittest.TestCase):
+    """基金池扩充到 67 只 / 9 个大类后的口径守护（2026-10-29）。"""
+
+    def test_pool_size_and_uniqueness(self):
+        codes = [f["code"] for f in C.FUND_POOL]
+        self.assertGreaterEqual(len(codes), 60, "基金池应覆盖理财通清单上的主流场外 QDII")
+        self.assertEqual(len(codes), len(set(codes)), "基金代码重复")
+
+    def test_every_fund_has_required_fields(self):
+        for f in C.FUND_POOL:
+            for k in ("code", "name", "index_name", "category", "company", "fund_type"):
+                self.assertTrue(f.get(k), "%s 缺少字段 %s" % (f.get("code"), k))
+
+    def test_every_category_in_order(self):
+        cats = {f["category"] for f in C.FUND_POOL}
+        for c in cats:
+            self.assertIn(c, C.CATEGORY_ORDER, "类别 %s 不在 CATEGORY_ORDER 里" % c)
+
+    def test_new_categories_present(self):
+        cats = {f["category"] for f in C.FUND_POOL}
+        for c in ("纳斯达克100", "标普500", "纳斯达克生物科技", "纳斯达克科技",
+                  "日经225", "德国DAX", "法国CAC40", "英国富时100", "标普500等权"):
+            self.assertIn(c, cats, "缺少大类 %s" % c)
+
+    def test_online_code_points_to_real_etf(self):
+        """场外基金的「场内对应」必须是真的场内 ETF 代码（6 位、纯数字）。"""
+        for f in C.FUND_POOL:
+            oc = f.get("online_code") or ""
+            if oc:
+                self.assertEqual(len(oc), 6, "%s 的 online_code 不合法" % f["code"])
+                self.assertTrue(oc.isdigit(), "%s 的 online_code 非数字" % f["code"])
+
+    def test_lof_c_share_has_no_online_code(self):
+        """LOF 的 C 类份额只能场外申购，场内代码是 A 类的 → 不能填自己的代码。"""
+        for f in C.FUND_POOL:
+            if f["code"] in ("012870", "012860"):
+                self.assertEqual(f.get("online_code"), "",
+                                 "%s 是 LOF 的 C 类份额，不应有场内代码" % f["code"])
+
+
+class SignalCoverageTest(unittest.TestCase):
+    """全球市场信号：每个大类都要有自有信号，信号表要覆盖所有被引用的 symbol。"""
+
+    def test_every_category_has_own_signal(self):
+        for c in C.CATEGORY_ORDER:
+            self.assertIn(c, C.CATEGORY_SIGNAL, "大类 %s 没有配置信号" % c)
+            self.assertTrue(C.CATEGORY_SIGNAL[c], "大类 %s 的信号列表为空" % c)
+            self.assertEqual(C.CATEGORY_OWN_SIGNAL.get(c), C.CATEGORY_SIGNAL[c][0])
+
+    def test_all_signal_symbols_declared(self):
+        """决策里引用的每个 symbol 都要在 MARKET_SIGNALS 里登记（否则面板没有它的标签）。"""
+        declared = {s[0] for s in C.MARKET_SIGNALS}
+        for c, syms in C.CATEGORY_SIGNAL.items():
+            for sym in syms:
+                self.assertIn(sym, declared,
+                              "类别 %s 引用的 %s 未在 MARKET_SIGNALS 登记" % (c, sym))
+
+    def test_market_groups_cover_all_signals(self):
+        declared = {s[0] for s in C.MARKET_SIGNALS}
+        groups = set(C.MARKET_GROUPS)
+        for sym, _name, grp, _kind in C.MARKET_SIGNALS:
+            self.assertIn(grp, groups, "%s 的分组 %s 不在 MARKET_GROUPS 里" % (sym, grp))
+        self.assertEqual(declared, set(s[0] for s in C.MARKET_SIGNALS))
+
+    def test_proxy_signals_are_marked(self):
+        """代理口径的信号必须在 kind 里写明「代理」，不能冒充指数。"""
+        for sym, _name, _grp, kind in C.MARKET_SIGNALS:
+            if sym in ("FTSE_UK", "DAX_ETF", "CAC40_ETF", "NXT_ETF"):
+                self.assertTrue("代理" in kind or "ETF" in kind,
+                                "%s 是代理信号，类型标签必须写明" % sym)
+
+
+class BoardTrackingErrorTest(unittest.TestCase):
+    """跟踪误差并入 ④ 基金总览表（原来是独立的一张表）。"""
+
+    def test_block_carries_te(self):
+        import board
+        blocks = board.merge_board(
+            [dict(code="161130", sub_status="OPEN", limit_amount=0.0,
+                  is_limited=0, next_open_date="", buy_start=10.0)],
+            [dict(code="161130", platform="天天基金", on_sale=1, sub_fee_rate=1.2,
+                  sub_fee_discount=0.12, mgmt_fee=0.5, custodian_fee=0.1,
+                  sales_service_fee=0.0, source="eastmoney_rateinfo")],
+            [dict(code="161130", name="易方达纳斯达克100ETF联接(QDII-LOF)A",
+                  category="纳斯达克100")],
+            [dict(code="161130", te_computed=1.55)])
+        b = blocks[0]
+        self.assertAlmostEqual(b["te"], 1.55, places=3)
+        self.assertEqual(b["te_text"], "1.55%")
+
+    def test_te_sort_key_exists(self):
+        import board
+        self.assertIn("te", board.FUND_SORT_KEYS)
 
 
 if __name__ == "__main__":

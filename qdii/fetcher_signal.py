@@ -31,6 +31,8 @@ import constants as C
 FUTURES_MAP = {
     "hf_ES": ("SPX_FUT", "标普500期货"),
     "hf_NQ": ("NDX_FUT", "纳指期货"),
+    # 日经225 期货（东京）：欧洲/亚太类别的实时信号源之一
+    "hf_NK": ("NK", "日经225期货"),
 }
 # 新浪美股指数（标普500 现货，上一交易日收盘）
 SINA_INDEX_URL = "https://hq.sinajs.cn/list=gb_inx,gb_ixic"
@@ -39,10 +41,24 @@ SINA_INDEX_URL = "https://hq.sinajs.cn/list=gb_inx,gb_ixic"
 # 综合指数含全部纳斯达克上市股票（约 3300 只），纳指100 只含 100 只非金融大盘股。
 # ⚠️ 腾讯 `usTNX`（美债10Y）已不再返回数据（2026-10-29 实测请求 3 个代码只回 2 条），
 #    美债改用 CNBC 实时报价，见 fetch_cnbc_ust10y()。
-TENCENT_URL = "https://qt.gtimg.cn/q=usIXIC"
+# usNBI = 纳斯达克生物科技指数（生物科技大类的主信号，实测可用）。
+# usEWU = iShares MSCI 英国 ETF —— 富时100 无公开行情源，用它做**代理**（页面必须标注）。
+TENCENT_URL = "https://qt.gtimg.cn/q=usIXIC,usNBI,usEWU"
 TENCENT_SYMBOLS = {
     "usIXIC": ("IXIC", "纳指现货", 0),
+    "usNBI": ("NBI", "纳指生技现货", 0),
+    "usEWU": ("FTSE_UK", "英国富时100（代理）", 1),
 }
+# 境内场内 ETF（实时）：欧洲/亚太里**取不到海外指数现货**的类别，用对应场内 ETF 实时价代理。
+# 新浪 A 股行情字段：parts[0]=名称 parts[2]=昨收 parts[3]=现价 parts[30]=日期 parts[31]=时间
+SINA_A_ETF = {
+    "sh513030": ("DAX_ETF", "德国DAX（513030）"),
+    "sh513080": ("CAC40_ETF", "法国CAC40（513080）"),
+    "sz159509": ("NXT_ETF", "纳指科技（159509）"),
+}
+SINA_A_ETF_URL = "https://hq.sinajs.cn/list=" + ",".join(SINA_A_ETF)
+# symbol → 展示名（写库用）
+SINA_A_ETF_NAME = {v[0]: v[1] for v in SINA_A_ETF.values()}
 # VIX：腾讯 usVIX 的数值自 2026-09-15 起就不再更新（实测长期停在 21.67），
 # 拿它当避险开关等于开关永远不动。改用 CBOE 官方日收盘 CSV（权威、日频、T+1）。
 CBOE_VIX_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
@@ -171,6 +187,36 @@ def fetch_cnbc_ust10y():
     return last, bp, chg_pct, ("美东 " + as_of if as_of else "")
 
 
+def fetch_sina_a_etf():
+    """新浪 A 股场内 ETF 实时价 → {symbol: (名称, 现价, 昨收, 时间)}。
+
+    用途：DAX / 法国CAC40 / 纳斯达克科技 这几类**取不到海外指数现货**
+    （东财 push2 在本网络恒断、腾讯/新浪也没有对应指数代码），
+    用境内对应 ETF 的实时价代理 —— 反映的是国内投资者实际能买到的价格。
+    代理口径会在页面类型标签里写明（场内ETF · 实时），不冒充指数。
+    """
+    txt = fetch_text(SINA_A_ETF_URL, referer="https://finance.sina.com.cn",
+                     encoding="gbk", use_proxy=None, retries=2)
+    res = {}
+    for m in re.finditer(r'var hq_str_(\w+)="([^"]*)"', txt):
+        code, body = m.group(1), m.group(2)
+        if code not in SINA_A_ETF or not body:
+            continue
+        parts = body.split(",")
+        if len(parts) < 4:
+            continue
+        try:
+            price = float(parts[3])
+            prev = float(parts[2])
+        except (ValueError, TypeError):
+            continue
+        ts = ""
+        if len(parts) > 31:
+            ts = "%s %s" % (parts[30], parts[31])
+        res[SINA_A_ETF[code][0]] = (SINA_A_ETF[code][1], price, prev, ts.strip())
+    return res
+
+
 def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
     date = date or datetime.date.today().isoformat()
     now = datetime.datetime.now().isoformat(timespec="seconds")
@@ -227,6 +273,15 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
             rows.append((date, "SPX", "标普500现货", price, chg, 0, now, now, None))
     except Exception as e:  # noqa: BLE001
         print("[signal] sina index failed:", e)
+    # 境内场内 ETF（实时）：DAX / 法国CAC40 / 纳斯达克科技的代理信号
+    try:
+        a_etf = fetch_sina_a_etf()
+        for symbol, (_n, price, prev, ts) in a_etf.items():
+            chg = round((price / prev - 1) * 100, 4) if prev else None
+            rows.append((date, symbol, SINA_A_ETF_NAME[symbol], price, chg, 1,
+                         ts or now, now, None))
+    except Exception as e:  # noqa: BLE001
+        print("[signal] sina a-etf failed:", e)
     conn = db.get_conn(path)
     # 同日重跑先清当日旧行：symbol 口径变过（NDX → IXIC、usTNX → CNBC UST10Y），
     # 不清理会让面板同时出现新旧两条。
@@ -249,13 +304,14 @@ def get_latest_us_signal(path: str = C.QDII_DB_PATH):
     if not drow:
         conn.close()
         return []
+    # 显式排序：按 constants.MARKET_SIGNALS 的顺序（美股 → 科技 → 亚太 → 欧洲 → 利率）。
+    # 别依赖插入顺序——重跑/补数时顺序会变。
+    order = ["IXIC", "NDX_FUT", "SPX", "SPX_FUT", "NBI", "NXT_ETF", "NK",
+             "DAX_ETF", "CAC40_ETF", "FTSE_UK", "UST10Y", "VIX"]
+    cases = " ".join("WHEN '%s' THEN %d" % (s, i + 1) for i, s in enumerate(order))
     rows = conn.execute(
-        # 显式排序：面板固定为「纳指现货 → 纳指期货 → 标普现货 → 标普期货 →
-        # 美债10Y → VIX」。别依赖插入顺序——重跑/补数时顺序会变。
-        "SELECT * FROM qdii_us_signal WHERE date=? ORDER BY CASE symbol "
-        "WHEN 'IXIC' THEN 1 WHEN 'NDX_FUT' THEN 2 WHEN 'SPX' THEN 3 "
-        "WHEN 'SPX_FUT' THEN 4 WHEN 'UST10Y' THEN 5 WHEN 'VIX' THEN 6 ELSE 9 END",
-        (drow["date"],)).fetchall()
+        "SELECT * FROM qdii_us_signal WHERE date=? ORDER BY CASE symbol %s ELSE 99 END"
+        % cases, (drow["date"],)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 

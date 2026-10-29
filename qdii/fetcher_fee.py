@@ -11,6 +11,7 @@ import sys
 import re
 import json
 import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
@@ -109,6 +110,33 @@ def fetch_alipay_info(code):
     }
 
 
+def _fetch_one(code):
+    """抓一只基金在天天基金/支付宝的原始数据（纯网络，无写库）。"""
+    try:
+        info = parse_rate_info(fetch_rate_info(code))
+    except Exception:  # noqa: BLE001
+        info = {}
+    try:
+        ap = fetch_alipay_info(code)
+    except Exception:  # noqa: BLE001
+        ap = None
+    return code, (info, ap)
+
+
+def _fetch_all_raw(codes, workers=8):
+    """并发抓取多只基金的费率原始数据。失败只影响该只，不中断整体。"""
+    out = {}
+    if not codes:
+        return out
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for code, pair in ex.map(_fetch_one, codes):
+                out[code] = pair
+    except Exception as e:  # noqa: BLE001
+        print("[fee] concurrent fetch failed:", e)
+    return out
+
+
 def fetch_platform_fee(date: str = None, path: str = C.QDII_DB_PATH):
     date = date or datetime.date.today().isoformat()
     now = datetime.datetime.now().isoformat(timespec="seconds")
@@ -123,14 +151,14 @@ def fetch_platform_fee(date: str = None, path: str = C.QDII_DB_PATH):
         lmap = {r["code"]: r["sub_status"] for r in lrows}
     except Exception:  # noqa: BLE001
         lmap = {}
+    # ⚠️ 规模变化：基金池从 11 只扩到 66 只，串行抓 3 个平台要十几分钟。
+    # 抓取（纯网络）并发执行，落库仍在主线程单连接，避免 SQLite 并发写锁问题。
+    raw = _fetch_all_raw([f["code"] for f in C.FUND_POOL])
     cnt = 0
     for f in C.FUND_POOL:
         code = f["code"]
+        info, ap = raw.get(code) or ({}, None)
         # ---- 天天基金行 ----
-        try:
-            info = parse_rate_info(fetch_rate_info(code))
-        except Exception as e:  # noqa: BLE001
-            info = {}
         tt_on_sale = 0 if lmap.get(code) == "SUSPEND" else (1 if info else 0)
         db.upsert_row(conn, "qdii_platform_fee",
                       ["code", "platform", "on_sale", "sub_fee_rate",
@@ -146,10 +174,6 @@ def fetch_platform_fee(date: str = None, path: str = C.QDII_DB_PATH):
                        "eastmoney_rateinfo", now],
                       "code,platform")
         # ---- 支付宝行 ----
-        try:
-            ap = fetch_alipay_info(code)
-        except Exception:  # noqa: BLE001
-            ap = None
         if ap and ap.get("sale_status"):
             sale = ap["sale_status"]
             on_sale = 0 if (("暂停" in sale) or ("停止" in sale)) else 1

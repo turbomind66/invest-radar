@@ -12,6 +12,7 @@ import constants as C
 import db
 import fetcher_fee
 import fetcher_limit
+import tracking_error
 from functools import cmp_to_key
 
 # 平台展示顺序：天天基金（官方直销口径）→ 支付宝 → 理财通（推算）
@@ -57,7 +58,7 @@ def _platform_row(r):
     }
 
 
-def _block(code, meta, limit_row):
+def _block(code, meta, limit_row, te_row=None):
     sub_status = (limit_row.get("sub_status") or "").upper()
     is_limited = 1 if limit_row.get("is_limited") else 0
     amount = limit_row.get("limit_amount")
@@ -67,6 +68,7 @@ def _block(code, meta, limit_row):
         limit_text = "不限"
     else:
         limit_text = _fmt_amount(amount) or "—"
+    te = (te_row or {}).get("te_computed")
     return {
         "code": code,
         "name": meta.get("name") or "",
@@ -86,21 +88,27 @@ def _block(code, meta, limit_row):
         "custodian_fee": None,
         "sales_service_fee": None,
         "annual_fee": None,
+        # 跟踪误差（基金级）：与限额/费率一样是「这只基金本身」的属性，
+        # 合并进同一张表，避免再开一张表来回对代码。
+        "te": te,
+        "te_text": ("%.2f%%" % te) if te is not None else "",
         "platforms": [],
         "_raw": [],
     }
 
 
-def merge_board(limit_rows, fee_rows, pool=()):
+def merge_board(limit_rows, fee_rows, pool=(), te_rows=None):
     """纯函数：把两组原始行合并成「一只基金一个块」的列表。
 
     - 基金顺序跟随 fee_rows（上游已按 FUND_POOL 大类顺序排好），
       只有申购状态、没有费率行的基金追加在后面（按 FUND_POOL 秩），
       否则"暂停且平台抓不到费率"的基金会在页面上凭空消失。
     - 平台顺序固定 天天基金 → 支付宝 → 理财通，「券商」等未接入平台的遗留行跳过。
+    - te_rows：跟踪误差（模块E）结果，按 code join 到基金级。
     """
     meta = {f.get("code"): f for f in pool}
     limit_map = {r.get("code"): r for r in (limit_rows or [])}
+    te_map = {r.get("code"): r for r in (te_rows or [])}
     pool_rank = {f["code"]: i for i, f in enumerate(C.FUND_POOL)}
 
     blocks, idx = [], {}
@@ -110,19 +118,25 @@ def merge_board(limit_rows, fee_rows, pool=()):
         code = r.get("code")
         if not code:
             continue
+        # 只处理基金池内的基金：限额表是**全市场**导出的（几千只），
+        # 不按池过滤的话，页面会冒出几百只根本没进池的基金。
+        if meta and code not in meta:
+            continue
         if code not in idx:
             idx[code] = len(blocks)
-            blocks.append(_block(code, meta.get(code) or {}, limit_map.get(code) or {}))
+            blocks.append(_block(code, meta.get(code) or {},
+                                 limit_map.get(code) or {}, te_map.get(code)))
         block = blocks[idx[code]]
         block["platforms"].append(_platform_row(r))
         block["_raw"].append(r)      # 固定年费要从原始行取（_platform_row 已裁剪字段）
 
-    extras = [r for r in (limit_rows or []) if r.get("code") not in idx]
+    extras = [r for r in (limit_rows or []) if r.get("code") not in idx
+              and (not meta or r.get("code") in meta)]
     extras.sort(key=lambda r: pool_rank.get(r.get("code"), 999))
     for r in extras:
         code = r.get("code")
         idx[code] = len(blocks)
-        blocks.append(_block(code, meta.get(code) or {}, r))
+        blocks.append(_block(code, meta.get(code) or {}, r, te_map.get(code)))
 
     for b in blocks:
         plats = b["platforms"]
@@ -150,7 +164,8 @@ def get_fund_board(path: str = C.QDII_DB_PATH, sort=None, desc=False,
     """
     blocks = merge_board(fetcher_limit.get_latest_limit_status(path=path),
                          fetcher_fee.get_platform_fee(path=path),
-                         db.get_fund_pool(path))
+                         db.get_fund_pool(path),
+                         tracking_error.get_tracking_error(path=path))
     blocks = sort_platforms(blocks, psort, pdesc)
     blocks = sort_blocks(blocks, sort, desc)
     return blocks
@@ -178,6 +193,7 @@ FUND_SORT_KEYS = {
     "custodian_fee": lambda b: _num(b.get("custodian_fee")),
     "sales_service_fee": lambda b: _num(b.get("sales_service_fee")),
     "annual_fee": lambda b: _num(b.get("annual_fee")),
+    "te": lambda b: _num(b.get("te")),
 }
 
 # 平台级排序键（点这些表头 → 只改变同一只基金内部各平台行的先后）

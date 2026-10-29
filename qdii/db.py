@@ -137,6 +137,14 @@ def upsert_row(conn, table, cols, vals, conflict):
 # ---- 基金池 ----
 def seed_fund_pool(rows, path: str = DB_PATH):
     conn = get_conn(path)
+    # 清理**不在本次种子清单里**的历史记录：基金池会随新发现增删，
+    # 只 upsert 不删除的话，库里会残留早已移出池子的基金，
+    # 决策统计与页面表格都会把它们算进去（2026-10-29 实测：残留 1 只导致
+    # 标普500 类别被统计成 14 只而不是 13 只）。
+    keep = [r["code"] for r in rows]
+    if keep:
+        marks = ",".join("?" for _ in keep)
+        conn.execute("DELETE FROM qdii_fund WHERE code NOT IN (%s)" % marks, keep)
     for r in rows:
         conn.execute(
             "INSERT INTO qdii_fund(code,name,index_name,category,company,"

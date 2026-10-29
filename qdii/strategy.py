@@ -348,8 +348,14 @@ def get_latest_category_decisions(path: str = C.QDII_DB_PATH):
     if not drow:
         conn.close()
         return []
+    # 按 constants.CATEGORY_ORDER 排序：**不能靠 id/插入顺序** ——
+    # 类别会增减（新增「标普500等权」等），UPSERT 只更新已有行、新类别追加到末尾，
+    # 插入顺序就会与「大类顺序」不一致，柱状图与表格看起来是乱的。
+    cases = " ".join("WHEN '%s' THEN %d" % (c, i + 1)
+                     for i, c in enumerate(C.CATEGORY_ORDER))
     rows = conn.execute(
-        "SELECT * FROM qdii_decision_cat WHERE date=? ORDER BY id", (drow["date"],)
+        "SELECT * FROM qdii_decision_cat WHERE date=? "
+        "ORDER BY CASE category %s ELSE 99 END, category" % cases, (drow["date"],)
     ).fetchall()
     conn.close()
     out = []

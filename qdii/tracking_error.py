@@ -23,6 +23,7 @@ import sys
 import json
 import bisect
 import datetime
+from concurrent.futures import ThreadPoolExecutor
 import math
 import re
 
@@ -141,6 +142,32 @@ def fetch_benchmark_em(btype, bcode):
     return out
 
 
+def fetch_benchmark_sina_fut(symbol):
+    """新浪外盘期货日K（全球期货），返回升序 [(日期, 收盘)]。symbol 例：NK（日经225）。
+
+    新浪没有日经225/DAX 的**指数**日K，但有对应的**期货**日K，方向一致，
+    可作为跟踪误差基准（此前日经类别无基准、TE 长期为空）。
+    接口：GlobalFuturesService.getGlobalFuturesDailyKLine，字段 date/close。
+    """
+    # ⚠️ URL 里的空格必须编码成 %20，否则 fetch_text 直接抛
+    #    "URL can't contain control characters"（之前写成 var _=/ 就踩了这个坑）。
+    url = ("https://stock.finance.sina.com.cn/futures/api/jsonp.php/"
+           "var%20_=/GlobalFuturesService.getGlobalFuturesDailyKLine?symbol=" + symbol)
+    txt = fetch_text(url, encoding="utf-8", use_proxy=None, retries=2,
+                     referer="https://finance.sina.com.cn/")
+    out = []
+    for r in _parse_sina_jsonp(txt):
+        d, c = r.get("date"), r.get("close")
+        if not d or not c:
+            continue
+        try:
+            out.append((str(d)[:10], float(c)))
+        except (TypeError, ValueError):
+            continue
+    out.sort(key=lambda x: x[0])
+    return out
+
+
 def fetch_benchmark_daily(btype, bcode):
     """按 (类型, 代码) 取基准日线，带缓存。返回升序 [(日期, 收盘)]。"""
     key = (btype, bcode)
@@ -148,10 +175,23 @@ def fetch_benchmark_daily(btype, bcode):
         return _BENCH_CACHE[key]
     if btype == "sina_us":
         out = fetch_benchmark_sina_us(bcode)
+    elif btype == "sina_fut":
+        out = fetch_benchmark_sina_fut(bcode)
     else:
         out = fetch_benchmark_em(btype, bcode)
     _BENCH_CACHE[key] = out
     return out
+
+
+def bench_cfg(code):
+    """取一只基金的基准配置：先按代码（特例），再按大类（通用）。"""
+    cfg = C.TRACK_BENCHMARK.get(code)
+    if cfg:
+        return cfg
+    for f in C.FUND_POOL:
+        if f["code"] == code:
+            return C.TRACK_BENCHMARK_BY_CATEGORY.get(f.get("category")) or {}
+    return {}
 
 
 def resolve_benchmark(code):
@@ -159,8 +199,8 @@ def resolve_benchmark(code):
 
     源标签形如 "sina_us:.INX" / "em_us:100.SPX"，落库到 benchmark 字段便于溯源。
     """
-    cfg = C.TRACK_BENCHMARK.get(code)
-    if not cfg:
+    cfg = bench_cfg(code)
+    if not cfg or not cfg.get("sources"):
         return None, None
     for btype, bcode in cfg.get("sources") or []:
         try:
@@ -184,10 +224,10 @@ def compute_te(code, lag_override=None):
        TE = std(日收益差) × √252（年化百分点）。
     3. 返回 (TE, 净值最新日期, 基准源标签)。
     """
-    cfg = C.TRACK_BENCHMARK.get(code)
-    if not cfg:
+    cfg = bench_cfg(code)
+    if not cfg or not cfg.get("sources"):
         return None
-    lag = cfg.get("lag", 1)
+    lag = cfg.get("lag", 0)
     if lag_override is not None:
         lag = lag_override
     nav = fetch_nav_history(code)        # 升序 [(日期, 净值)]
@@ -226,21 +266,51 @@ def compute_te(code, lag_override=None):
     return round(te, 2), nav[-1][0], src
 
 
+def _safe_compute_te(code):
+    """算一只基金的跟踪误差，异常吞掉返回 None（并发用）。"""
+    try:
+        return compute_te(code)
+    except Exception as e:  # noqa: BLE001
+        print("[te] %s failed:" % code, e)
+        return None
+
+
+def _prefetch_benchmarks():
+    """预取各基准指数日线进缓存（同大类共用一份，避免并发时重复下载）。"""
+    seen = set()
+    for f in C.FUND_POOL:
+        cfg = bench_cfg(f["code"])
+        for st, sc in cfg.get("sources") or []:
+            key = (st, sc)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                fetch_benchmark_daily(st, sc)
+            except Exception as e:  # noqa: BLE001
+                print("[te] benchmark prefetch failed:", key, e)
+
+
 def fetch_tracking_error(date: str = None, path: str = C.QDII_DB_PATH):
     date = date or datetime.date.today().isoformat()
     now = datetime.datetime.now().isoformat(timespec="seconds")
     conn = db.get_conn(path)
+    # ⚠️ 规模变化：基金池 11 → 66 只，串行（含 0.6s 限速）要 40 分钟以上。
+    # 改为：① 先单线程**预取基准日线**（同大类共用一份，缓存住）；
+    #       ② 再并发算各只基金的 TE（纯网络）；③ 主线程单连接写库。
+    _prefetch_benchmarks()
+    results = {}
+    codes = [f["code"] for f in C.FUND_POOL]
+    try:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for code, te in zip(codes, ex.map(_safe_compute_te, codes)):
+                results[code] = te
+    except Exception as e:  # noqa: BLE001
+        print("[te] concurrent compute failed:", e)
     cnt = 0
     for f in C.FUND_POOL:
         code = f["code"]
-        # 限速：避免对东财接口短时高频触发代理/上游限流
-        if cnt:
-            time.sleep(0.6)
-        try:
-            te = compute_te(code)
-        except Exception as e:  # noqa: BLE001
-            print("[te] %s failed:" % code, e)
-            te = None
+        te = results.get(code)
         if te is None:
             continue
         te_val, nav_date, src = te
