@@ -330,7 +330,7 @@ class PremiumEtfListTest(unittest.TestCase):
         # 硬凑一只别的指数来充数只会给出错误溢价。
         cats = {e["category"] for e in C.PREMIUM_ETFS}
         for c in C.CATEGORY_ORDER:
-            if c in ("英国富时100", "法国CAC40", "纳斯达克科技", "标普500等权"):
+            if c in ("英国富时100", "法国CAC40"):
                 continue
             self.assertIn(c, cats, "大类 %s 至少要有一只场内 ETF" % c)
 
@@ -840,7 +840,9 @@ class PoolExpansionTest(unittest.TestCase):
 
     def test_pool_size_and_uniqueness(self):
         codes = [f["code"] for f in C.FUND_POOL]
-        self.assertGreaterEqual(len(codes), 60, "基金池应覆盖理财通清单上的主流场外 QDII")
+        # 59 只（66 只截图清单去掉丁总说「多粘贴了」的 8 只后）
+        self.assertGreaterEqual(len(codes), 55, "基金池应覆盖理财通清单上的主流场外 QDII")
+        self.assertEqual(len(codes), 59, "基金池数量变了，请同步核对是否误删/误加")
         self.assertEqual(len(codes), len(set(codes)), "基金代码重复")
 
     def test_every_fund_has_required_fields(self):
@@ -855,9 +857,20 @@ class PoolExpansionTest(unittest.TestCase):
 
     def test_new_categories_present(self):
         cats = {f["category"] for f in C.FUND_POOL}
-        for c in ("纳斯达克100", "标普500", "纳斯达克生物科技", "纳斯达克科技",
-                  "日经225", "德国DAX", "法国CAC40", "英国富时100", "标普500等权"):
+        for c in ("纳斯达克100", "标普500", "日经225", "德国DAX",
+                  "法国CAC40", "英国富时100"):
             self.assertIn(c, cats, "缺少大类 %s" % c)
+
+    def test_removed_categories_gone(self):
+        """丁总 2026-10-29 明确：纳斯达克生物科技 / 纳斯达克科技 / 标普500等权 不要。"""
+        cats = {f["category"] for f in C.FUND_POOL}
+        for c in ("纳斯达克生物科技", "纳斯达克科技", "标普500等权"):
+            self.assertNotIn(c, cats, "大类 %s 已按要求移除，却又出现了" % c)
+        for sym in ("NBI", "NXT_ETF"):
+            self.assertNotIn(sym, C.CATEGORY_SIGNAL.get("标普500", []))
+        for e in C.PREMIUM_ETFS:
+            self.assertNotIn(e["code"], ("513290", "159509"),
+                             "已移除大类的场内 ETF 不该留在溢价清单")
 
     def test_online_code_points_to_real_etf(self):
         """场外基金的「场内对应」必须是真的场内 ETF 代码（6 位、纯数字）。"""

@@ -335,6 +335,14 @@ def run_category_decision(date: str = None, path: str = C.QDII_DB_PATH):
                        r["status_text"], json.dumps(r["reasons"], ensure_ascii=False),
                        r["total"], r["open_cnt"], r["suspend_cnt"], r["limit_cnt"]],
                       "date,category")
+    # 清理**当日已不存在的类别**的历史行：大类会增删（2026-10-29 移除了
+    # 纳斯达克生物科技/纳斯达克科技/标普500等权），只 upsert 不删除的话，
+    # 页面会同时显示新旧类别，柱状图也会多出几根已废弃的柱子。
+    keep = [c for c in C.CATEGORY_ORDER]
+    if keep:
+        marks = ",".join("?" for _ in keep)
+        conn.execute("DELETE FROM qdii_decision_cat WHERE date=? AND category NOT IN (%s)"
+                     % marks, [date] + keep)
     conn.commit()
     conn.close()
     db.set_meta("last_decision_cat", now, path)

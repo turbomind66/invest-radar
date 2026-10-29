@@ -324,6 +324,11 @@ def fetch_tracking_error(date: str = None, path: str = C.QDII_DB_PATH):
             "source=excluded.source,benchmark=excluded.benchmark",
             (code, te_val, "computed_nav", nav_date, src_house, src))
         cnt += 1
+    # 清理不在基金池内的历史行（与费率表同理）
+    keep = [f["code"] for f in C.FUND_POOL]
+    if keep:
+        marks = ",".join("?" for _ in keep)
+        conn.execute("DELETE FROM qdii_tracking_error WHERE code NOT IN (%s)" % marks, keep)
     conn.commit()
     conn.close()
     db.set_meta("last_te_fetch", now, path)

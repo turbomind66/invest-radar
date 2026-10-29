@@ -175,33 +175,6 @@ FUND_POOL = [
     dict(code="161125", name="易方达标普500指数人民币A", index_name="标普500",
          category="标普500", company="易方达", fund_type="LOF",
          online_code="161125", is_offline=1, note="LOF：场内场外同代码"),
-    # ===== 标普500等权 =====
-    dict(code="096001", name="大成标普500等权重指数(QDII)A", index_name="标普500等权",
-         category="标普500等权", company="大成", fund_type="指数",
-         online_code="", is_offline=1, note="等权重指数，无对应场内ETF；跟踪标的与标普500不同，单列一类"),
-    # ===== 纳斯达克生物科技 =====
-    dict(code="001092", name="广发生物科技指数人民币(QDII)A", index_name="纳斯达克生物科技",
-         category="纳斯达克生物科技", company="广发", fund_type="指数",
-         online_code="", is_offline=1, note="无自家场内 ETF"),
-    dict(code="016470", name="广发生物科技指数人民币(QDII)C", index_name="纳斯达克生物科技",
-         category="纳斯达克生物科技", company="广发", fund_type="指数",
-         online_code="", is_offline=1, note="无自家场内 ETF"),
-    dict(code="017894", name="汇添富纳斯达克生物科技ETF发起式联接(QDII)人民币A", index_name="纳斯达克生物科技",
-         category="纳斯达克生物科技", company="汇添富", fund_type="ETF联接",
-         online_code="513290", is_offline=1, note="对应场内 ETF 513290"),
-    dict(code="017895", name="汇添富纳斯达克生物科技ETF发起式联接(QDII)人民币C", index_name="纳斯达克生物科技",
-         category="纳斯达克生物科技", company="汇添富", fund_type="ETF联接",
-         online_code="513290", is_offline=1, note="对应场内 ETF 513290"),
-    # ===== 纳斯达克科技 =====
-    dict(code="017091", name="景顺长城纳斯达克科技ETF联接(QDII)A人民币", index_name="纳斯达克科技",
-         category="纳斯达克科技", company="景顺长城", fund_type="ETF联接",
-         online_code="159509", is_offline=1, note="对应场内 ETF 159509"),
-    dict(code="017093", name="景顺长城纳斯达克科技ETF联接(QDII)C人民币", index_name="纳斯达克科技",
-         category="纳斯达克科技", company="景顺长城", fund_type="ETF联接",
-         online_code="159509", is_offline=1, note="对应场内 ETF 159509"),
-    dict(code="019118", name="景顺长城纳斯达克科技ETF联接(QDII)E人民币", index_name="纳斯达克科技",
-         category="纳斯达克科技", company="景顺长城", fund_type="ETF联接",
-         online_code="159509", is_offline=1, note="对应场内 ETF 159509"),
     # ===== 日经225 =====
     dict(code="020712", name="华安三菱日联日经225ETF发起式联接(QDII)A", index_name="日经225",
          category="日经225", company="华安", fund_type="ETF联接",
@@ -279,10 +252,6 @@ PREMIUM_ETFS = [
          category="标普500", bench=("sina_us", ".INX")),
     dict(code="159655", name="标普500ETF华夏", company="华夏", index_name="标普500",
          category="标普500", bench=("sina_us", ".INX")),
-    dict(code="513290", name="纳指生物科技ETF汇添富", company="汇添富", index_name="纳斯达克生物科技",
-         category="纳斯达克生物科技", bench=("sina_us", ".NBI")),
-    dict(code="159509", name="纳指科技ETF景顺", company="景顺长城", index_name="纳斯达克科技",
-         category="纳斯达克科技", bench=None),
     dict(code="513880", name="日经225ETF华安", company="华安", index_name="日经225",
          category="日经225", bench=("sina_fut", "NK")),
     dict(code="513000", name="日经225ETF易方达", company="易方达", index_name="日经225",
@@ -307,8 +276,6 @@ MARKET_SIGNALS = [
     ("NDX_FUT", "纳指期货", "美股", "期货 · 24h 连续"),
     ("SPX", "标普500现货", "美股", "指数 · 上一交易日收盘"),
     ("SPX_FUT", "标普500期货", "美股", "期货 · 24h 连续"),
-    ("NBI", "纳指生技现货", "科技", "指数 · 上一交易日收盘"),
-    ("NXT_ETF", "纳指科技（159509）", "科技", "场内ETF · 实时"),
     ("NK", "日经225期货", "亚太", "期货 · 24h 连续"),
     ("DAX_ETF", "德国DAX（513030）", "欧洲", "场内ETF · 实时"),
     ("CAC40_ETF", "法国CAC40（513080）", "欧洲", "场内ETF · 实时"),
@@ -317,7 +284,7 @@ MARKET_SIGNALS = [
     ("VIX", "VIX波动率", "利率", "日频 · 上一交易日收盘"),
 ]
 # 面板分组顺序（同一组内按上表顺序）
-MARKET_GROUPS = ["美股", "科技", "亚太", "欧洲", "利率"]
+MARKET_GROUPS = ["美股", "亚太", "欧洲", "利率"]
 
 # ---- 定投决策：大类 → 参考信号 ----
 # 按「大类」给建议，不落到具体基金（同一大类下各家基金同涨同跌，差别只在费率和限额）。
@@ -329,9 +296,6 @@ MARKET_GROUPS = ["美股", "科技", "亚太", "欧洲", "利率"]
 CATEGORY_SIGNAL = {
     "纳斯达克100": ["IXIC", "NDX_FUT"],
     "标普500": ["SPX", "SPX_FUT"],
-    "标普500等权": ["SPX"],
-    "纳斯达克生物科技": ["NBI"],
-    "纳斯达克科技": ["NXT_ETF"],
     "日经225": ["NK"],
     "德国DAX": ["DAX_ETF"],
     "法国CAC40": ["CAC40_ETF"],
@@ -340,8 +304,8 @@ CATEGORY_SIGNAL = {
 # 各大类的自有信号（第一个即主信号）；不在表里的大类才会去借美股风向
 CATEGORY_OWN_SIGNAL = {k: v[0] for k, v in CATEGORY_SIGNAL.items()}
 # 大类顺序（柱状图与表格按此排）
-CATEGORY_ORDER = ["纳斯达克100", "标普500", "标普500等权", "纳斯达克生物科技",
-                  "纳斯达克科技", "日经225", "德国DAX", "法国CAC40", "英国富时100"]
+CATEGORY_ORDER = ["纳斯达克100", "标普500", "日经225", "德国DAX",
+                  "法国CAC40", "英国富时100"]
 
 # ---- 策略参数（全部可配置，不硬编码到逻辑里） ----
 STRATEGY_PARAMS = {
@@ -408,9 +372,6 @@ TRACK_BENCHMARK_BY_CATEGORY = {
     "纳斯达克100": {"lag": 0, "sources": [("sina_us", ".NDX"), ("em_us", "100.NDX100")]},
     "标普500": {"lag": 0, "sources": [("sina_us", ".INX"), ("em_us", "100.SPX")]},
     # 等权指数没有公开日K → 只能用市值加权 .INX 近似，TE 会偏大（页面需注明口径）
-    "标普500等权": {"lag": 0, "sources": [("sina_us", ".INX")]},
-    "纳斯达克生物科技": {"lag": 0, "sources": [("sina_us", ".NBI")]},
-    "纳斯达克科技": {"lag": 0, "sources": []},       # 纳斯达克科技市值加权指数无公开日K
     "日经225": {"lag": 0, "sources": [("sina_fut", "NK")]},
     "德国DAX": {"lag": 0, "sources": [("em_us", "100.GDAXI")]},
     "法国CAC40": {"lag": 0, "sources": []},          # 无公开日K

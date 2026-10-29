@@ -188,6 +188,14 @@ def fetch_premium(date: str = None, path: str = C.QDII_DB_PATH):
         marks = ",".join("?" for _ in got)
         conn.execute("DELETE FROM qdii_premium WHERE date=? AND code NOT IN (%s)"
                      % marks, [date] + got)
+    # 清理**当日不在溢价清单里**的历史行：清单会随大类增删变化
+    # （2026-10-29 移除纳斯达克生物科技/科技后，513290、159509 就不该再出现），
+    # 只 upsert 不删除的话，页面会多出两只已不在清单的 ETF。
+    keep = [e["code"] for e in etfs]
+    if keep:
+        marks = ",".join("?" for _ in keep)
+        conn.execute("DELETE FROM qdii_premium WHERE date=? AND code NOT IN (%s)" % marks,
+                     [date] + keep)
     conn.commit()
     conn.close()
     db.set_meta("last_premium_fetch", now, path)

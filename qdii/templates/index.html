@@ -59,10 +59,18 @@
   #boardTable th[data-sort]:hover,#boardTable th[data-psort]:hover{background:#e2e8f0;color:#1f2937;}
   #boardTable th.sorted{background:#e2e8f0;color:#1f2937;}
   #boardTable .sarr{font-size:10px;color:#94a3b8;margin-left:2px;}
-  /* 14 列窄屏放不下：给表格单独的横向滚动容器。
+  /* 长表格：固定高度 + **内部滚动**，表头 sticky 锁定。
      不能让它直接撑开 .card —— .wrap 是 grid，grid item 默认 min-width:auto，
-     表格会把整页顶宽、所有卡片都跟着变宽（表现为整页一条横向滚动条）。 */
-  .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+     表格会把整页顶宽、所有卡片都跟着变宽（表现为整页一条横向滚动条）。
+     sticky 表头必须给滚动容器（overflow 非 visible）才会生效。 */
+  .tscroll{overflow:auto;-webkit-overflow-scrolling:touch;max-height:460px;}
+  .tscroll thead th{position:sticky;top:0;z-index:3;background:#fafbfc;
+    box-shadow:inset 0 -1px 0 #eef2f7;}
+  /* ④ 的表头有两行（分组行 + 列名行）：第二行要吸在第一行下面（top 偏移=首行高） */
+  #boardTable thead tr:first-child th{top:0;z-index:4;}
+  #boardTable thead tr:nth-child(2) th{top:31px;}
+  /* 滚动条右侧留白，避免最后一行被竖滚动条压住 */
+  .tscroll table{margin-right:2px;}
   .big{font-size:20px;font-weight:700;}
   .chart{width:100%;height:260px;}
   .warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:8px 10px;border-radius:8px;font-size:12px;}
@@ -90,15 +98,17 @@
 
   <div class="grid2">
     <div class="card">
-      <h2>② 全球市场信号 <span class="tag">美股 · 欧洲 · 亚太 · 科技 · 利率</span></h2>
+      <h2>② 全球市场信号 <span class="tag" id="signalGroups"></span></h2>
       <div class="warn" style="margin-bottom:8px;">⚠️ <b>海外指数现货、VIX</b> 为「上一交易日·非实时」（北京时间14:30美东已收盘）；
         <b>期货</b>（CME Globex 近24h）、<b>美债10Y</b>（CNBC 报价）、<b>境内场内 ETF</b> 为<b>实时</b>。
         <br>欧洲/亚太有几类<b>取不到海外指数现货</b>（东财接口在本网络恒断、腾讯/新浪无对应代码），
         改用<b>境内对应场内 ETF 实时价</b>代理；<b>英国富时100 连境内 ETF 都没有</b>，用美股
         <code>usEWU</code>（iShares MSCI 英国 ETF）代理 —— 代理项名称里标了「代理」，不冒充指数。</div>
+      <div class="tscroll" style="max-height:330px;">
       <table id="signalTable"><thead><tr>
         <th>标的</th><th>最新价</th><th>涨跌</th><th>实时?</th>
       </tr></thead><tbody></tbody></table>
+      </div>
       <div class="note">现货昨收方向 = 本次申购将成交的净值方向（<b>跟跌加仓</b>的输入）；期货实时 = 今晚开盘前瞻。<br>
         <b>VIX</b>：日频收盘，看<b>绝对水平</b>——市场「已经」恐慌到什么程度（结果）。&gt;30 触发防御 ×0.5；20~30 为预警区（只提示）；单日跳升 ≥20% 提示情绪急变。
         <br><b>美债10Y</b>：<b>实时</b>收益率，看<b>单日变动 bp</b>——无风险利率跳升压制估值（原因，贴现率上行先杀高估值资产）。单日上行 &gt;30bp 触发防御 ×0.5；+15~30bp 提示逼近。
@@ -107,9 +117,11 @@
 
     <div class="card">
       <h2>③ 场内溢价率 <span class="tag">14:30 A股交易日</span></h2>
+      <div class="tscroll" style="max-height:430px;">
       <table id="premiumTable"><thead><tr>
         <th>场内代码</th><th>ETF名称</th><th>场内价</th><th>净值 / 日期</th><th>溢价率</th><th>折算溢价</th><th>提示</th>
       </tr></thead><tbody></tbody></table>
+      </div>
       <div class="note">溢价率&gt;0：场内比净值贵（优先场外按净值买）；&lt;0：场内折价（场内更便宜）。
         <br>两种口径：<b>溢价率</b> =（场内价 − 最新净值）/ 最新净值；<b>折算溢价</b> =（场内价 − 折算净值）/ 折算净值，
         折算净值 = 最新净值 × 该指数从「净值日期」到「最新收盘日」的累计涨幅。
@@ -159,9 +171,11 @@
 
   <div class="card">
     <h2>⑤ 基金池 <span class="tag" id="poolCount"></span></h2>
+    <div class="tscroll" style="max-height:430px;">
     <table id="poolTable"><thead><tr>
       <th>代码</th><th>名称</th><th>跟踪指数</th><th>类别</th><th>公司</th><th>类型</th><th>场内对应</th>
     </tr></thead><tbody></tbody></table>
+    </div>
   </div>
 
 </div>
@@ -212,8 +226,12 @@ function renderDecision(rows){
   const maxV=Math.max.apply(null, rows.map(r=>r.suggested_multiple||0).concat([1]));
   const yMax=Math.ceil((maxV+0.25)*4)/4;
   chart.setOption({
-    grid:{left:62,right:26,top:46,bottom:46},
-    xAxis:{type:'category',data:rows.map(r=>r.category),axisLabel:{fontSize:11}},
+    // bottom 要够放两行横轴标签，否则「纳斯达克100」这类长名会被裁掉
+    grid:{left:62,right:26,top:46,bottom:62},
+    xAxis:{type:'category',data:rows.map(r=>r.category),
+      axisLabel:{fontSize:11,interval:0,
+        // 长类别名换行显示（4 字一行），避免斜排/截断
+        formatter:function(v){ return v.length>4 ? v.slice(0,4)+'\n'+v.slice(4) : v; }}},
     yAxis:{type:'value',name:'倍数',nameLocation:'end',nameGap:18,
       nameTextStyle:{color:'#64748b',fontSize:11},min:0,max:yMax,splitNumber:4,
       axisLabel:{formatter:'{value}×'}},
@@ -232,6 +250,8 @@ function renderSignal(rows, meta, groups){
   // 避险阈值（与 qdii/constants.py 的 STRATEGY_PARAMS 保持一致）
   const VIX_WARN=20, VIX_HARD=30, UST_WARN_BP=15, UST_HARD_BP=30;
   meta = meta || {}; groups = groups && groups.length ? groups : null;
+  // 标题后的分组标签按后端下发的分组动态生成（加新市场不用改这里）
+  if(el('signalGroups')) el('signalGroups').textContent = groups ? groups.join(' · ') : '';
   // 按市场分组渲染（美股 / 科技 / 亚太 / 欧洲 / 利率）——分组与类型标签
   // 来自后端 constants.MARKET_SIGNALS，前端不硬编码口径。
   const buckets = groups

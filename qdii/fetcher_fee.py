@@ -212,6 +212,12 @@ def fetch_platform_fee(date: str = None, path: str = C.QDII_DB_PATH):
                        10.0, "rule:licai", now],
                       "code,platform")
         cnt += 1
+    # 清理**不在基金池内**的历史行：基金池会增删（2026-10-29 移除了 8 只），
+    # 只 upsert 不删除的话，原始接口会返回早已移出池子的基金。
+    keep = [f["code"] for f in C.FUND_POOL]
+    if keep:
+        marks = ",".join("?" for _ in keep)
+        conn.execute("DELETE FROM qdii_platform_fee WHERE code NOT IN (%s)" % marks, keep)
     conn.commit()
     conn.close()
     db.set_meta("last_fee_fetch", now, path)

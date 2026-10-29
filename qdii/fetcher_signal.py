@@ -41,12 +41,10 @@ SINA_INDEX_URL = "https://hq.sinajs.cn/list=gb_inx,gb_ixic"
 # 综合指数含全部纳斯达克上市股票（约 3300 只），纳指100 只含 100 只非金融大盘股。
 # ⚠️ 腾讯 `usTNX`（美债10Y）已不再返回数据（2026-10-29 实测请求 3 个代码只回 2 条），
 #    美债改用 CNBC 实时报价，见 fetch_cnbc_ust10y()。
-# usNBI = 纳斯达克生物科技指数（生物科技大类的主信号，实测可用）。
 # usEWU = iShares MSCI 英国 ETF —— 富时100 无公开行情源，用它做**代理**（页面必须标注）。
-TENCENT_URL = "https://qt.gtimg.cn/q=usIXIC,usNBI,usEWU"
+TENCENT_URL = "https://qt.gtimg.cn/q=usIXIC,usEWU"
 TENCENT_SYMBOLS = {
     "usIXIC": ("IXIC", "纳指现货", 0),
-    "usNBI": ("NBI", "纳指生技现货", 0),
     "usEWU": ("FTSE_UK", "英国富时100（代理）", 1),
 }
 # 境内场内 ETF（实时）：欧洲/亚太里**取不到海外指数现货**的类别，用对应场内 ETF 实时价代理。
@@ -54,7 +52,6 @@ TENCENT_SYMBOLS = {
 SINA_A_ETF = {
     "sh513030": ("DAX_ETF", "德国DAX（513030）"),
     "sh513080": ("CAC40_ETF", "法国CAC40（513080）"),
-    "sz159509": ("NXT_ETF", "纳指科技（159509）"),
 }
 SINA_A_ETF_URL = "https://hq.sinajs.cn/list=" + ",".join(SINA_A_ETF)
 # symbol → 展示名（写库用）
@@ -306,7 +303,7 @@ def get_latest_us_signal(path: str = C.QDII_DB_PATH):
         return []
     # 显式排序：按 constants.MARKET_SIGNALS 的顺序（美股 → 科技 → 亚太 → 欧洲 → 利率）。
     # 别依赖插入顺序——重跑/补数时顺序会变。
-    order = ["IXIC", "NDX_FUT", "SPX", "SPX_FUT", "NBI", "NXT_ETF", "NK",
+    order = ["IXIC", "NDX_FUT", "SPX", "SPX_FUT", "NK",
              "DAX_ETF", "CAC40_ETF", "FTSE_UK", "UST10Y", "VIX"]
     cases = " ".join("WHEN '%s' THEN %d" % (s, i + 1) for i, s in enumerate(order))
     rows = conn.execute(
