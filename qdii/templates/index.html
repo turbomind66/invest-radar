@@ -40,11 +40,22 @@
      决策表整体放开换行（其余表格不受影响）。 */
   #decisionTable td{white-space:normal;}
   #decisionTable td:first-child{white-space:nowrap;}   /* 大类名不许被拆成两行 */
-  /* 费率矩阵：代码/名称是 rowspan 合并单元格，必须垂直居中、底色区分；
-     基金名称较长且中文可任意断行，放开换行让它自动收窄，否则整表宽度爆掉。 */
-  #feeTable td.merged{vertical-align:middle;background:#fafbfc;font-weight:500;}
-  #feeTable td:nth-child(2){white-space:normal;word-break:break-word;}
-  #feeTable tr.fundSep td{border-top:2px solid #e5e7eb;}
+  /* 基金总览（申购状态+限额+多平台费率合并表）：
+     · 代码/名称等基金级字段是 rowspan 合并单元格，必须垂直居中、底色区分；
+     · 表窄（14 列）所以字号和内边距统一收紧，否则会顶出横向滚动条；
+     · 基金名称较长且中文可任意断行，放开换行让它自动收窄。 */
+  #boardTable{font-size:12px;}
+  #boardTable th,#boardTable td{padding:6px 7px;}
+  #boardTable th.tgroup{text-align:center;background:#eef2f7;color:#334155;
+    border-left:1px solid #e2e8f0;}
+  #boardTable td.merged{vertical-align:middle;background:#fafbfc;font-weight:500;}
+  #boardTable td.name{white-space:normal;word-break:break-word;min-width:120px;}
+  #boardTable td.grp,#boardTable th.grp{border-left:1px solid #e2e8f0;}
+  #boardTable tr.fundSep td{border-top:2px solid #e5e7eb;}
+  /* 14 列窄屏放不下：给表格单独的横向滚动容器。
+     不能让它直接撑开 .card —— .wrap 是 grid，grid item 默认 min-width:auto，
+     表格会把整页顶宽、所有卡片都跟着变宽（表现为整页一条横向滚动条）。 */
+  .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
   .big{font-size:20px;font-weight:700;}
   .chart{width:100%;height:260px;}
   .warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:8px 10px;border-radius:8px;font-size:12px;}
@@ -100,23 +111,29 @@
   </div>
 
   <div class="card">
-    <h2>④ 申购状态 + 限额 <span class="tag">A股交易日 09:00</span></h2>
-    <table id="limitTable"><thead><tr>
-      <th>代码</th><th>名称</th><th>类别</th><th>状态</th><th>日限额(元)</th><th>下一开放日</th><th>购买起点</th>
-    </tr></thead><tbody></tbody></table>
+    <h2>④ 申购状态 · 限额 · 多平台费率 <span class="tag">A股交易日 09:00</span>
+      <span class="tag" id="boardSummary"></span></h2>
+    <div class="tscroll">
+    <table id="boardTable"><thead>
+      <tr>
+        <th class="tgroup" colspan="7">基金（状态/限额为基金公司公告，全平台一致）</th>
+        <th class="tgroup" colspan="4">固定年费（合同条款，各平台一致）</th>
+        <th class="tgroup" colspan="3">各平台申购</th>
+      </tr>
+      <tr>
+        <th>代码</th><th>基金名称</th><th>类别</th><th>申购状态</th><th>日限额(元)</th><th>下一开放日</th><th>起购(元)</th>
+        <th>管理费</th><th>托管费</th><th>销售服务费</th><th>年费合计</th>
+        <th>平台</th><th>在售</th><th>申购费 原→折</th>
+      </tr>
+    </thead><tbody></tbody></table>
+    </div>
+    <div class="note">年费 = 管理费 + 托管费 + 销售服务费，<b>是基金合同条款、各平台完全一致</b>，故只列一次；真正按平台变的只有「是否在售」和「申购费」。<br>
+      「申购状态 / 日限额」是基金公司限购公告口径（全平台通用）。<b>变相暂停</b> = 名义限大额但单日不足 100 元，实际投不进去（与定投决策口径一致）。<br>
+      支付宝未公开申购费（显示「—」），其余列均为公开数据；<b>理财通</b>网页版已下线、仅微信 App 内提供服务且无公开接口，故标「推算」——管理费/托管费沿用基金合同值，申购费按 <b>A 类 1 折</b>、起购按 10 元估算，申购状态跟随限购公告。</div>
   </div>
 
   <div class="card">
-    <h2>⑤ 多平台费率矩阵 <span class="tag">天天基金 / 支付宝 / 理财通</span></h2>
-    <table id="feeTable"><thead><tr>
-      <th>代码</th><th>基金名称</th><th>平台</th><th>在售</th><th>申购费(原)</th><th>申购费(折)</th><th>管理费</th><th>托管费</th><th>销售服务费</th><th>年费合计</th>
-    </tr></thead><tbody></tbody></table>
-    <div class="note">年费 = 管理费 + 托管费 + 销售服务费（长期定投比一次性申购费更重要）。支付宝折后价暂无法获取，以天天基金口径展示。<br>
-      <b>理财通</b>：网页版已下线、仅微信 App 内提供服务且无公开接口，故标「推算」——管理费/托管费沿用同一基金合同值（全平台一致），申购费按平台常见的 <b>A 类 1 折</b>、起购按 10 元估算，申购状态跟随基金公司限购公告。</div>
-  </div>
-
-  <div class="card">
-    <h2>⑥ 跟踪误差 <span class="tag">年化 std</span></h2>
+    <h2>⑤ 跟踪误差 <span class="tag">年化 std</span></h2>
     <table id="teTable"><thead><tr>
       <th>代码</th><th>名称</th><th>类别</th><th>年化跟踪误差</th><th>评价</th>
     </tr></thead><tbody></tbody></table>
@@ -124,7 +141,7 @@
   </div>
 
   <div class="card">
-    <h2>⑦ 基金池 <span class="tag" id="poolCount"></span></h2>
+    <h2>⑥ 基金池 <span class="tag" id="poolCount"></span></h2>
     <table id="poolTable"><thead><tr>
       <th>代码</th><th>名称</th><th>跟踪指数</th><th>类别</th><th>公司</th><th>类型</th><th>场内对应</th>
     </tr></thead><tbody></tbody></table>
@@ -263,65 +280,61 @@ function renderPremium(rows){
   });
 }
 
-function renderLimit(rows){
-  const tb=el('limitTable').querySelector('tbody'); tb.innerHTML='';
-  rows.forEach(r=>{
-    const f=poolName(r.code);
-    const st=r.sub_status;
+// ④ 基金总览：申购状态 + 限额 + 多平台费率（服务端已按 code 做 join，见 qdii/board.py）
+function renderBoard(blocks, sum){
+  const tb=el('boardTable').querySelector('tbody'); tb.innerHTML='';
+  const num=(v,suffix)=> (v==null||v==='')?'—':(v+suffix);
+  blocks.forEach((b,bi)=>{
+    // 一只基金一个行块：基金级字段 rowspan 合并，平台级字段逐行展开。
+    // 没有平台数据的基金也要出一行，否则「暂停且抓不到费率」的基金会凭空消失。
+    const plats=(b.platforms&&b.platforms.length)?b.platforms
+      :[{platform:'—',on_sale:0,sub_fee_rate:null,sub_fee_discount:null,approx:false}];
+    const rs=' rowspan="'+plats.length+'"';
+    const st=b.sub_status;
     const pill = st==='SUSPEND'?'p-suspend':(st==='LIMIT'?'p-limit':'p-open');
-    const stxt = st==='SUSPEND'?'暂停':(st==='LIMIT'?'限大额':'开放');
-    const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+r.code+'</td><td>'+(f.name||'')+'</td><td>'+(f.category||'')+'</td>'+
-      '<td><span class="pill '+pill+'">'+stxt+'</span></td>'+
-      '<td>'+(r.is_limited? (r.limit_amount<1e9?r.limit_amount:'不限') : '—')+'</td>'+
-      '<td>'+(r.next_open_date||'—')+'</td>'+
-      '<td>'+(r.buy_start||'—')+'</td>';
-    tb.appendChild(tr);
-  });
-}
-
-function annualFee(r){
-  const a=[r.mgmt_fee,r.custodian_fee,r.sales_service_fee].map(x=>x||0);
-  return a.reduce((s,v)=>s+v,0);
-}
-function renderFee(rows){
-  const tb=el('feeTable').querySelector('tbody'); tb.innerHTML='';
-  // 同一只基金的多平台数据：把「代码」「基金名称」两格纵向合并（rowspan），
-  // 下面紧跟各平台行 —— 一眼能看出「同一只基金在哪个平台更便宜」。
-  // 前提：接口已按 code + 固定平台顺序排序（fetcher_fee.get_platform_fee 的 ORDER BY），
-  // 这里仍按首次出现顺序重新分组，防止上游改排序后合并错行。
-  const groups=[], idx={};
-  rows.forEach(r=>{
-    if(r.platform==='券商') return;            // 未接入平台的遗留行，不展示
-    if(!(r.code in idx)){ idx[r.code]=groups.length; groups.push({code:r.code, rows:[]}); }
-    groups[idx[r.code]].rows.push(r);
-  });
-  groups.forEach((g,gi)=>{
-    const f=poolName(g.code);
-    g.rows.forEach((r,i)=>{
+    // 「限大额但日限 < 100 元」标「变相暂停」——阈值必须和 strategy 的 100 元一致，
+    // 否则表头说「限大额」、决策理由说「等同变相暂停」，自相矛盾。
+    const nominal = (st==='LIMIT' && b.is_limited && (b.limit_amount||0)<100)
+      ? ' <span class="pill p-approx" title="单日限额不足 100 元，实际投不进去（策略口径：等同变相暂停）">变相暂停</span>' : '';
+    const head =
+      '<td class="merged"'+rs+'><b>'+b.code+'</b></td>'+
+      '<td class="merged name"'+rs+'>'+(b.name||'—')+'</td>'+
+      '<td class="merged"'+rs+'>'+(b.category||'—')+'</td>'+
+      '<td class="merged"'+rs+'><span class="pill '+pill+'">'+b.status_text+'</span>'+nominal+'</td>'+
+      '<td class="merged"'+rs+'>'+(b.limit_text||'—')+'</td>'+
+      '<td class="merged"'+rs+'>'+(b.next_open_date||'—')+'</td>'+
+      '<td class="merged"'+rs+'>'+num(b.buy_start,'')+'</td>'+
+      // 下面四列是基金合同条款，各平台完全一致 —— 从基金级取一次，不随平台行重复
+      '<td class="merged grp"'+rs+'>'+num(b.mgmt_fee,'%')+'</td>'+
+      '<td class="merged"'+rs+'>'+num(b.custodian_fee,'%')+'</td>'+
+      '<td class="merged"'+rs+'>'+num(b.sales_service_fee,'%')+'</td>'+
+      '<td class="merged"'+rs+'><b>'+num(b.annual_fee,'%')+'</b></td>';
+    plats.forEach((p,i)=>{
       const tr=document.createElement('tr');
-      if(i===0 && gi>0) tr.className='fundSep';   // 基金之间加粗分隔线
-      const fee=annualFee(r);
-      const onsale = r.on_sale? '<span class="pill p-open">在售</span>' : '<span class="pill p-suspend">不可售</span>';
-      // 理财通等平台无公开接口，按平台通用规则推算 —— 明确标注，避免误当成实时抓取
-      const approx = (r.source||'').indexOf('rule:')===0
-        ? ' <span class="pill p-approx" title="该平台无公开接口，按平台通用规则推算（管理费/托管费同基金合同，申购费按 1 折）">推算</span>' : '';
-      let html='';
-      if(i===0){
-        html='<td class="merged" rowspan="'+g.rows.length+'"><b>'+g.code+'</b></td>'+
-             '<td class="merged" rowspan="'+g.rows.length+'">'+(f.name||'—')+'</td>';
+      if(i===0 && bi>0) tr.className='fundSep';   // 基金之间加粗分隔线
+      // 理财通等无公开接口的平台，值按规则推算 —— 标「推算」，别当成实时抓取
+      const approx=p.approx?' <span class="pill p-approx" title="该平台无公开接口，按平台通用规则推算（管理费/托管费同基金合同，申购费按 1 折）">推算</span>':'';
+      const onsale=p.on_sale?'<span class="pill p-open">在售</span>':'<span class="pill p-suspend">不可售</span>';
+      // 原价划掉 + 折后价并排：省一列宽度，同时一眼看出折扣力度
+      let sub='—';
+      if(p.sub_fee_rate!=null){
+        sub=(p.sub_fee_discount!=null && p.sub_fee_discount!==p.sub_fee_rate)
+          ? '<s style="color:#94a3b8">'+p.sub_fee_rate+'%</s> '+p.sub_fee_discount+'%'
+          : p.sub_fee_rate+'%';
       }
-      html+='<td>'+r.platform+approx+'</td><td>'+onsale+'</td>'+
-        '<td>'+(r.sub_fee_rate!=null?r.sub_fee_rate+'%':'—')+'</td>'+
-        '<td>'+(r.sub_fee_discount!=null?r.sub_fee_discount+'%':'—')+'</td>'+
-        '<td>'+(r.mgmt_fee!=null?r.mgmt_fee+'%':'—')+'</td>'+
-        '<td>'+(r.custodian_fee!=null?r.custodian_fee+'%':'—')+'</td>'+
-        '<td>'+(r.sales_service_fee!=null?r.sales_service_fee+'%':'—')+'</td>'+
-        '<td><b>'+(fee?fee.toFixed(2)+'%':'—')+'</b></td>';
-      tr.innerHTML=html;
+      tr.innerHTML=(i===0?head:'')+
+        '<td class="grp">'+p.platform+approx+'</td><td>'+onsale+'</td><td>'+sub+'</td>';
       tb.appendChild(tr);
     });
   });
+  if(sum){
+    const parts=['共 '+sum.total+' 只'];
+    if(sum.open) parts.push('开放 '+sum.open);
+    if(sum.limited) parts.push('限大额 '+sum.limited+
+      (sum.nominal_only? '（其中 '+sum.nominal_only+' 只日限 <100 元 = 变相暂停）':''));
+    if(sum.suspend) parts.push('暂停 '+sum.suspend);
+    el('boardSummary').textContent=parts.join(' · ');
+  }
 }
 
 function renderTE(rows){
@@ -368,8 +381,7 @@ function renderPool(rows){
   try{ const d=await api('/api/qdii/decision'); renderDecision(d.rows||[]); }catch(e){}
   try{ const s=await api('/api/qdii/signal'); renderSignal(s.rows||[]); }catch(e){}
   try{ const pr=await api('/api/qdii/premium'); renderPremium(pr.rows||[]); }catch(e){}
-  try{ const l=await api('/api/qdii/limit'); renderLimit(l.rows||[]); }catch(e){}
-  try{ const fe=await api('/api/qdii/fee'); renderFee(fe.rows||[]); }catch(e){}
+  try{ const b=await api('/api/qdii/board'); renderBoard(b.rows||[], b.summary); }catch(e){}
   try{ const te=await api('/api/qdii/tracking'); renderTE(te.rows||[]); }catch(e){}
 })();
 </script>

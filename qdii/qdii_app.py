@@ -24,6 +24,7 @@ import fetcher_fee
 import fetcher_signal
 import fetcher_premium
 import tracking_error
+import board
 import strategy
 
 TEMPLATES = os.path.join(BASE, "templates")
@@ -41,6 +42,11 @@ def route_api(path):
         return {"rows": fetcher_limit.get_latest_limit_status()}
     if path == "/api/qdii/fee":
         return {"rows": fetcher_fee.get_platform_fee()}
+    if path == "/api/qdii/board":
+        # 页面主口径：把「申购状态+限额」与「多平台费率」合并成一只基金一个块
+        # （上面 limit/fee 两个接口保留为原始数据，便于排障与追溯）
+        rows = board.get_fund_board()
+        return {"rows": rows, "summary": board.board_summary(rows)}
     if path == "/api/qdii/signal":
         return {"rows": fetcher_signal.get_latest_us_signal()}
     if path == "/api/qdii/premium":

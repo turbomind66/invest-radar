@@ -577,5 +577,122 @@ class PlatformFeeOrderTest(unittest.TestCase):
                 os.remove(p)
 
 
+class BoardMergeTest(unittest.TestCase):
+    """④ 基金总览：把「申购状态+限额」与「多平台费率」合并成一只基金一个块。
+
+    为什么要合并：两张表各自都有「代码/名称」，同一只基金要来回对代码才能判断
+    「这只还能不能买、在哪个平台买便宜」。合并后基金级字段 rowspan 合并、
+    平台级字段逐行展开，一屏读完。
+    """
+
+    POOL = [
+        dict(code="161125", name="易方达标普500指数人民币A", category="标普500"),
+        dict(code="161130", name="易方达纳斯达克100ETF联接A", category="纳斯达克100"),
+        dict(code="000614", name="华安德国(DAX)联接A", category="德国DAX"),
+    ]
+
+    def _fee(self, code, plat, mgmt=0.8, cust=0.2, sales=None,
+             rate=1.2, disc=0.12, on_sale=1, source="eastmoney_rate"):
+        return dict(code=code, platform=plat, on_sale=on_sale,
+                    sub_fee_rate=rate, sub_fee_discount=disc,
+                    mgmt_fee=mgmt, custodian_fee=cust,
+                    sales_service_fee=sales, source=source)
+
+    def _limit(self, code, status="LIMIT", amount=1000.0, limited=1,
+               next_open="", buy_start=10.0):
+        return dict(code=code, sub_status=status, limit_amount=amount,
+                    is_limited=limited, next_open_date=next_open,
+                    buy_start=buy_start)
+
+    def test_one_block_per_fund_with_platforms(self):
+        import board
+        fees = [self._fee("161125", "天天基金"), self._fee("161125", "支付宝", rate=None, disc=None),
+                self._fee("161125", "理财通", source="rule:licai"),
+                self._fee("161130", "天天基金", mgmt=0.6)]
+        limits = [self._limit("161125"), self._limit("161130", "SUSPEND", 10.0)]
+        blocks = board.merge_board(limits, fees, self.POOL)
+
+        self.assertEqual([b["code"] for b in blocks], ["161125", "161130"])
+        self.assertEqual(len(blocks[0]["platforms"]), 3)
+        self.assertEqual(len(blocks[1]["platforms"]), 1)
+        # 基金级字段来自限额表，平台无法提供
+        self.assertEqual(blocks[0]["status_text"], "限大额")
+        self.assertEqual(blocks[1]["status_text"], "暂停")
+        self.assertEqual(blocks[1]["limit_text"], "10")
+        # 名称/类别来自基金池（而不是前端再查一次 window.__pool）
+        self.assertEqual(blocks[0]["name"], "易方达标普500指数人民币A")
+        self.assertEqual(blocks[0]["category"], "标普500")
+
+    def test_fixed_fees_are_fund_level_not_per_platform(self):
+        """管理费/托管费/销售服务费是合同条款，各平台一致 → 提到基金级只列一次。"""
+        import board
+        # 支付宝缺管理费、销售服务费只有天天基金有值，仍要能取出正确值
+        fees = [self._fee("161125", "天天基金", sales=0.0),
+                self._fee("161125", "支付宝", mgmt=None, cust=None),
+                self._fee("161125", "理财通", mgmt=0.8, source="rule:licai")]
+        blocks = board.merge_board([self._limit("161125")], fees, self.POOL)
+        b = blocks[0]
+        self.assertEqual(b["mgmt_fee"], 0.8)
+        self.assertEqual(b["custodian_fee"], 0.2)
+        self.assertEqual(b["sales_service_fee"], 0.0)
+        self.assertEqual(b["annual_fee"], 1.0)     # 0.8 + 0.2 + 0.0
+        # 平台级只保留真正按平台变的字段
+        for p in b["platforms"]:
+            self.assertNotIn("mgmt_fee", p)
+
+    def test_limit_only_fund_not_dropped(self):
+        """只有申购状态、没有任何费率行的基金必须仍出现在表里（否则暂停的基金会消失）。
+
+        追加部分的顺序按 FUND_POOL 秩（标普500 → 纳指100 → DAX），不能按接口返回序。
+        """
+        import board
+        fees = [self._fee("161130", "天天基金")]
+        # 故意把 DAX（池里最后一个）放在标普500 前面传进来，验证排序不是「照抄入参顺序」
+        limits = [self._limit("000614", "SUSPEND", 100.0),
+                  self._limit("161125", "SUSPEND", 10.0),
+                  self._limit("161130", "OPEN", 0.0, limited=0)]
+        blocks = board.merge_board(limits, fees, self.POOL)
+        self.assertEqual([b["code"] for b in blocks],
+                         ["161130", "161125", "000614"])
+        self.assertEqual(blocks[1]["platforms"], [])
+        self.assertEqual(blocks[1]["status_text"], "暂停")
+
+    def test_platform_order_and_approx_flag(self):
+        import board
+        fees = [self._fee("161125", "理财通", source="rule:licai"),
+                self._fee("161125", "券商", source="legacy"),
+                self._fee("161125", "天天基金"),
+                self._fee("161125", "支付宝")]
+        blocks = board.merge_board([self._limit("161125")], fees, self.POOL)
+        plats = [p["platform"] for p in blocks[0]["platforms"]]
+        self.assertEqual(plats, ["天天基金", "支付宝", "理财通"])   # 券商行被跳过
+        approx = {p["platform"]: p["approx"] for p in blocks[0]["platforms"]}
+        self.assertTrue(approx["理财通"])
+        self.assertFalse(approx["天天基金"])
+
+    def test_summary_uses_same_100_yuan_threshold_as_strategy(self):
+        """「限大额但日限 <100 元」= 等同变相暂停，必须与 strategy 的阈值一致。"""
+        import board
+        fees = [self._fee(c, "天天基金") for c in ("161125", "161130", "000614")]
+        limits = [self._limit("161125", "SUSPEND", 10.0),      # 暂停
+                  self._limit("161130", "LIMIT", 10.0),        # 变相暂停
+                  self._limit("000614", "LIMIT", 1000.0)]      # 真能买
+        blocks = board.merge_board(limits, fees, self.POOL)
+        s = board.board_summary(blocks)
+        self.assertEqual(s["total"], 3)
+        self.assertEqual(s["suspend"], 1)
+        self.assertEqual(s["limited"], 2)
+        self.assertEqual(s["nominal_only"], 1)
+        self.assertEqual(s["min_limit"], 10.0)
+        self.assertEqual(s["usable"], 1)
+
+    def test_limit_amount_unlimited_when_not_limited(self):
+        import board
+        fees = [self._fee("161125", "天天基金")]
+        blocks = board.merge_board(
+            [self._limit("161125", "OPEN", 1000000000.0, limited=0)], fees, self.POOL)
+        self.assertEqual(blocks[0]["limit_text"], "不限")
+
+
 if __name__ == "__main__":
     unittest.main()
