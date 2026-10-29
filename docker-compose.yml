@@ -22,9 +22,11 @@ services:
       NT_DB_PATH: /app/data/data.db
       # 抓取交给 cron 容器：避免重复请求，也避免两个容器争抢同一个 SQLite 写锁
       NT_AUTO_ENSURE: "0"
-      # 对端面板地址（页头互跳入口）：域名反代后必须显式指定，
-      # 否则前端按「本端口 +1」推断 → 两个面板都是 443，会跳到不存在的端口。
+      # 对端面板地址（页头选项卡互跳）：同域不同路径时可直接写相对路径（/qdii/），
+      # 跨域名写完整 URL；留空则回退「本端口 +1」推断。
       PEER_URL: ${PEER_URL:-}
+      # 站点路径前缀：NPM 反代若保留前缀不剥（如 /nt），在这里声明；默认空=不剥。
+      BASE_PATH: ${BASE_PATH:-}
     ports:
       # 宿主机端口可改，避免与服务器上已有的服务冲突
       - "${HOST_PORT:-18080}:${PORT:-5000}"
@@ -88,8 +90,10 @@ services:
       QDII_PORT: ${QDII_PORT:-5001}
       # QDII 独立数据库文件，与国家队 data.db 同卷但分离
       NT_QDII_DB_PATH: /app/data/qdii.db
-      # 对端面板地址（QDII → 国家队看板）
+      # 对端面板地址（QDII → 国家队看板），可写相对路径 /nt/ 或完整 URL
       PEER_URL: ${QDII_PEER_URL:-}
+      # 站点路径前缀（同 web 的 BASE_PATH，QDII 常挂 /qdii）
+      BASE_PATH: ${QDII_BASE_PATH:-}
     ports:
       # 默认 18081，与国家队 web 的 18080 错开
       - "${QDII_HOST_PORT:-18081}:${QDII_PORT:-5001}"

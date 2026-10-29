@@ -31,6 +31,16 @@ import strategy
 TEMPLATES = os.path.join(BASE, "templates")
 INDEX = os.path.join(TEMPLATES, "index.html")
 PORT = int(os.environ.get("QDII_PORT", "5001"))
+# 站点路径前缀：域名反代把本面板挂在子路径（如 /qdii）时，若 Nginx/NPM 保留前缀不剥，
+# 就在这里声明（BASE_PATH=/qdii），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
+BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")
+
+
+def strip_base(path):
+    """剥掉 BASE_PATH 前缀（/qdii/api/qdii/status -> /api/qdii/status）。"""
+    if BASE_PATH and (path == BASE_PATH or path.startswith(BASE_PATH + "/")):
+        return path[len(BASE_PATH):] or "/"
+    return path
 
 
 def route_api(path, query=None):
@@ -94,7 +104,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body_bytes)
 
     def do_GET(self):
-        path = self.path.split("?")[0]
+        path = strip_base(self.path.split("?")[0])
         # 解析查询串（表头排序用）：sort/psort=列键，dir/pdir=asc|desc
         query = {}
         if "?" in self.path:

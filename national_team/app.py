@@ -19,6 +19,16 @@ import intraday
 BASE = os.path.dirname(os.path.abspath(__file__))
 INDEX = os.path.join(BASE, "templates", "index.html")
 PORT = int(os.environ.get("PORT", "5000"))
+# 站点路径前缀：域名反代把本面板挂在子路径（如 /nt）时，若 Nginx/NPM 保留前缀不剥，
+# 就在这里声明（BASE_PATH=/nt），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
+BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")
+
+
+def strip_base(path):
+    """剥掉 BASE_PATH 前缀（/nt/api/data -> /api/data）；未配置或不匹配时原样返回。"""
+    if BASE_PATH and (path == BASE_PATH or path.startswith(BASE_PATH + "/")):
+        return path[len(BASE_PATH):] or "/"
+    return path
 
 
 def _summarize(rows):
@@ -261,7 +271,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
+        path = strip_base(parsed.path)
         q = urllib.parse.parse_qs(parsed.query)
 
         def qone(k):
