@@ -260,6 +260,10 @@ def render_index(payload: dict, template: str = TEMPLATE) -> str:
         # 仅当部署时显式设置 STATIC_WORKER_URL 才启用「一键触发工作流 / Worker 实时抓取」；
         # 留空则静态页保持旧行为（去 Actions 手动更新），既兼容旧测试也兼容未配 Worker 的部署。
         "worker_url": (os.environ.get("STATIC_WORKER_URL") or "").strip(),
+        # 静态站对端面板相对地址：国家队页在仓库根(/)，QDII 页在 qdii/ 子目录。
+        # 阶段一之前 Pages 只有国家队一页时前端隐藏切换按钮；两页都发布后放开互跳。
+        # 可用 STATIC_NT_PEER_URL 覆盖（自定义目录结构时用），默认相对路径在 Pages/http.server 下均正确。
+        "peer_url": (os.environ.get("STATIC_NT_PEER_URL") or "qdii/").strip(),
     }
     common_js = _common_refresh_js()
     inject = (

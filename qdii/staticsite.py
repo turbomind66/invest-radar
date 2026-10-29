@@ -64,6 +64,10 @@ def render_index(payload: dict, template: str = TEMPLATE) -> str:
         "generated_at": payload.get("generated_at", ""),
         # 与国家队一致：仅当部署时设 STATIC_WORKER_URL 才启用 Worker 桥接。
         "worker_url": (os.environ.get("STATIC_WORKER_URL") or "").strip(),
+        # 静态站对端面板相对地址：QDII 页在 qdii/ 子目录，国家队页在上一级(/)。
+        # 阶段一之前 Pages 只有国家队一页时前端隐藏切换按钮；两页都发布后放开互跳。
+        # 可用 STATIC_QDII_PEER_URL 覆盖（自定义目录结构时用），默认 "../" 在 Pages/http.server 下均正确。
+        "peer_url": (os.environ.get("STATIC_QDII_PEER_URL") or "../").strip(),
     }
     common_js = _common_refresh_js()
     inject = (
