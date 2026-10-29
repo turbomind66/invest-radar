@@ -138,13 +138,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def render_index():
-    """读取首页模板并注入「对端面板地址」（PEER_URL，见 national_team/app.py 同名函数）。"""
+    """读取首页模板并注入「对端面板地址」（PEER_URL）与共享刷新逻辑。
+
+    PEER_URL 显式指定时用它（域名反代场景：两边端口都是 443，端口推断会跳成死链）；
+    未配置则留空，前端回退到「本端口 -1」的推断（同机不同端口部署时仍然正确）。
+    common/static_refresh.js 内联注入，保证服务端模式下前端函数（如 refreshToday）也有定义。
+    """
     with open(INDEX, "rb") as f:
         html = f.read().decode("utf-8", "replace")
     peer = (os.environ.get("PEER_URL") or "").strip()
     if peer:
         html = html.replace('<meta name="peer-url" content="">',
                             '<meta name="peer-url" content="%s">' % peer)
+    try:
+        with open(os.path.join(ROOT, "common", "static_refresh.js"), encoding="utf-8") as f:
+            common_js = f.read()
+    except Exception:
+        common_js = ""
+    if common_js:
+        html = html.replace("</head>", "<script>%s</script>\n</head>" % common_js, 1)
     return html.encode("utf-8")
 
 

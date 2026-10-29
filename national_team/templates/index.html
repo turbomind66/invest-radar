@@ -146,7 +146,10 @@
       </nav>
     </div>
     <div class="meta">
-      <div style="margin-top:8px"><button class="btn" id="refresh-btn" onclick="refresh()">🔄 立即刷新</button></div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn" id="refresh-btn" onclick="refresh()">🔄 立即刷新</button>
+        <button class="btn ghost" id="refresh-today-btn" onclick="refreshToday()">⚡ 刷新当日行情</button>
+      </div>
     </div>
   </header>
 
@@ -1169,17 +1172,132 @@ async function refresh(){
 
 window.addEventListener("resize",()=>{trendChart&&trendChart.resize();barChart&&barChart.resize();catBuyChart&&catBuyChart.resize();catSellChart&&catSellChart.resize();});
 
-// 静态模式：把"立即刷新"换成"去 Actions 手动更新"，并说明数据来源
+// ---------- 静态站：刷新当日实时数据（浏览器直连 or Worker） ----------
+async function refreshToday(){
+  if(!STATIC){ refresh(); return; }   // 服务端模式直接走全量刷新
+  await StaticRefresh.refreshToday({
+    btn: document.getElementById("refresh-today-btn"),
+    todayFetcher: ntTodayFetcher,
+    onToday: ntOnToday
+  });
+}
+
+// 浏览器直连抓“当天”：新浪实时价 + 东财主力资金流（JSONP，规避 CORS）。
+// 新浪 hq 接口可能校验 Referer，部分网络会被拦 → 资金流失败自动降级（仅刷价/幅）。
+function ntTodayFetcher(){
+  return new Promise(function(resolve, reject){
+    const funds = (window.STATIC_RAW && window.STATIC_RAW.funds) || [];
+    const codes = funds.map(function(f){ return f.code; });
+    if(!codes.length){ reject(new Error("无基金代码")); return; }
+    fetchSinaPrices(codes).then(function(prices){
+      fetchEmFlows(codes).then(function(flows){
+        var out = {};
+        codes.forEach(function(c){ out[c] = Object.assign({}, prices[c] || {}, flows[c] || {}); });
+        resolve(out);
+      }).catch(function(){   // 资金流失败：仅返回价/昨收，至少刷新涨跌幅
+        var out = {}; codes.forEach(function(c){ out[c] = prices[c] || {}; });
+        resolve(out);
+      });
+    }).catch(function(e){ reject(e); });
+  });
+}
+
+function sinaCode(c){ return (c[0]==="5"||c[0]==="6") ? "sh"+c : "sz"+c; }
+
+// 新浪 hq（GBK）：var <cb>="名称,今开,昨收,当前,...,日期,时间"
+function fetchSinaPrices(codes){
+  return new Promise(function(resolve, reject){
+    var s = document.createElement("script");
+    var cb = "_sn" + Date.now() + Math.floor(Math.random()*1e4);
+    s.src = "https://hq.sinajs.cn/list=" + codes.map(sinaCode).join(",") + "&_var=" + cb;
+    s.charset = "gbk";
+    s.onload = function(){
+      try{
+        var txt = window[cb] || "";
+        var out = {}, re = /var\s+hq_str_(\w+)\s*=\s*"([^"]*)"/g, m;
+        while((m = re.exec(txt))){
+          var code = m[1].replace(/^(sh|sz)/, "");
+          var f = m[2].split(",");
+          if(f.length > 4) out[code] = { price: parseFloat(f[3]), prevClose: parseFloat(f[2]) };
+        }
+        resolve(out);
+      }catch(e){ reject(e); }
+      finally{ if(s.parentNode) s.parentNode.removeChild(s); }
+    };
+    s.onerror = function(){ if(s.parentNode) s.parentNode.removeChild(s); reject(new Error("sina 不可达")); };
+    document.body.appendChild(s);
+  });
+}
+
+// 东财主力资金流（JSONP，cb 回调）：f62 主力净；f63 小单/f64 中单/f65 大单/f66 超大单（元）
+function fetchEmFlows(codes){
+  return new Promise(function(resolve, reject){
+    var secids = codes.map(function(c){ return (c[0]==="5"||c[0]==="6"?"1.":"0.") + c; }).join(",");
+    var cb = "_em" + Date.now() + Math.floor(Math.random()*1e4);
+    var url = "https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?lmt=1&klt=1"
+      + "&fields1=f51,f52&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65,f66,f67,f68,f69,f70,f71,f72,f73,f74,f75,f76,f77,f78,f79,f80,f81,f82,f83,f84"
+      + "&secid=" + secids + "&cb=" + cb;
+    var s = document.createElement("script");
+    s.src = url; s.charset = "utf-8";
+    s.onload = function(){
+      try{
+        var data = window[cb];
+        var out = {};
+        var diff = data && data.data && data.data.diff ? data.data.diff : [];
+        diff.forEach(function(d){
+          var code = (d.f100 || "").split(".").pop();
+          if(!code) return;
+          out[code] = { main_net:(d.f62||0), huge_net:(d.f66||0),
+                        big_net:(d.f65||0), mid_net:(d.f64||0), small_net:(d.f63||0) };
+        });
+        resolve(out);
+      }catch(e){ reject(e); }
+      finally{ if(s.parentNode) s.parentNode.removeChild(s); }
+    };
+    s.onerror = function(){ if(s.parentNode) s.parentNode.removeChild(s); reject(new Error("eastmoney 不可达")); };
+    document.body.appendChild(s);
+  });
+}
+
+// 把实时数据合并进 STATIC_RAW 的“最新日”各行，再重新渲染
+function ntOnToday(d){
+  if(!window.STATIC_RAW) return;
+  var latest = window.STATIC_RAW.latest_date;
+  var rows = (window.STATIC_RAW.days && window.STATIC_RAW.days[latest]) || [];
+  var map = {};
+  rows.forEach(function(r){ map[r.code] = r; });
+  Object.keys(d).forEach(function(code){
+    var f = d[code], r = map[code];
+    if(!r || !f) return;
+    if(f.price != null) r.price = f.price;
+    if(f.prevClose != null && f.price != null && f.prevClose)
+      r.chg = +((f.price / f.prevClose - 1) * 100).toFixed(2);
+    if(f.main_net != null){
+      r.main_net = f.main_net; r.huge_net = f.huge_net; r.big_net = f.big_net;
+      r.mid_net = f.mid_net; r.small_net = f.small_net;
+    }
+  });
+  loadData();
+}
+
+// 静态模式：按 worker_url 决定刷新行为（未配置时保持旧“去 Actions”行为，兼容静态测试）
 if(STATIC){
-  const b = document.getElementById("refresh-btn");
-  const a = document.createElement("a");
-  a.className = "btn ghost";
-  a.href = (window.__STATIC__ && window.__STATIC__.actions_url) || "#";
-  a.target = "_blank"; a.rel = "noopener";
-  a.textContent = "⚙️ 去 Actions 手动更新";
-  if(b) b.parentNode.replaceChild(a, b);
-  const note = document.querySelector(".note");
-  if(note) note.innerHTML += " <b>本站为 GitHub Pages 静态托管版</b>：数据由 GitHub Actions 于每个交易日收盘后自动抓取并提交，打开即最新；如需立即更新可在右上角手动触发工作流。";
+  var __w = (window.__STATIC__ && window.__STATIC__.worker_url) || "";
+  var __a = (window.__STATIC__ && window.__STATIC__.actions_url) || "";
+  if(typeof StaticRefresh !== "undefined") StaticRefresh.configure({ workerUrl: __w, actionsUrl: __a, module: "nt" });
+  if(__w){
+    var rb = document.getElementById("refresh-btn");
+    if(rb){ rb.textContent = "🔄 全量更新"; rb.onclick = function(){ StaticRefresh.fullUpdate(); }; }
+  } else {
+    var b = document.getElementById("refresh-btn");
+    var a = document.createElement("a");
+    a.className = "btn ghost";
+    a.href = __a || "#"; a.target = "_blank"; a.rel = "noopener";
+    a.textContent = "⚙️ 去 Actions 手动更新";
+    if(b) b.parentNode.replaceChild(a, b);
+  }
+  var note = document.querySelector(".note");
+  if(note) note.innerHTML += " <b>本站为静态托管版</b>：数据由定时任务抓取；点「刷新当日行情」可浏览器直连拉取当天实时价与资金流（需上游可达），点「全量更新」触发后台重算（配置 Worker 后）。";
 }
 loadData();
 </script>

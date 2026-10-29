@@ -97,6 +97,10 @@
     </nav>
   </div>
   <div class="status" id="status">加载中…</div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button style="background:#2563eb;color:#fff;border:none;padding:6px 12px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer" id="refresh-btn" onclick="refresh()">🔄 立即刷新</button>
+    <button style="background:#fff;color:#0f172a;border:1px solid #cbd5e1;padding:6px 12px;border-radius:8px;font-size:13px;cursor:pointer" id="refresh-today-btn" onclick="refreshToday()">⚡ 刷新当日行情</button>
+  </div>
 </header>
 <div class="wrap">
 
@@ -213,6 +217,8 @@ function siteBase(){
     return p;
   }catch(e){ return ''; }
 }
+
+const STATIC = !!window.__STATIC__;
 
 async function api(path){
   const r = await fetch(siteBase() + String(path).replace(/^\/+/, ''));
@@ -521,14 +527,66 @@ function renderPool(rows){
   el('poolCount').textContent='共 '+rows.length+' 只';
 }
 
-(async function(){
+async function loadAll(){
   await loadStatus();
   try{ const p=await api('/api/qdii/funds'); window.__pool=p.funds; renderPool(p.funds); }catch(e){}
   try{ const d=await api('/api/qdii/decision'); renderDecision(d.rows||[]); }catch(e){}
   try{ const s=await api('/api/qdii/signal'); renderSignal(s.rows||[], s.meta, s.groups); }catch(e){}
   try{ const pr=await api('/api/qdii/premium'); renderPremium(pr.rows||[]); }catch(e){}
   try{ await loadBoard(); }catch(e){}
-})();
+}
+
+// 静态托管：从同目录 qdii_data.json 一次性取数（与服务端同口径），不再请求后端
+async function loadStatic(){
+  const r = await fetch(siteBase()+'qdii_data.json', {cache:'no-cache'});
+  const d = await r.json();
+  applyQdiiData(d);
+}
+
+function applyQdiiData(d){
+  window.__qdii_static = d;
+  if(d.funds){ window.__pool=d.funds.funds||[]; renderPool(window.__pool); }
+  if(d.decision) renderDecision(d.decision.rows||[]);
+  if(d.signal) renderSignal(d.signal.rows||[], d.signal.meta, d.signal.groups);
+  if(d.premium) renderPremium(d.premium.rows||[]);
+  if(d.board) renderBoard(d.board.rows||[], d.board.summary);
+  if(d.status){
+    const st=el('status');
+    if(st) st.innerHTML='状态 <b>'+d.status.status+'</b> · 基金池 <b>'+d.status.pool_size+'</b> 只 · '+d.status.now;
+  }
+}
+
+// 全量更新：静态模式交 Worker 或 Actions，服务端模式直接重载
+async function refresh(){
+  if(STATIC){ if(typeof StaticRefresh!=='undefined') StaticRefresh.fullUpdate(); return; }
+  await loadAll();
+}
+
+// 刷新当日实时：QDII 实时源需服务端代理，仅在有 Worker 时生效（Worker 返回与服务端同口径的快照）
+async function refreshToday(){
+  if(!STATIC){ await loadAll(); return; }
+  await StaticRefresh.refreshToday({ btn: document.getElementById('refresh-today-btn'), onToday: applyQdiiData });
+}
+
+// 静态模式：按 worker_url 决定刷新行为（未配置 Worker 时，QDII 实时抓取不可得，隐藏当日按钮、全量更新退回 Actions 链接）
+if(STATIC){
+  var __w = (window.__STATIC__ && window.__STATIC__.worker_url) || "";
+  var __a = (window.__STATIC__ && window.__STATIC__.actions_url) || "";
+  if(typeof StaticRefresh !== "undefined") StaticRefresh.configure({ workerUrl: __w, actionsUrl: __a, module: "qdii" });
+  var rb = document.getElementById("refresh-btn");
+  if(__w){
+    if(rb){ rb.textContent = "🔄 全量更新"; rb.onclick = function(){ StaticRefresh.fullUpdate(); }; }
+  } else {
+    var a = document.createElement("a");
+    a.className = "btn ghost"; a.href = __a || "#"; a.target = "_blank"; a.rel = "noopener";
+    a.textContent = "⚙️ 去 Actions 手动更新"; a.style.cssText = "background:#fff;color:#0f172a;border:1px solid #cbd5e1;padding:6px 12px;border-radius:8px;font-size:13px;cursor:pointer;text-decoration:none";
+    if(rb) rb.parentNode.replaceChild(a, rb);
+  }
+  var tb = document.getElementById("refresh-today-btn");
+  if(tb && !__w) tb.style.display = "none";
+}
+
+if(STATIC){ loadStatic(); } else { loadAll(); }
 </script>
 </body>
 </html>

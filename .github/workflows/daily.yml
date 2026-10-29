@@ -29,8 +29,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 抓取并导出静态数据
+      - name: 抓取并导出静态数据（国家队）
         run: python national_team/staticsite.py
+
+      - name: 导出 QDII 静态站
+        run: python qdii/staticsite.py
 
       - name: 提交变更
         run: |
@@ -42,5 +45,5 @@ jobs:
             exit 0
           fi
           BJDATE=$(TZ=Asia/Shanghai date +%Y-%m-%d)
-          git commit -m "data: 更新 ${BJDATE} 国家队动向快照"
+          git commit -m "data: 更新 ${BJDATE} 国家队 + QDII 快照"
           git push

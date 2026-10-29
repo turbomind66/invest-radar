@@ -236,16 +236,37 @@ def build_static_payload(path: str = db.DB_PATH, window_days: int = None) -> dic
     }
 
 
+def _common_refresh_js() -> str:
+    """读取共享刷新逻辑（common/static_refresh.js），供静态页内联。"""
+    p = os.path.join(ROOT, "common", "static_refresh.js")
+    try:
+        with open(p, encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
 def render_index(payload: dict, template: str = TEMPLATE) -> str:
-    """把服务端模板转成静态页：注入 window.__STATIC__ 标记，数据源改 data.json。"""
+    """把服务端模板转成静态页：注入 window.__STATIC__ 标记，数据源改 data.json。
+
+    同时内联 common/static_refresh.js（刷新/Worker 公共逻辑），使静态页与
+    GitHub Pages / WorkBuddy 静态托管都能用同一套刷新能力，无需额外文件请求。
+    """
     with open(template, encoding="utf-8") as f:
         html = f.read()
     flag = {
         "actions_url": payload.get("actions_url", ""),
         "generated_at": payload.get("generated_at", ""),
+        # 仅当部署时显式设置 STATIC_WORKER_URL 才启用「一键触发工作流 / Worker 实时抓取」；
+        # 留空则静态页保持旧行为（去 Actions 手动更新），既兼容旧测试也兼容未配 Worker 的部署。
+        "worker_url": (os.environ.get("STATIC_WORKER_URL") or "").strip(),
     }
-    inject = "<script>window.__STATIC__=%s;</script>\n</head>" % json.dumps(
-        flag, ensure_ascii=False)
+    common_js = _common_refresh_js()
+    inject = (
+        "<script>window.__STATIC__=%s;</script>\n" % json.dumps(flag, ensure_ascii=False)
+        + ("<script>%s</script>\n" % common_js if common_js else "")
+        + "</head>"
+    )
     return html.replace("</head>", inject, 1)
 
 
