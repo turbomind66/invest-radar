@@ -298,14 +298,16 @@ let STATIC_RAW = null;   // 全量快照缓存，只拉一次
 // 站点路径前缀：域名反代时两个面板可能挂在同一域名的不同路径下（/nt/、/qdii/），
 // 页面里所有接口 / 数据文件都必须带上该前缀，否则请求会落到根路径、命中另一个面板。
 // 本地直连（http://host:5000/）与 Pages（/invest-radar/）下同样成立。
+// 没有 location 的环境（node 测试桩件）返回空串 → 保持「相对路径」语义。
 function siteBase(){
   try{
-    if(location.protocol === "file:") return "./";
-    let p = location.pathname || "/";
-    p = p.replace(/\/index\.html?$/i, "/");
-    if(p.charAt(p.length - 1) !== "/") p += "/";
+    if(typeof location === 'undefined') return '';
+    if(location.protocol === 'file:') return './';
+    let p = location.pathname || '/';
+    p = p.replace(/\/index\.html?$/i, '/');
+    if(p.charAt(p.length - 1) !== '/') p += '/';
     return p;
-  }catch(e){ return "/"; }
+  }catch(e){ return ''; }
 }
 
 // 面板互跳：国家队 ↔ QDII。

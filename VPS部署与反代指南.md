@@ -3,16 +3,22 @@
 > 适用：Debian / Ubuntu VPS，用 Docker Compose 部署 **invest-radar**（国家队看板 + 海外 QDII 定投决策面板），
 > 前面放 Nginx Proxy Manager（NPM）做域名反代 + HTTPS，域名已在 Cloudflare 登记。
 >
-> 端口关系（**对外只有一个**）：
+> **端口规划（两种部署形态，按需二选一）**
 >
-> | 服务 | 容器内端口 | 宿主机端口 | 用途 |
+> | 部署形态 | 网关监听在哪 | 公网入口 | 防火墙 / 安全组 |
 > |---|---|---|---|
-> | `gateway`（单端口入口） | **38881** | **48881** | 对外唯一入口，`/` → 国家队、`/qdii/` → QDII |
-> | `web`（国家队看板） | 5000 | 不映射 | 页面 + `/api/data`，仅容器网络内可见 |
-> | `qdii-web`（QDII 面板） | 5001 | 不映射 | 页面 + `/api/qdii/*`，仅容器网络内可见 |
-> | `cron` / `qdii-cron` | — | 不暴露 | 定时抓取 |
+> | **Docker Compose + NPM**（推荐） | 容器内 **38881** | `https://你的域名` → NPM → **gateway 容器 IP:38881** | **不用放行任何新端口**（只走已经放行的 443） |
+> | **裸机部署**（不用 Docker） | 宿主机 **48881** | `http://<服务器IP>:48881/` | 需放行 48881 |
 >
-> 直连测试：`http://<服务器IP>:48881/`（国家队）、`http://<服务器IP>:48881/qdii/`（QDII）。
+> 服务与内部端口：
+>
+> | 服务 | 端口 | 说明 |
+> |---|---|---|
+> | `gateway`（单端口入口） | 38881（容器内）/ 48881（裸机） | `/`、`/nt/` → 国家队；`/qdii/` → QDII |
+> | `web`（国家队看板） | 5000 | 仅容器网络内可见，不对外映射 |
+> | `qdii-web`（QDII 面板） | 5001 | 仅容器网络内可见，不对外映射 |
+> | `cron` / `qdii-cron` | — | 定时抓取 |
+>
 > 两个面板页头都有选项卡，点一下即在本域内切换。
 
 ---
@@ -30,8 +36,10 @@ sudo ufw allow 22/tcp && sudo ufw allow 80/tcp && sudo ufw allow 443/tcp
 sudo ufw enable
 ```
 
-⚠️ **对外只需考虑 48881 一个端口**（容器内 38881）。如果前面挂 NPM，公网通常只走 80/443，
-48881 甚至可以不对外放行、只让 NPM 在内网访问它（见第五节）。
+⚠️ **端口放行看部署形态**：
+- **Docker Compose + NPM**（推荐）→ 公网只走 443，**不用放行任何新端口**（NPM 到本项目走 docker 内部网络）；
+- **裸机部署**（不用 Docker）→ 需要放行 **48881**；
+- 若暂时不配 NPM、要从公网直连容器端口，把 compose 里 gateway 的端口映射从 `127.0.0.1:...` 改成 `0.0.0.0:...` 并放行 48881。
 
 ---
 
@@ -115,7 +123,7 @@ curl -s http://127.0.0.1:48881/qdii/api/qdii/status | head -c 200   # QDII（经
 | 国家队 | `radar.你的域名/` | `radar.你的域名` |
 | QDII | `radar.你的域名/qdii/` | `qdii.你的域名` |
 | 页头选项卡 | 两个面板顶部都有，**点一下即在本域内切换** | 同样有选项卡，点击跳到另一个子域名 |
-| NPM 配置 | **1 个 Proxy Host → `gateway:38881`**，不需要 Custom Location | 2 个 Proxy Host |
+| NPM 配置 | **1 个 Proxy Host → gateway 容器 IP:38881**，不需要 Custom Location | 2 个 Proxy Host |
 | Cloudflare DNS | 1 条 A 记录 | 2 条 A 记录 |
 | `.env` 里的 PEER_URL | 相对路径 `/qdii/`、`/nt/` | 完整 URL |
 
@@ -125,31 +133,31 @@ curl -s http://127.0.0.1:48881/qdii/api/qdii/status | head -c 200   # QDII（经
 
 先确认 NPM 是**容器**还是**宿主机程序**（`docker ps | grep -i proxy`）。
 
-**NPM 是容器（最常见）** → 只需把 `gateway` 这一个容器接进 NPM 的网络（两个看板留在内网，不接也一样能访问）：
+**NPM 是容器（最常见）** → 把 `gateway` 接进 NPM 的网络（两个看板留在内网，不必接）：
 
 ```bash
 docker network create proxy          # 已存在会报错，忽略即可
+docker network connect proxy ntt-gateway
 ```
 
-在仓库根目录（`/opt/invest-radar/invest-radar/`）新建 `docker-compose.override.yml`（不改仓库代码）：
-
-```yaml
-services:
-  gateway:
-    networks: [default, proxy]
-
-networks:
-  proxy:
-    external: true
-    name: proxy
-```
+**查出 gateway 容器的 IP**（NPM 里就填这个）：
 
 ```bash
-docker compose up -d                        # compose 自动合并 override
-docker network connect proxy <NPM容器名>     # 例如 npm-app
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ntt-gateway
+# 输出示例：172.20.0.5
 ```
 
-**NPM 装在宿主机上（apt / 二进制）** → 跳过上面的网络步骤，转发到 `127.0.0.1:48881` 即可。
+> ⚠️ 容器 IP 在 `docker compose down` / 重建后会变，NPM 里填 IP 的话记得回来改。
+> 两种更省心的做法，任选其一：
+> - **NPM 里直接填容器名 `gateway`**（Docker 内置 DNS，IP 变了不用改，**推荐**）；
+> - 或者把 IP 固定住：
+>   ```bash
+>   docker network disconnect proxy ntt-gateway
+>   docker network connect --ip 172.20.0.5 proxy ntt-gateway   # 换成你自己挑的空闲 IP
+>   ```
+
+**NPM 装在宿主机上（apt / 二进制）** → 跳过上面的网络步骤，转发到 `127.0.0.1:48881` 即可
+（compose 已把 48881 绑定在宿主机回环地址上，只对本机可见、不对公网开放）。
 
 ### 5.3 方案一：一个 Proxy Host 搞定（推荐）
 
@@ -159,8 +167,8 @@ NPM 面板地址通常是 `http://VPS_IP:81`（首次登录 `admin@example.com` 
 |---|---|
 | Domain Names | `radar.你的域名` |
 | Scheme | `http` |
-| Forward Hostname / IP | **`gateway`**（NPM 在宿主机则填 `127.0.0.1`） |
-| Forward Port | **`38881`**（NPM 在宿主机则填 `48881`） |
+| Forward Hostname / IP | **gateway 容器的 IP**（如 `172.20.0.5`）｜或直接填容器名 `gateway` |
+| Forward Port | **`38881`**（容器内端口）｜NPM 在宿主机则填 `48881` |
 | Block Common Exploits | ✅ |
 | Websockets Support | ✅（ECharts 不需要，开着无害） |
 | SSL | 见第六节 |
@@ -185,6 +193,9 @@ QDII_PEER_URL=/nt/   # QDII 页的「国家队 A股」选项卡 → /nt/
 docker compose up -d     # 让环境变量生效
 ```
 
+> **公网只走 443**：NPM 对外提供 443（证书 + Cloudflare 回源），到本项目只到容器 IP:38881，
+> 这一段是 docker 内部网络，**不需要在防火墙或 VPS 服务商后台放行任何新端口**。
+>
 > **为什么这样最省事**：网关负责剥前缀，页面里的接口请求又会按「当前访问路径」自动拼前缀
 > （在 `/qdii/` 下请求 `/qdii/api/...`），两边一夹，后端不需要任何额外配置。
 > 因此也不存在「NPM 的 Forward Path 填 `/` 还是空」这类坑。
@@ -210,12 +221,68 @@ docker compose up -d     # 让环境变量生效
 
 | 场景 | Forward Hostname / IP | Forward Port |
 |---|---|---|
+| NPM 是容器，与 gateway 同一网络 | gateway 容器 IP（或容器名 `gateway`） | `38881` |
 | NPM 装在宿主机（apt / 二进制） | `127.0.0.1` | `48881` |
-| NPM 是容器，但**不在** `proxy` 网络 | **宿主机内网 IP** | `48881` |
+| NPM 是容器，但**不在**同一网络 | **宿主机内网 IP** | `48881` |
 
 宿主机内网 IP 用 `hostname -I | awk '{print $1}'` 查（通常 `172.17.0.1` 或 `10.x.x.x`）。
 
-> ⚠️ 这时**不能填 `127.0.0.1`** —— 在 NPM 容器里，`127.0.0.1` 指的是 NPM 容器自己，必然 502。
+> ⚠️ 在 NPM 容器里**不能填 `127.0.0.1`** —— 那指的是 NPM 容器自己，必然 502。
+
+### 5.6 不用 Docker：裸机部署（对外一个端口 48881）
+
+不想用 Docker 的话，直接跑进程即可，网关监听 **48881**（对外仍然只有一个端口）：
+
+```bash
+cd /opt/invest-radar/invest-radar
+export TZ=Asia/Shanghai
+export NT_DB_PATH=/opt/invest-radar/data/data.db          # 放在持久化目录
+export NT_QDII_DB_PATH=/opt/invest-radar/data/qdii.db
+export PEER_URL=/qdii/                                     # 页头选项卡地址
+export QDII_PEER_URL=/nt/
+export NT_UPSTREAM=http://127.0.0.1:5000                   # 网关上游（本机回环）
+export QDII_UPSTREAM=http://127.0.0.1:5001
+
+python3 -u national_team/app.py &        # 5000 国家队看板
+python3 -u qdii/qdii_app.py &            # 5001 QDII 面板
+python3 -u national_team/scheduler.py &  # 国家队调度
+python3 -u qdii/qdii_scheduler.py &      # QDII 调度
+python3 -u gateway.py --port 48881 &     # 48881 对外唯一端口
+```
+
+- 公网直连：`http://<服务器IP>:48881/`（国家队）与 `/qdii/`（QDII）→ **需要放行 48881**；
+- 前面还有 NPM 的话：NPM 填 `127.0.0.1` + `48881`，公网仍只走 443，不用放行新端口。
+
+生产环境建议交给 systemd 托管：
+
+```ini
+# /etc/systemd/system/invest-radar.service
+[Unit]
+Description=invest-radar 看板 + 网关
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/invest-radar/invest-radar
+Environment=TZ=Asia/Shanghai
+Environment=NT_DB_PATH=/opt/invest-radar/data/data.db
+Environment=NT_QDII_DB_PATH=/opt/invest-radar/data/qdii.db
+Environment=PEER_URL=/qdii/
+Environment=QDII_PEER_URL=/nt/
+Environment=NT_UPSTREAM=http://127.0.0.1:5000
+Environment=QDII_UPSTREAM=http://127.0.0.1:5001
+ExecStart=/bin/bash -c 'python3 -u national_team/scheduler.py & python3 -u qdii/qdii_scheduler.py & python3 -u national_team/app.py & python3 -u qdii/qdii_app.py & exec python3 -u gateway.py --port 48881'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+mkdir -p /opt/invest-radar/data
+systemctl daemon-reload && systemctl enable --now invest-radar
+systemctl status invest-radar
+```
 
 ---
 

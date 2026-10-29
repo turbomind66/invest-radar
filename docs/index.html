@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<!-- 对端面板地址：由服务端按 PEER_URL 环境变量注入（域名反代后端口推断会跳成死链） -->
+<meta name="peer-url" content="">
 <title>国家队买卖A股日报</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <style>
@@ -23,6 +25,17 @@
   .btn:active{transform:translateY(1px)}
   .btn.ghost{background:#fff;color:var(--blue);border:1px solid #c9dcff;padding:7px 13px;font-size:13px}
   .btn.ghost:hover{background:#f2f7ff}
+  /* 面板选项卡：同一域名下「国家队 / QDII」两个面板互切。
+     当前面板用 span 承载（不可点），对端面板用 a#peerTab（地址由 PEER_URL 或端口±1 推断）。
+     对端不可达（静态站 / file://）时整条隐藏，不给死链。 */
+  .htitle{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  .tabbar{display:none;gap:4px;background:#fff;border:1px solid var(--line);
+    border-radius:10px;padding:3px;box-shadow:0 1px 3px rgba(20,40,80,.04)}
+  .tabbar.on{display:inline-flex}
+  .tab{padding:5px 13px;border-radius:8px;font-size:13px;font-weight:600;
+    color:var(--sub);text-decoration:none;white-space:nowrap;line-height:1.6}
+  .tab.active{background:var(--blue);color:#fff}
+  .tabbar a.tab:hover{background:#f2f7ff;color:var(--blue)}
   .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 1px 3px rgba(20,40,80,.04)}
   .card .k{font-size:13px;color:var(--sub);margin-bottom:6px}
@@ -121,17 +134,19 @@
     .fresh .hint{display:none}.fresh .t{font-size:14.5px}.fresh .t b{font-size:15px}
   }
 </style>
-<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-29 14:38:39"};</script>
+<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-29 18:48:47"};</script>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <div>
+    <div class="htitle">
       <h1>🛡️ 国家队买卖A股日报 <span class="tag">宽基ETF主力净流入代理</span></h1>
+      <nav class="tabbar" id="tabbar">
+        <span class="tab active">🛡️ 国家队 A股</span>
+        <a class="tab" id="peerTab" href="#" title="同一站点的 QDII 定投面板">📈 全球 QDII 定投</a>
+      </nav>
     </div>
     <div class="meta">
-      <a class="btn ghost" id="peerLink" href="#" title="同一主机的 QDII 面板（端口 +1）"
-         style="display:none;text-decoration:none;margin-right:8px">📈 QDII 定投面板 →</a>
       <div style="margin-top:8px"><button class="btn" id="refresh-btn" onclick="refresh()">🔄 立即刷新</button></div>
     </div>
   </header>
@@ -281,17 +296,44 @@ const state = { date:"", cats:new Set(), codes:new Set() };
 const STATIC = !!window.__STATIC__;
 let STATIC_RAW = null;   // 全量快照缓存，只拉一次
 
-// 模块互跳：QDII 面板默认就在同一主机的「本端口 +1」（5000→5001，容器映射 18080→18081）。
-// Pages 静态站与 file:// 下没有对端服务，隐藏入口而不是给一个死链。
-(function initPeerLink(){
-  const a = document.getElementById("peerLink");
+// 站点路径前缀：域名反代时两个面板可能挂在同一域名的不同路径下（/nt/、/qdii/），
+// 页面里所有接口 / 数据文件都必须带上该前缀，否则请求会落到根路径、命中另一个面板。
+// 本地直连（http://host:5000/）与 Pages（/invest-radar/）下同样成立。
+// 没有 location 的环境（node 测试桩件）返回空串 → 保持「相对路径」语义。
+function siteBase(){
+  try{
+    if(typeof location === 'undefined') return '';
+    if(location.protocol === 'file:') return './';
+    let p = location.pathname || '/';
+    p = p.replace(/\/index\.html?$/i, '/');
+    if(p.charAt(p.length - 1) !== '/') p += '/';
+    return p;
+  }catch(e){ return ''; }
+}
+
+// 面板互跳：国家队 ↔ QDII。
+//   ① PEER_URL 显式指定（域名反代：可写完整 URL，也可写同域相对路径 /qdii/）；
+//   ② 未配置则回退「本端口 +1」（只在本地分别起 5000/5001 时有效；
+//      容器部署走 gateway 单端口，请务必设 PEER_URL）；
+//   ③ 静态站与 file:// 没有对端服务 → 整条选项卡隐藏，不给死链。
+(function initPeerTab(){
+  const a = document.getElementById("peerTab");
+  const bar = document.getElementById("tabbar");
   if(!a || STATIC || typeof location === "undefined") return;
   const host = location.hostname || "";
   if(location.protocol === "file:" || /\.github\.io$/i.test(host)) return;
-  const port = parseInt(location.port, 10);
-  if(!port) return;
-  a.href = location.protocol + "//" + host + ":" + (port + 1);
-  a.style.display = "";
+  // 优先用服务端注入的对端地址（PEER_URL）：用 Nginx/NPM 按域名反代后，
+  // 两个面板的端口都是 443，「本端口 +1」的推断会指向不存在的 444 端口。
+  const meta = document.querySelector('meta[name="peer-url"]');
+  const cfg = meta ? (meta.getAttribute("content") || "").trim() : "";
+  if(cfg){
+    a.href = cfg;
+  }else{
+    const port = parseInt(location.port, 10);
+    if(!port) return;
+    a.href = location.protocol + "//" + host + ":" + (port + 1);
+  }
+  if(bar) bar.classList.add("on");
 })();
 
 function buildQuery(){
@@ -441,7 +483,7 @@ function computeStaticPayload(raw, date, cats, codes){
 
 async function staticPayload(){
   if(!STATIC_RAW){
-    const r = await fetch("data.json", {cache:"no-cache"});
+    const r = await fetch(siteBase() + "data.json", {cache:"no-cache"});
     if(!r.ok) throw new Error("data.json 加载失败："+r.status);
     STATIC_RAW = await r.json();
   }
@@ -454,7 +496,7 @@ async function loadData(){
   try{
     const d = STATIC
       ? await staticPayload()
-      : await (await fetch("/api/data" + buildQuery())).json();
+      : await (await fetch(siteBase() + "api/data" + buildQuery())).json();
     if(seq !== reqSeq) return;          // 丢弃过期响应
     DATA = d;
     // 仅在“手动选了不存在的日期”时重置；自动模式(空)保持不变，
@@ -1116,7 +1158,7 @@ async function refresh(){
   const btn = document.querySelector(".btn:not(.ghost)");
   btn.disabled=true; const old=btn.textContent; btn.textContent="抓取中…";
   try{
-    const r = await fetch("/api/refresh"+buildQuery());
+    const r = await fetch(siteBase() + "api/refresh" + buildQuery());
     const d = await r.json();
     DATA = d;
     state.date = d.filters?.date || "";

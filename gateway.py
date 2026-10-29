@@ -19,15 +19,32 @@
     QDII_PREFIX    QDII 路径前缀，默认 /qdii
     NT_PREFIX      国家队路径前缀（别名），默认 /nt
     GATEWAY_TIMEOUT 上游超时秒数，默认 30
+
+命令行：
+    python gateway.py --port 48881     # 裸机部署时对外只开这一个端口
 """
 import http.server
 import os
 import socketserver
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
-PORT = int(os.environ.get("GATEWAY_PORT", "38881"))
+
+def _resolve_port(argv) -> int:
+    """监听端口优先级：--port > GATEWAY_PORT > 38881。"""
+    value = ""
+    for i, arg in enumerate(argv):
+        if arg == "--port" and i + 1 < len(argv):
+            value = argv[i + 1]
+        elif arg.startswith("--port="):
+            value = arg.split("=", 1)[1]
+    value = (value or os.environ.get("GATEWAY_PORT") or "38881").strip()
+    return int(value)
+
+
+PORT = _resolve_port(sys.argv[1:])
 NT_UPSTREAM = (os.environ.get("NT_UPSTREAM") or "http://web:5000").rstrip("/")
 QDII_UPSTREAM = (os.environ.get("QDII_UPSTREAM") or "http://qdii-web:5001").rstrip("/")
 QDII_PREFIX = "/" + (os.environ.get("QDII_PREFIX") or "qdii").strip("/")
