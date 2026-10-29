@@ -35,7 +35,7 @@ TEMPLATE = os.path.join(BASE, "templates", "index.html")
 DAYS_FILE = os.path.join(DOCS_DIR, "data.json")
 
 TZ_BEIJING = datetime.timezone(datetime.timedelta(hours=8))
-ACTIONS_URL = ("https://github.com/turbomind66/ashare-national-team-tracker"
+ACTIONS_URL = ("https://github.com/turbomind66/invest-radar"
                "/actions/workflows/daily.yml")
 
 
