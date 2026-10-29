@@ -22,7 +22,7 @@ STATICSITE = os.path.join(BASE, "staticsite.py")
 
 # 默认时间点（Asia/Shanghai）。可用环境变量覆盖，见 .env.example。
 DEFAULT_FULL = "06:00,17:10"                 # 完整同步（收盘后 + 次日清晨重刷）
-DEFAULT_TICK = "10:30,11:30,14:00,14:50"     # 盘中逐笔大单采样（交易时段）
+DEFAULT_TICK = "09:30,10:00,10:30,11:00,11:30,13:00,13:30,14:00,14:30,14:50"  # 盘中逐笔大单采样（交易时段，约每30分钟一次，保留尾盘14:50）
 
 try:  # pragma: no cover - 平台相关
     import fcntl
@@ -145,6 +145,12 @@ def main():
         def _first():
             _log("启动即跑一次完整同步（首次部署可立即填充数据）")
             run_task("full", lock_path, timeout)
+            # 盘中（约 09:00–15:10）部署时补跑一次逐笔大单采样（tick），
+            # 避免傻等下一个 tick 整点才有首笔数据；盘后东财滚动窗口冻结采不到大单，故不跑。
+            now = datetime.datetime.now()
+            if (9, 0) <= (now.hour, now.minute) <= (15, 10):
+                _log("启动即补跑一次盘中逐笔大单采样（tick）")
+                run_task("tick", lock_path, timeout)
         threading.Thread(target=_first, daemon=True).start()
 
     done = set()  # 防重：同一天同一分钟同一任务只跑一次
