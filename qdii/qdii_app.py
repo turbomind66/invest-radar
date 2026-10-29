@@ -10,6 +10,7 @@ import http.server
 import socketserver
 import datetime
 import urllib.parse
+import threading
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
@@ -95,6 +96,58 @@ def _now():
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
+# ---- 服务端手动刷新（后台线程 + 状态查询）----
+# 单应用/在线部署没有独立 cron，QDII 只有打包时的静态快照；
+# 让用户点「立即刷新 / 刷新当日行情」时能真触发 signal(美股信号+决策) +
+# premium(场内溢价+决策) 抓取。境外源(CBOE VIX/CNBC 美债)在此环境可能超时，
+# 故用后台线程异步执行、前端轮询状态，单个请求不会长连接等待。
+# 各抓取源彼此独立 try/except（见 fetcher_signal），单源失败不影响其余，
+# 且写库仅针对「当日」，不会删除历史快照。
+_REFRESH_LOCK = threading.Lock()
+_REFRESH = {"running": False, "start": None, "done": None, "result": None}
+
+
+def _run_refresh_bg():
+    res = {"signal": None, "premium": None}
+    try:
+        import qdii_scheduler as sched
+        try:
+            sched.run_signal()
+            res["signal"] = "ok"
+        except Exception as e:
+            res["signal"] = "error: %s" % e
+        try:
+            sched.run_premium()
+            res["premium"] = "ok"
+        except Exception as e:
+            res["premium"] = "error: %s" % e
+    except Exception as e:
+        res["fatal"] = str(e)
+    finally:
+        with _REFRESH_LOCK:
+            _REFRESH["running"] = False
+            _REFRESH["done"] = _now()
+            _REFRESH["result"] = res
+
+
+def trigger_refresh():
+    with _REFRESH_LOCK:
+        if _REFRESH["running"]:
+            return {"status": "running", "start": _REFRESH["start"]}
+        _REFRESH["running"] = True
+        _REFRESH["start"] = _now()
+        _REFRESH["done"] = None
+        _REFRESH["result"] = None
+        threading.Thread(target=_run_refresh_bg, daemon=True).start()
+        return {"status": "started", "start": _REFRESH["start"]}
+
+
+def refresh_status():
+    with _REFRESH_LOCK:
+        return {"running": _REFRESH["running"], "start": _REFRESH["start"],
+                "done": _REFRESH["done"], "result": _REFRESH["result"]}
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def _send(self, body_bytes, content_type, code=200):
         self.send_response(code)
@@ -112,6 +165,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if "=" in kv:
                     k, v = kv.split("=", 1)
                     query[k] = urllib.parse.unquote(v)
+        if path == "/api/qdii/refresh":
+            self._send(json.dumps(trigger_refresh(), ensure_ascii=False).encode("utf-8"),
+                       "application/json; charset=utf-8")
+            return
+        if path == "/api/qdii/refresh_status":
+            self._send(json.dumps(refresh_status(), ensure_ascii=False).encode("utf-8"),
+                       "application/json; charset=utf-8")
+            return
         if path.startswith("/api/"):
             data = route_api(path, query)
             if data is None:

@@ -86,7 +86,7 @@
   .chart{width:100%;height:260px;}
   .warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:8px 10px;border-radius:8px;font-size:12px;}
 </style>
-<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-29 22:10:07", "worker_url": ""};</script>
+<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-30 06:07:20", "worker_url": ""};</script>
 <script>/* common/static_refresh.js — 静态托管站共享刷新逻辑（国家队 / QDII 复用）
  *
  * 由 national_team/app.py 与 qdii 的 render_index / staticsite 在「构建或响应时」
@@ -629,15 +629,45 @@ function applyQdiiData(d){
   }
 }
 
-// 全量更新：静态模式交 Worker 或 Actions，服务端模式直接重载
-async function refresh(){
-  if(STATIC){ if(typeof StaticRefresh!=='undefined') StaticRefresh.fullUpdate(); return; }
-  await loadAll();
+// 服务端模式手动刷新：触发后台抓取 → 轮询状态 → 完成后重载（避免境外源超时拖垮长连接）
+let __refreshing = false;
+async function serverRefresh(){
+  if(__refreshing){ return; }
+  __refreshing = true;
+  const btn = document.getElementById('refresh-btn');
+  const old = btn ? btn.textContent : '';
+  const setTxt = t => { if(btn) btn.textContent = t; };
+  if(btn) btn.disabled = true;
+  setTxt('⏳ 抓取中…');
+  try{
+    const r = await api('/api/qdii/refresh');   // 立即返回 started/running
+    // 最多轮询 ~170s（55×3s），覆盖 CBOE/CNBC 境外源最坏超时
+    let finished = false;
+    for(let i=0;i<55;i++){
+      await new Promise(res=>setTimeout(res,3000));
+      let st;
+      try{ st = await api('/api/qdii/refresh_status'); }catch(e){ continue; }
+      if(st && st.running === false && st.done){ finished = true; break; }
+    }
+    await loadAll();
+    setTxt(finished ? '✅ 已更新' : '⏳ 后台仍在抓取，请稍后再看');
+  }catch(e){
+    setTxt('⚠️ 刷新失败');
+  }finally{
+    __refreshing = false;
+    if(btn){ btn.disabled = false; setTimeout(()=>setTxt(old), 4000); }
+  }
 }
 
-// 刷新当日实时：QDII 实时源需服务端代理，仅在有 Worker 时生效（Worker 返回与服务端同口径的快照）
+// 全量更新：静态模式交 Worker 或 Actions，服务端模式真抓取
+async function refresh(){
+  if(STATIC){ if(typeof StaticRefresh!=='undefined') StaticRefresh.fullUpdate(); return; }
+  await serverRefresh();
+}
+
+// 刷新当日实时：服务端模式真抓取；静态模式仅在有 Worker 时生效（Worker 返回与服务端同口径快照）
 async function refreshToday(){
-  if(!STATIC){ await loadAll(); return; }
+  if(!STATIC){ await serverRefresh(); return; }
   await StaticRefresh.refreshToday({ btn: document.getElementById('refresh-today-btn'), onToday: applyQdiiData });
 }
 
