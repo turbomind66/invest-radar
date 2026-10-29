@@ -1,0 +1,123 @@
+"""gateway.py —— 单端口入口（零依赖反向代理）。
+
+两个面板是同一个镜像里跑起来的两个独立进程，各占一个内部端口；对外只需要一个端口：
+
+    http://<host>:38881/         ->  web:5000        国家队 A 股看板
+    http://<host>:38881/nt/...   ->  web:5000        同上（前缀剥掉），让页头选项卡地址对称
+    http://<host>:38881/qdii/... ->  qdii-web:5001   QDII 面板（前缀剥掉）
+
+这样无论直连还是用 Nginx Proxy Manager 反代，**都只需要认一个端口**，
+不必再配 Custom Location，也不会出现「前缀没剥干净 → 请求打到另一个面板」的串台。
+
+注意：页面里的接口请求会按「当前访问路径」自动拼前缀（在 /qdii/ 下就请求 /qdii/api/...），
+网关把前缀剥掉再交给后端，所以后端不需要任何额外配置。
+
+环境变量：
+    GATEWAY_PORT   容器内监听端口，默认 38881
+    NODE_UPSTREAM  国家队上游，默认 http://web:5000（单容器模式由 entrypoint 改成 127.0.0.1）
+    QDII_UPSTREAM  QDII 上游，默认 http://qdii-web:5001
+    QDII_PREFIX    QDII 路径前缀，默认 /qdii
+    NT_PREFIX      国家队路径前缀（别名），默认 /nt
+    GATEWAY_TIMEOUT 上游超时秒数，默认 30
+"""
+import http.server
+import os
+import socketserver
+import urllib.error
+import urllib.parse
+import urllib.request
+
+PORT = int(os.environ.get("GATEWAY_PORT", "38881"))
+NT_UPSTREAM = (os.environ.get("NT_UPSTREAM") or "http://web:5000").rstrip("/")
+QDII_UPSTREAM = (os.environ.get("QDII_UPSTREAM") or "http://qdii-web:5001").rstrip("/")
+QDII_PREFIX = "/" + (os.environ.get("QDII_PREFIX") or "qdii").strip("/")
+NT_PREFIX = "/" + (os.environ.get("NT_PREFIX") or "nt").strip("/")
+TIMEOUT = float(os.environ.get("GATEWAY_TIMEOUT", "30"))
+
+# 容器内访问上游，显式禁用代理（宿主机环境变量可能带 HTTP_PROXY）
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+# 逐跳头不能透传（RFC 7230）
+HOP_BY_HOP = {
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade", "host", "accept-encoding",
+}
+
+
+def resolve(path: str) -> str:
+    """按路径前缀挑选上游，并把前缀剥掉。/qdii/api/x -> <qdii 上游>/api/x"""
+    if path == QDII_PREFIX or path.startswith(QDII_PREFIX + "/"):
+        return QDII_UPSTREAM + (path[len(QDII_PREFIX):] or "/")
+    if path == NT_PREFIX or path.startswith(NT_PREFIX + "/"):
+        return NT_UPSTREAM + (path[len(NT_PREFIX):] or "/")
+    return NT_UPSTREAM + path
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"   # 配合显式 Content-Length，浏览器可复用连接
+
+    def _proxy(self, method: str):
+        parsed = urllib.parse.urlsplit(self.path)
+        target = resolve(parsed.path)
+        if parsed.query:
+            target += "?" + parsed.query
+
+        body = None
+        length = self.headers.get("Content-Length")
+        if length and method in ("POST", "PUT", "PATCH"):
+            try:
+                body = self.rfile.read(int(length))
+            except ValueError:
+                body = None
+
+        req = urllib.request.Request(target, data=body, method=method)
+        for key, value in self.headers.items():
+            if key.lower() not in HOP_BY_HOP:
+                req.add_header(key, value)
+
+        try:
+            with OPENER.open(req, timeout=TIMEOUT) as resp:
+                self._send(resp.status, resp.read(), resp.headers.get("Content-Type"))
+        except urllib.error.HTTPError as exc:      # 后端的 404/500 原样回传
+            ctype = exc.headers.get("Content-Type") if exc.headers else None
+            self._send(exc.code, exc.read(), ctype)
+        except Exception as exc:                    # 连不上上游
+            msg = ("[gateway] 无法连接上游 %s\n%s\n"
+                   "→ 请确认对应容器已启动（docker compose ps）\n" % (target, exc))
+            self._send(502, msg.encode("utf-8"), "text/plain; charset=utf-8")
+
+    def _send(self, code: int, data: bytes, ctype=None):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype or "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def do_GET(self):
+        self._proxy("GET")
+
+    def do_HEAD(self):
+        self._proxy("HEAD")
+
+    def do_POST(self):
+        self._proxy("POST")
+
+    def log_message(self, fmt, *args):
+        # 只记录非 2xx/3xx，避免刷屏
+        pass
+
+
+def main():
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    socketserver.ThreadingTCPServer.daemon_threads = True
+    with socketserver.ThreadingTCPServer(("0.0.0.0", PORT), Handler) as httpd:
+        print("[gateway] listen 0.0.0.0:%d   /  -> %s   %s/ -> %s   %s/ -> %s"
+              % (PORT, NT_UPSTREAM, QDII_PREFIX, QDII_UPSTREAM, NT_PREFIX, NT_UPSTREAM),
+              flush=True)
+        httpd.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

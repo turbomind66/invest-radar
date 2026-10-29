@@ -4,7 +4,7 @@
 # 用法：
 #   ./deploy.sh                    # Docker Compose 部署（默认，推荐）
 #   ./deploy.sh --run              # 纯 docker run 单容器部署（web + 调度合一）
-#   ./deploy.sh --port 18080       # 指定宿主机端口
+#   ./deploy.sh --port 48881       # 指定对外端口（默认 48881 -> 容器 38881）
 #   ./deploy.sh --install-docker   # 未装 Docker 时自动安装
 #   ./deploy.sh --help
 #
@@ -18,7 +18,7 @@ IMAGE="invest-radar:latest"
 VOLUME="ntt-data"
 MODE="compose"
 INSTALL_DOCKER=0
-HOST_PORT=""
+GATEWAY_HOST_PORT=""
 
 info() { printf '\033[1;36m[deploy]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
@@ -32,7 +32,7 @@ usage() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --run) MODE="run"; shift ;;
-        --port) HOST_PORT="${2:-}"; shift 2 ;;
+        --port) GATEWAY_HOST_PORT="${2:-}"; shift 2 ;;
         --install-docker) INSTALL_DOCKER=1; shift ;;
         -h|--help) usage ;;
         *) die "未知参数：$1（用 --help 查看用法）" ;;
@@ -74,35 +74,27 @@ if [ ! -f .env ]; then
     info "已根据 .env.example 生成 .env"
 fi
 
-if [ -n "${HOST_PORT}" ]; then
-    if grep -q '^HOST_PORT=' .env; then
-        sed -i "s/^HOST_PORT=.*/HOST_PORT=${HOST_PORT}/" .env
+if [ -n "${GATEWAY_HOST_PORT}" ]; then
+    if grep -q '^GATEWAY_HOST_PORT=' .env; then
+        sed -i "s/^GATEWAY_HOST_PORT=.*/GATEWAY_HOST_PORT=${GATEWAY_HOST_PORT}/" .env
     else
-        echo "HOST_PORT=${HOST_PORT}" >> .env
+        echo "GATEWAY_HOST_PORT=${GATEWAY_HOST_PORT}" >> .env
     fi
-    info "宿主机端口设为 ${HOST_PORT}"
+    info "对外端口设为 ${GATEWAY_HOST_PORT}"
 fi
 
-HOST_PORT="$(grep -m1 '^HOST_PORT=' .env | cut -d= -f2 | tr -d '[:space:]')"
-[ -n "${HOST_PORT}" ] || HOST_PORT=18080
+# 对外只有这一个端口：宿主机 GATEWAY_HOST_PORT -> 容器 GATEWAY_PORT(38881)
+GATEWAY_HOST_PORT="$(grep -m1 '^GATEWAY_HOST_PORT=' .env | cut -d= -f2 | tr -d '[:space:]')"
+[ -n "${GATEWAY_HOST_PORT}" ] || GATEWAY_HOST_PORT=48881
 
-# QDII 面板端口（未配置则沿用默认 18081，与国家队 18080 错开）
-QDII_HOST_PORT="$(grep -m1 '^QDII_HOST_PORT=' .env | cut -d= -f2 | tr -d '[:space:]')"
-[ -n "${QDII_HOST_PORT}" ] || QDII_HOST_PORT=18081
-
-if port_in_use "${HOST_PORT}"; then
-    warn "宿主机端口 ${HOST_PORT} 已被占用，可能与服务器上已有服务冲突。"
-    warn "如需更换，请修改 .env 中的 HOST_PORT 后重新运行本脚本。"
-fi
-
-if port_in_use "${QDII_HOST_PORT}"; then
-    warn "QDII 面板端口 ${QDII_HOST_PORT} 已被占用。"
-    warn "如需更换，请修改 .env 中的 QDII_HOST_PORT 后重新运行本脚本。"
+if port_in_use "${GATEWAY_HOST_PORT}"; then
+    warn "端口 ${GATEWAY_HOST_PORT} 已被占用，可能与服务器上已有服务冲突。"
+    warn "如需更换：./deploy.sh --port <其它端口>，或改 .env 里的 GATEWAY_HOST_PORT。"
 fi
 
 # ---- 3. 构建并启动 ----
 if [ "${MODE}" = "compose" ]; then
-    info "使用 Docker Compose 部署（ntt-web / ntt-cron / qdii-web / qdii-cron 四个服务）"
+    info "使用 Docker Compose 部署（ntt-gateway + ntt-web / ntt-cron / qdii-web / qdii-cron 五个服务）"
     docker compose up -d --build
     WEB_NAME="ntt-web"
 else
@@ -115,12 +107,12 @@ else
     docker run -d --name ntt --restart unless-stopped --init \
         -e APP_ROLE=all \
         -e TZ=Asia/Shanghai \
+        -e GATEWAY_PORT=38881 \
         -e PORT=5000 \
         -e NT_DB_PATH=/app/data/data.db \
         -e QDII_PORT=5001 \
         -e NT_QDII_DB_PATH=/app/data/qdii.db \
-        -p "${HOST_PORT}:5000" \
-        -p "${QDII_HOST_PORT}:5001" \
+        -p "${GATEWAY_HOST_PORT}:38881" \
         -v "${VOLUME}:/app/data" \
         --memory=384m --cpus=0.75 \
         "${IMAGE}"
@@ -144,8 +136,8 @@ IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo ""
 if [ "${READY}" = "1" ]; then
     info "部署完成 ✅"
-    info "  国家队看板：http://${IP}:${HOST_PORT}"
-    info "  QDII 面板 ：http://${IP}:${QDII_HOST_PORT}"
+    info "  国家队看板：http://${IP}:${GATEWAY_HOST_PORT}"
+    info "  QDII 面板 ：http://${IP}:${GATEWAY_HOST_PORT}/qdii/"
 else
     warn "服务已启动但 90 秒内未通过自检（首次启动会先抓取数据，可能较慢）。"
     warn "请稍后查看日志：docker logs ${WEB_NAME}"
@@ -165,6 +157,6 @@ cat <<EOF
 提示：
   · 首次启动会自动从内置种子数据恢复最近 90 天历史，随后定时任务持续累积。
   · QDII 的场内溢价/分时类数据从部署当天起才累积，历史无法回补（上游仅给近几日）。
-  · 服务器若有防火墙/安全组，需放行 ${HOST_PORT} 与 ${QDII_HOST_PORT} 端口。
+  · 对外只有 ${GATEWAY_HOST_PORT} 这一个端口，防火墙/安全组只需放行它。
   · 建议用 Nginx 反代并配 HTTPS（见 README「Docker 部署」章节）。
 EOF

@@ -3,13 +3,17 @@
 > 适用：Debian / Ubuntu VPS，用 Docker Compose 部署 **invest-radar**（国家队看板 + 海外 QDII 定投决策面板），
 > 前面放 Nginx Proxy Manager（NPM）做域名反代 + HTTPS，域名已在 Cloudflare 登记。
 >
-> 端口关系（务必记住这三个）：
+> 端口关系（**对外只有一个**）：
 >
 > | 服务 | 容器内端口 | 宿主机端口 | 用途 |
 > |---|---|---|---|
-> | `web`（国家队看板） | **5000** | 18080 | 页面 + `/api/data` |
-> | `qdii-web`（QDII 面板） | **5001** | 18081 | 页面 + `/api/qdii/*` |
+> | `gateway`（单端口入口） | **38881** | **48881** | 对外唯一入口，`/` → 国家队、`/qdii/` → QDII |
+> | `web`（国家队看板） | 5000 | 不映射 | 页面 + `/api/data`，仅容器网络内可见 |
+> | `qdii-web`（QDII 面板） | 5001 | 不映射 | 页面 + `/api/qdii/*`，仅容器网络内可见 |
 > | `cron` / `qdii-cron` | — | 不暴露 | 定时抓取 |
+>
+> 直连测试：`http://<服务器IP>:48881/`（国家队）、`http://<服务器IP>:48881/qdii/`（QDII）。
+> 两个面板页头都有选项卡，点一下即在本域内切换。
 
 ---
 
@@ -26,8 +30,8 @@ sudo ufw allow 22/tcp && sudo ufw allow 80/tcp && sudo ufw allow 443/tcp
 sudo ufw enable
 ```
 
-⚠️ **不要放行 18080 / 18081**。它们只作为 NPM 的转发目标，公网只走 80/443。
-（如果你的 NPM 与本项目在同一台机器上，见第五节「情况 A」时其实连这两个端口都不需要对外暴露。）
+⚠️ **对外只需考虑 48881 一个端口**（容器内 38881）。如果前面挂 NPM，公网通常只走 80/443，
+48881 甚至可以不对外放行、只让 NPM 在内网访问它（见第五节）。
 
 ---
 
@@ -49,28 +53,28 @@ cp .env.example .env
 vi .env
 ```
 
-必改项：
+必改项（其实只有时区和域名相关，端口已固定）：
 
 ```dotenv
 # 时区：调度与交易日判定都依赖它，务必保持北京时间
 TZ=Asia/Shanghai
 
-# 宿主机端口：改成 VPS 上没被占用的
-HOST_PORT=18080
-QDII_HOST_PORT=18081
+# 对外唯一端口：宿主机 48881 -> 容器 38881
+# 48881 被占用时改这里（或 ./deploy.sh --port 50080），只影响这一个数字
+GATEWAY_HOST_PORT=48881
+GATEWAY_PORT=38881
 
-# 页头「面板选项卡」互跳地址（域名反代后必填，写法见第五节）
+# 页头「面板选项卡」互跳地址（走网关时用相对路径，换域名不用改）
 PEER_URL=/qdii/
 QDII_PEER_URL=/nt/
 ```
 
-> **为什么要填 PEER_URL**：两个面板页头的选项卡互跳原本按「本端口 ±1」推断（5000↔5001）。
-> 用域名反代后两边端口都是 443，端口推断会指向**不存在的 444/442 端口 → 死链**。
-> 填了这两个变量，服务端会把真实地址注入页面。
-> **同域不同路径时直接写相对路径**（`/qdii/`、`/nt/`）最省事，换域名都不用改；跨域名才写完整 URL。
-> 留空则回退到端口推断（本机不同端口直访仍正常）。
+> **为什么端口只有一个**：两个看板是两个独立进程，本来就各占一个内部端口（5000 / 5001）。
+> 镜像里加了一层 `gateway.py`（零依赖，按路径分发），对外只暴露 **38881**：
+> `/` 与 `/nt/` 给国家队、`/qdii/` 给 QDII。所以无论是直连还是 NPM 反代，**都只需要认一个端口**。
 >
-> 如果你不用路径前缀、而是两个独立子域名，就写完整 URL：
+> **为什么要填 PEER_URL**：页头选项卡原本按「本端口 ±1」推断对端地址，走网关后这个推断失效。
+> 走网关时两个面板在同一个域名下（`/` 与 `/qdii/`），写相对路径最省事；独立子域名才写完整 URL。
 > ```dotenv
 > PEER_URL=https://qdii.你的域名
 > QDII_PEER_URL=https://radar.你的域名
@@ -85,13 +89,13 @@ chmod +x deploy.sh
 ./deploy.sh            # 等价于 docker compose up -d --build
 ```
 
-四个服务都会起：`ntt-web` / `ntt-cron` / `qdii-web` / `qdii-cron`。
+五个服务都会起：`ntt-gateway` / `ntt-web` / `ntt-cron` / `qdii-web` / `qdii-cron`。
 
 ```bash
-docker compose ps                      # 看状态
-docker compose logs -f qdii-cron       # 跟抓取日志
-curl -s http://127.0.0.1:18080/api/status   | head -c 200
-curl -s http://127.0.0.1:18081/api/qdii/status | head -c 200
+docker compose ps                                   # 看状态（gateway 应为 healthy）
+docker compose logs -f qdii-cron                    # 跟抓取日志
+curl -s http://127.0.0.1:48881/api/status      | head -c 200   # 国家队（经网关）
+curl -s http://127.0.0.1:48881/qdii/api/qdii/status | head -c 200   # QDII（经网关）
 ```
 
 - **首次启动**会用镜像内置的 `docs/data.json` 种子恢复最近 90 天历史，稍等几分钟；
@@ -102,25 +106,26 @@ curl -s http://127.0.0.1:18081/api/qdii/status | head -c 200
 
 ## 五、Nginx Proxy Manager 反代
 
-### 5.1 先选拓扑：一个域名还是两个域名
+### 5.1 拓扑：一个域名一个端口就够了
 
-| | **方案一：一个域名 + 路径前缀**（推荐） | 方案二：两个子域名 |
+镜像里带了一层 `gateway.py`，已经按路径把两个面板分好流，所以 **NPM 只需要配一个 Proxy Host、指向一个端口**：
+
+| | **方案一：一个域名（推荐）** | 方案二：两个子域名 |
 |---|---|---|
-| 国家队 | `radar.你的域名` | `radar.你的域名` |
+| 国家队 | `radar.你的域名/` | `radar.你的域名` |
 | QDII | `radar.你的域名/qdii/` | `qdii.你的域名` |
-| 页头选项卡 | 两个面板顶部都有「国家队 A股 / 全球 QDII 定投」，**点一下即在本域内切换** | 同样有选项卡，点击跳到另一个子域名 |
+| 页头选项卡 | 两个面板顶部都有，**点一下即在本域内切换** | 同样有选项卡，点击跳到另一个子域名 |
+| NPM 配置 | **1 个 Proxy Host → `gateway:38881`**，不需要 Custom Location | 2 个 Proxy Host |
 | Cloudflare DNS | 1 条 A 记录 | 2 条 A 记录 |
-| NPM Proxy Host | 1 个 + 2 个 Custom Location | 2 个 |
 | `.env` 里的 PEER_URL | 相对路径 `/qdii/`、`/nt/` | 完整 URL |
 
-两者页面体验几乎一样（都是页头选项卡），**方案一少一条 DNS、少一个证书、换域名不用改配置**，所以默认推荐。
+方案一少一条 DNS、少一个证书、换域名不用改配置，**默认就用它**。
 
-### 5.2 前置：让 NPM 能找到两个 web 容器
+### 5.2 前置：让 NPM 能找到 gateway 容器
 
 先确认 NPM 是**容器**还是**宿主机程序**（`docker ps | grep -i proxy`）。
 
-**NPM 是容器（最常见）** → 让三者共用同一 docker 网络，之后 NPM 直接用「容器名 + 容器内端口」转发，
-**完全不需要暴露 18080/18081**：
+**NPM 是容器（最常见）** → 只需把 `gateway` 这一个容器接进 NPM 的网络（两个看板留在内网，不接也一样能访问）：
 
 ```bash
 docker network create proxy          # 已存在会报错，忽略即可
@@ -130,9 +135,7 @@ docker network create proxy          # 已存在会报错，忽略即可
 
 ```yaml
 services:
-  web:
-    networks: [default, proxy]
-  qdii-web:
+  gateway:
     networks: [default, proxy]
 
 networks:
@@ -146,86 +149,69 @@ docker compose up -d                        # compose 自动合并 override
 docker network connect proxy <NPM容器名>     # 例如 npm-app
 ```
 
-**NPM 装在宿主机上（apt / 二进制）** → 跳过上面的网络步骤，直接把请求转发到 `127.0.0.1:18080 / 18081`。
+**NPM 装在宿主机上（apt / 二进制）** → 跳过上面的网络步骤，转发到 `127.0.0.1:48881` 即可。
 
-### 5.3 方案一：一个域名 + 两个选项卡（推荐）
+### 5.3 方案一：一个 Proxy Host 搞定（推荐）
 
 NPM 面板地址通常是 `http://VPS_IP:81`（首次登录 `admin@example.com` / `changeme`，**登录后立刻改**）。
-
-**第一步：建 1 个 Proxy Host**
 
 | 字段 | 填什么 |
 |---|---|
 | Domain Names | `radar.你的域名` |
 | Scheme | `http` |
-| Forward Hostname / IP | `web`（NPM 在宿主机则填 `127.0.0.1`） |
-| Forward Port | `5000`（NPM 在宿主机则填 `18080`） |
+| Forward Hostname / IP | **`gateway`**（NPM 在宿主机则填 `127.0.0.1`） |
+| Forward Port | **`38881`**（NPM 在宿主机则填 `48881`） |
 | Block Common Exploits | ✅ |
 | Websockets Support | ✅（ECharts 不需要，开着无害） |
+| SSL | 见第六节 |
 
-保存后访问 `https://radar.你的域名` 应该直接是国家队看板。
+**不要配 Custom Location** —— 路径分发已经由网关做掉了：
+`/` 与 `/nt/` → 国家队（容器 5000），`/qdii/` → QDII（容器 5001）。
 
-**第二步：给这个 Proxy Host 加 2 个 Custom Location**
+保存后：
 
-打开该 Proxy Host → 上方 **Custom Locations** 标签 → Add location：
+- `https://radar.你的域名/` → 国家队看板
+- `https://radar.你的域名/qdii/` → QDII 面板
+- 两边页头都有选项卡，点一下直接切
 
-| | Location #1（QDII 面板） | Location #2（国家队别名，可选） |
-|---|---|---|
-| Define Location | `/qdii` | `/nt` |
-| Scheme | `http` | `http` |
-| Forward Hostname / IP | `qdii-web` | `web` |
-| Forward Port | `5001` | `5000` |
-| **Forward Path** | **`/`** ← 关键 | **`/`** |
-| 齿轮里的 rewrite / 其它 | 不勾 | 不勾 |
-
-> **Forward Path 填一个斜杠 `/` 就是「把 `/qdii` 前缀剥掉再转给后端」**：
-> `/qdii/api/qdii/status` → `qdii-web:5001/api/qdii/status`。
-> 别写成 `/qdii` —— 那是「把前缀换成 /qdii」，会变成 `/qdii/api/...` 再打一次，反而多套一层。
->
-> **如果你的 NPM 版本没有 Forward Path 字段**：留空即可（前缀会原样透传给后端），
-> 然后在 `.env` 里补上 `QDII_BASE_PATH=/qdii`（`/nt` 那条补 `BASE_PATH=/nt`），
-> 服务端会自己把前缀剥掉。页面前端已按当前路径自动拼接口地址，两种方式都能跑。
-
-**第三步：`.env` 里配对端地址**
+`.env` 保持默认的相对路径即可：
 
 ```dotenv
 PEER_URL=/qdii/      # 国家队页的「全球 QDII 定投」选项卡 → /qdii/
-QDII_PEER_URL=/nt/   # QDII 页的「国家队 A股」选项卡 → /nt/（走 Location #2，也可写 /）
+QDII_PEER_URL=/nt/   # QDII 页的「国家队 A股」选项卡 → /nt/
 ```
 
 ```bash
-docker compose up -d     # 让新的环境变量生效
+docker compose up -d     # 让环境变量生效
 ```
 
-刷新页面，两个面板顶部都会出现选项卡，当前所在面板高亮，点另一个直接切换。
-
-> **为什么页头选项卡能跨路径**：页面里所有接口请求（`/api/data`、`/api/qdii/*`）都会自动带上
-> 「当前页面所在路径」作为前缀 —— 在 `/` 下请求 `/api/...`，在 `/qdii/` 下请求 `/qdii/api/...`。
-> 所以**不需要**给两个应用配额外的 URL 前缀参数，本地 `localhost:5000/5001` 直连行为完全不变。
+> **为什么这样最省事**：网关负责剥前缀，页面里的接口请求又会按「当前访问路径」自动拼前缀
+> （在 `/qdii/` 下请求 `/qdii/api/...`），两边一夹，后端不需要任何额外配置。
+> 因此也不存在「NPM 的 Forward Path 填 `/` 还是空」这类坑。
 
 ### 5.4 方案二：两个子域名
 
-建 2 个 Proxy Host，不配 Custom Location：
+仍指向同一个网关，只是路径不同、域名不同：
 
 | | Proxy Host #1（国家队） | Proxy Host #2（QDII） |
 |---|---|---|
 | Domain Names | `radar.你的域名` | `qdii.你的域名` |
-| Scheme | `http` | `http` |
-| Forward Hostname / IP | **`web`** | **`qdii-web`** |
-| Forward Port | **`5000`** | **`5001`** |
-| Block Common Exploits | ✅ | ✅ |
-| Websockets Support | ✅ | ✅ |
-| SSL | 见第六节 | 见第六节 |
+| Forward Hostname / IP | `gateway` | `gateway` |
+| Forward Port | `38881` | `38881` |
+| Forward Path（自定义路径） | `/` | **`/qdii`** |
 
-> 这里填的是**容器内端口 5000 / 5001**，不是 18080/18081 —— NPM 与 web 容器在同一网络里时按容器名寻址。
-> `.env` 里则写完整 URL：`PEER_URL=https://qdii.你的域名`、`QDII_PEER_URL=https://radar.你的域名`。
+> 这样 `https://qdii.你的域名/` 实际打到网关的 `/qdii/`。
+> 若 NPM 版本不支持 Forward Path，也可改成直接代理到后端容器：
+> `qdii-web` + `5001`（此时 `.env` 里设 `QDII_BASE_PATH=`，保持空）。
+>
+> `.env` 里则要写完整 URL：`PEER_URL=https://qdii.你的域名`、`QDII_PEER_URL=https://radar.你的域名`。
 
 ### 5.5 NPM 不在同一网络时的填法
 
 | 场景 | Forward Hostname / IP | Forward Port |
 |---|---|---|
-| NPM 装在宿主机（apt / 二进制） | `127.0.0.1` | `18080` / `18081` |
-| NPM 是容器，但**不在** `proxy` 网络 | **宿主机内网 IP** | `18080` / `18081` |
+| NPM 装在宿主机（apt / 二进制） | `127.0.0.1` | `48881` |
+| NPM 是容器，但**不在** `proxy` 网络 | **宿主机内网 IP** | `48881` |
 
 宿主机内网 IP 用 `hostname -I | awk '{print $1}'` 查（通常 `172.17.0.1` 或 `10.x.x.x`）。
 
@@ -280,11 +266,12 @@ docker run --rm -v invest-radar_ntt-data:/data -v "$PWD":/backup alpine \
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 访问域名 502 | 容器没起 / NPM 填错端口 | `docker compose ps`；NPM 的 Forward Port 填**容器内端口**（同网络）或宿主映射端口（宿主机/跨网络） |
-| 页头选项卡不出现 | 没配 `PEER_URL` / `QDII_PEER_URL`，且端口推断失效 | `.env` 写 `/qdii/`、`/nt/` 后 `docker compose up -d` |
-| 选项卡能点但 404 | Custom Location 的 Location 名与 `PEER_URL` 不一致 | 例如 Location 建的是 `/qdii`，`PEER_URL` 却写 `/qdii-panel/` |
-| `/qdii/` 打开是空白/接口全 404 | Forward Path 没填，且没设 `QDII_BASE_PATH` | Forward Path 填 `/`；或 `.env` 设 `QDII_BASE_PATH=/qdii` |
-| `/qdii/api/...` 返回另一个面板的数据 | Forward Path 留空、后端也不剥前缀 → 命中根 location | 同上 |
+| 访问域名 502 | 容器没起 / NPM 填错端口 | `docker compose ps` 看 `ntt-gateway` 是否 healthy；NPM 的 Forward Port 应为 **38881**（同网络）或 **48881**（宿主机/跨网络） |
+| 502 且页面提示「无法连接上游」 | 网关起来了但后端没起 | 网关会把目标地址和原因写在响应里，照着查 `ntt-web` / `qdii-web` 是否 healthy |
+| 页头选项卡不出现 | 没配 `PEER_URL` / `QDII_PEER_URL`，端口推断又失效 | `.env` 写 `/qdii/`、`/nt/` 后 `docker compose up -d` |
+| `/qdii/` 打开是 404 | `qdii-web` 没起来，或改过 `QDII_PREFIX` | `docker compose ps`；默认前缀就是 `/qdii` |
+| `/qdii/api/...` 打到国家队的数据 | 网关的 `QDII_PREFIX` 与 `PEER_URL` 不一致 | 两者保持一致（默认都 `/qdii`） |
+| 直连 `IP:48881` 打不开 | 防火墙/安全组没放行，或 `GATEWAY_HOST_PORT` 被占 | 放行 48881；`./deploy.sh --port 50080` 换端口 |
 | 证书签不下来 | 80 端口被占 / DNS 未生效 | 临时灰云再签，或改用 Cloudflare Origin Certificate |
 | 一直重定向 / 502 | Cloudflare SSL 模式是 Flexible | 改成 **Full (strict)** |
 | 页面有数据但很旧 | cron 容器没跑 | `docker compose logs qdii-cron`；确认 `TZ=Asia/Shanghai` |

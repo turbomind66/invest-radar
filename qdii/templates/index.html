@@ -219,7 +219,8 @@ async function api(path){
 
 // 面板互跳：QDII ↔ 国家队。
 //   ① PEER_URL 显式指定（域名反代：可写完整 URL，也可写同域相对路径 /nt/）；
-//   ② 未配置则回退「本端口 -1」（5001→5000，容器映射 18081→18080）；
+//   ② 未配置则回退「本端口 -1」（只在本地分别起 5001/5000 时有效；
+//      容器部署走 gateway 单端口，请务必设 PEER_URL）；
 //   ③ Pages 静态站 / file:// 没有对端服务 → 整条选项卡隐藏，不给死链。
 (function initPeerTab(){
   const a = el('peerTab');

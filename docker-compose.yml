@@ -1,16 +1,55 @@
 # 国家队买卖A股日报 + 海外QDII定投决策面板 —— Docker Compose 编排
 #
-# 四个服务共用同一个镜像与同一个数据卷：
-#   ntt-web     : 国家队看板页面 + /api/data（对外提供访问）
+# 五个服务共用同一个镜像与同一个数据卷：
+#   gateway     : 单端口入口（容器 38881 / 宿主 48881）—— 对外只暴露这一个端口，
+#                 把 / 与 /nt/ 分发到国家队、/qdii/ 分发到 QDII
+#   ntt-web     : 国家队看板页面 + /api/data（内部端口 5000，不对外映射）
 #   ntt-cron    : 国家队定时抓取（06:00/17:10 全量，盘中逐笔采样）
-#   qdii-web    : QDII 决策看板 + /api/qdii/*
+#   qdii-web    : QDII 决策看板 + /api/qdii/*（内部端口 5001，不对外映射）
 #   qdii-cron   : QDII 定时抓取（双日历：A股交易日 09:00 限额/费率/跟踪误差，
 #                 美股交易日 14:30 信号，A股交易日 14:30 溢价）
+#
+# 一个端口看两个面板：
+#   http://<host>:48881/        国家队看板（页头选项卡可切到 QDII）
+#   http://<host>:48881/qdii/   QDII 面板
 #
 # 一键启动：  docker compose up -d --build
 # 查看状态：  docker compose ps
 # 查看日志：  docker compose logs -f qdii-cron
 services:
+  # ===== 单端口入口 =====
+  gateway:
+    build: .
+    image: invest-radar:latest
+    container_name: ntt-gateway
+    environment:
+      APP_ROLE: gateway
+      TZ: ${TZ:-Asia/Shanghai}
+      GATEWAY_PORT: ${GATEWAY_PORT:-38881}
+      # 上游按容器名寻址（compose 内网），端口是**容器内部端口**
+      NT_UPSTREAM: http://web:${PORT:-5000}
+      QDII_UPSTREAM: http://qdii-web:${QDII_PORT:-5001}
+      QDII_PREFIX: ${QDII_PREFIX:-/qdii}
+      NT_PREFIX: ${NT_PREFIX:-/nt}
+    ports:
+      # 公网/宿主机只需这一个端口：48881 -> 容器 38881
+      - "${GATEWAY_HOST_PORT:-48881}:${GATEWAY_PORT:-38881}"
+    depends_on:
+      - web
+      - qdii-web
+    restart: unless-stopped
+    init: true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 96M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   web:
     build: .
     image: invest-radar:latest
@@ -25,11 +64,13 @@ services:
       # 对端面板地址（页头选项卡互跳）：同域不同路径时可直接写相对路径（/qdii/），
       # 跨域名写完整 URL；留空则回退「本端口 +1」推断。
       PEER_URL: ${PEER_URL:-}
-      # 站点路径前缀：NPM 反代若保留前缀不剥（如 /nt），在这里声明；默认空=不剥。
+      # 站点路径前缀：一般不需要（gateway 会剥掉 /nt /qdii 前缀）；
+      # 只有绕过 gateway、由 NPM 直接代理到本容器且保留前缀时才需要。
       BASE_PATH: ${BASE_PATH:-}
-    ports:
-      # 宿主机端口可改，避免与服务器上已有的服务冲突
-      - "${HOST_PORT:-18080}:${PORT:-5000}"
+    # 端口不对外映射：统一由 gateway 的 38881 入口访问。
+    # 临时排障需要直连时再解开下面两行（改成不冲突的宿主端口）。
+    # ports:
+    #   - "18080:${PORT:-5000}"
     volumes:
       - ntt-data:/app/data
     restart: unless-stopped
@@ -92,11 +133,11 @@ services:
       NT_QDII_DB_PATH: /app/data/qdii.db
       # 对端面板地址（QDII → 国家队看板），可写相对路径 /nt/ 或完整 URL
       PEER_URL: ${QDII_PEER_URL:-}
-      # 站点路径前缀（同 web 的 BASE_PATH，QDII 常挂 /qdii）
+      # 站点路径前缀（同 web 的 BASE_PATH，一般留空）
       BASE_PATH: ${QDII_BASE_PATH:-}
-    ports:
-      # 默认 18081，与国家队 web 的 18080 错开
-      - "${QDII_HOST_PORT:-18081}:${QDII_PORT:-5001}"
+    # 端口不对外映射：统一由 gateway 的 38881 入口访问（/qdii/）
+    # ports:
+    #   - "18081:${QDII_PORT:-5001}"
     volumes:
       - ntt-data:/app/data
     restart: unless-stopped

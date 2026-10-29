@@ -21,7 +21,7 @@ jobs:
         run: |
           python -m py_compile national_team/app.py national_team/db.py national_team/fetcher.py \
             national_team/backfill.py national_team/staticsite.py
-          python -m py_compile qdii/*.py common/*.py docker/healthcheck.py
+          python -m py_compile qdii/*.py common/*.py docker/healthcheck.py gateway.py
 
       - name: 数据层单元测试（离线）
         run: python -m unittest discover -s national_team/tests -p "test_*.py" -v

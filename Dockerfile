@@ -5,6 +5,7 @@ FROM python:3.12-slim-bookworm
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Shanghai \
+    GATEWAY_PORT=38881 \
     PORT=5000 \
     NT_DB_PATH=/app/data/data.db \
     QDII_PORT=5001 \
@@ -35,6 +36,8 @@ COPY --chown=appuser:appuser qdii/templates ./qdii/templates
 COPY --chown=appuser:appuser common ./common
 # docs/data.json 是"种子数据"：空库首启会自动从中恢复最近 90 天历史，无需重新回补
 COPY --chown=appuser:appuser docs ./docs
+# 单端口入口：把 / 与 /qdii/ 分发到两个看板（对外只暴露 38881）
+COPY --chown=appuser:appuser gateway.py ./gateway.py
 COPY --chown=appuser:appuser docker/entrypoint.sh ./docker/entrypoint.sh
 COPY --chown=appuser:appuser docker/healthcheck.py ./docker/healthcheck.py
 
@@ -43,13 +46,13 @@ RUN mkdir -p /app/data \
     && chmod +x /app/docker/entrypoint.sh
 
 USER appuser
-# 5000 = 国家队看板，5001 = QDII 看板（同一镜像，按 APP_ROLE 决定实际监听哪个）
-EXPOSE 5000 5001
+# 38881 = 单端口入口（对外只暴露它）；5000/5001 = 两个看板的内部端口（仅容器网络内可见）
+EXPOSE 38881 5000 5001
 
 # 数据目录：务必用命名卷或宿主机目录挂载，否则重建容器后历史数据会丢
 VOLUME ["/app/data"]
 
-# /api/status（国家队）与 /api/qdii/status（QDII）任一可达即健康
+# gateway 容器探 38881；两个 web 容器探各自的 5000/5001（脚本内逐个试，任一 200 即健康）
 HEALTHCHECK --interval=60s --timeout=10s --start-period=45s --retries=3 \
     CMD python /app/docker/healthcheck.py
 

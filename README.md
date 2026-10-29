@@ -124,17 +124,22 @@ python qdii/qdii_app.py
 
 把看板搬自己的 Debian / Ubuntu 服务器上：数据自主可控、不受 GitHub Actions 停用影响，盘中采样想加几个点就加几个点。**2 核 2G 这类小规格也能跑**（已给容器设资源上限，与其它服务共存无压力）。
 
-### 方式一：Docker Compose（推荐，四个容器各司其职）
+### 方式一：Docker Compose（推荐，五个容器 · 对外只有一个端口）
 
 ```bash
 git clone https://github.com/turbomind66/invest-radar.git
 cd invest-radar
 
-cp .env.example .env     # 按需改 HOST_PORT（默认 18080，避免与其它服务冲突）
+cp .env.example .env     # 端口已固定：对外 48881（容器内 38881），一般不用改
 ./deploy.sh              # 一键：检查环境 → 生成 .env → 构建 → 启动 → 自检
 ```
 
-脚本跑完会打印访问地址。等价的手动命令：`docker compose up -d --build`。
+脚本跑完会打印访问地址：
+
+- 国家队看板 `http://<服务器IP>:48881/`
+- QDII 面板 `http://<服务器IP>:48881/qdii/`
+
+两边页头都有选项卡，点一下即切换。等价的手动命令：`docker compose up -d --build`。
 
 > 服务器还没装 Docker？`./deploy.sh --install-docker` 会自动安装（含 compose 插件）。
 > 当前用户不在 docker 组时用 `sudo ./deploy.sh`。
@@ -146,7 +151,7 @@ docker build -t invest-radar:latest .
 
 docker run -d --name ntt --restart unless-stopped --init \
   -e APP_ROLE=all -e TZ=Asia/Shanghai -e NT_DB_PATH=/app/data/data.db \
-  -p 18080:5000 \
+  -p 48881:38881 \
   -v ntt-data:/app/data \
   --memory=320m --cpus=0.75 \
   invest-radar:latest
@@ -154,16 +159,21 @@ docker run -d --name ntt --restart unless-stopped --init \
 
 也可以直接 `./deploy.sh --run`，脚本会按上面的参数起好。
 
-### 四个容器各自干什么
+### 五个容器各自干什么
 
-两个模块共用同一镜像与数据卷，共 4 个容器：
+两个模块共用同一镜像与数据卷，共 5 个容器，但**只有 gateway 映射端口**：
 
 | 容器 | 角色 | 职责 | 端口 |
 |---|---|---|---|
-| `ntt-web` | `APP_ROLE=web` | 国家队看板 + `/api/data`（不自己抓数，避免与定时任务抢写锁） | `${HOST_PORT}` → 5000 |
+| `ntt-gateway` | `APP_ROLE=gateway` | **单端口入口**：`/` 与 `/nt/` → 国家队，`/qdii/` → QDII | `${GATEWAY_HOST_PORT:-48881}` → **38881** |
+| `ntt-web` | `APP_ROLE=web` | 国家队看板 + `/api/data`（不自己抓数，避免与定时任务抢写锁） | 5000（仅容器内） |
 | `ntt-cron` | `APP_ROLE=cron` | 国家队调度：完整同步 + 盘中逐笔采样 | 无 |
-| `qdii-web` | `APP_ROLE=qdii-web` | QDII 看板 + `/api/qdii/*` | `${QDII_HOST_PORT}` → 5001 |
+| `qdii-web` | `APP_ROLE=qdii-web` | QDII 看板 + `/api/qdii/*` | 5001（仅容器内） |
 | `qdii-cron` | `APP_ROLE=qdii-cron` | QDII 调度：双日历抓取 | 无 |
+
+> 为什么要一个网关：两个看板是两个独立进程，本来就各占一个端口。加一层 `gateway.py`（同样零依赖、十几行逻辑）
+> 后，**对外只认 38881**，页头选项卡才能用相对路径 `/qdii/` 互跳，也不会出现「前缀没剥干净、请求打到另一个面板」的串台。
+> 本地不用 Docker 时直接 `python national_team/app.py`（5000）+ `python qdii/qdii_app.py`（5001）即可，行为不变。
 
 调度器是纯标准库实现（不装 cron），日志直接进 stdout：`docker compose logs -f cron`。
 
@@ -183,11 +193,13 @@ docker run --rm -v ntt-data:/data -v "$PWD":/backup \
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `HOST_PORT` | `18080` | 宿主机映射端口，与服务器上其它服务冲突时改它 |
-| `PORT` | `5000` | 容器内监听端口 |
+| `GATEWAY_HOST_PORT` | `48881` | **对外唯一端口**（宿主机）。换端口：`./deploy.sh --port 50080` 或改 `.env` |
+| `GATEWAY_PORT` | `38881` | 网关在容器内监听的端口，映射到上面那个 |
+| `PORT` | `5000` | 国家队看板内部端口（不对外映射，别改） |
+| `QDII_PORT` | `5001` | QDII 看板内部端口（不对外映射，别改） |
 | `TZ` | `Asia/Shanghai` | **不要改**：调度时间点与交易日判定都按北京时间 |
 | `NT_DB_PATH` | `/app/data/data.db` | 数据库路径，必须指向挂载卷 |
-| `APP_ROLE` | `all` | `web` / `cron` / `all`（单容器模式用 all） |
+| `APP_ROLE` | `all` | `gateway` / `web` / `cron` / `qdii-web` / `qdii-cron` / `all`（单容器用 all） |
 | `NT_AUTO_ENSURE` | `1` | 展示实例是否自行抓数。Compose 模式固定 `0`（交给 cron）；单容器保持 `1` |
 | `SCHED_FULL_TIMES` | `06:00,17:10` | 完整同步时间点 |
 | `SCHED_TICK_TIMES` | `10:30,11:30,14:00,14:50` | 盘中逐笔大单采样时间点（想更密集可直接加） |
@@ -199,9 +211,9 @@ docker run --rm -v ntt-data:/data -v "$PWD":/backup \
 
 ### 资源占用与共存
 
-- 容器上限：web `0.5 核 / 256M`，cron `0.25 核 / 192M`；抓取只在定时任务那几秒有开销，其余时间几乎不占资源。
+- 容器上限：gateway `0.25 核 / 96M`、web `0.5 核 / 256M`、cron `0.25 核 / 192M`；抓取只在定时任务那几秒有开销，其余时间几乎不占资源。
 - 日志已配轮转（单文件 10M、保留 3 个），不会把小硬盘写满。
-- 端口默认 `18080`，服务器上已有服务占用时改 `.env` 的 `HOST_PORT` 即可。
+- 对外端口默认 `48881`，与服务器上已有服务冲突时 `./deploy.sh --port 50080` 即可。
 
 ### 常用运维
 
@@ -216,7 +228,7 @@ git pull && ./deploy.sh           # 升级（重新构建并启动，数据卷�
 
 ### Nginx 反向代理（可选，配 HTTPS）
 
-**一个域名 + 两个选项卡**（推荐）：`/` 给国家队，`/qdii/` 给 QDII，两个面板页头都有选项卡互切。
+网关已经按路径分好流，**反代只需指向 48881 一个上游**，不用再写 location：
 
 ```nginx
 server {
@@ -224,32 +236,20 @@ server {
     server_name radar.example.com;
 
     location / {
-        proxy_pass http://127.0.0.1:18080;
+        proxy_pass http://127.0.0.1:48881;          # 网关：/ → 国家队，/qdii/ → QDII
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-    }
-
-    # 注意 proxy_pass 结尾的 `/`：它会把 /qdii 前缀剥掉再转给后端
-    location = /qdii { return 301 /qdii/; }
-    location /qdii/ {
-        proxy_pass http://127.0.0.1:18081/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-
-    # 可选：给国家队一个同级别前缀，让页头选项卡地址对称（PEER_URL=/qdii/、QDII_PEER_URL=/nt/）
-    location = /nt { return 301 /nt/; }
-    location /nt/ {
-        proxy_pass http://127.0.0.1:18080/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
     }
 }
 ```
 
-配好后在 `.env` 里设置 `PEER_URL=/qdii/`、`QDII_PEER_URL=/nt/` 并 `docker compose up -d`。
-若反代是**保留**前缀的写法（`proxy_pass http://127.0.0.1:18081;` 不带结尾斜杠），
-则改设 `QDII_BASE_PATH=/qdii`、`BASE_PATH=/nt`，由服务端剥前缀。
+`.env` 里保持 `PEER_URL=/qdii/`、`QDII_PEER_URL=/nt/`（页头选项卡走相对路径，换域名不用改）。
+
+> 若因为某种原因要**绕过网关**、直接反代到两个内部端口，则必须自己处理前缀：
+> `location /qdii/ { proxy_pass http://127.0.0.1:18081/; }`（结尾斜杠 = 剥前缀），
+> 或者在保留前缀的写法下给容器设 `QDII_BASE_PATH=/qdii`。
 
 > 用 Nginx Proxy Manager 图形界面的完整步骤见 [`VPS部署与反代指南.md`](VPS部署与反代指南.md) 第五节。
 
@@ -260,8 +260,10 @@ server {
 | 页面能开但没数据 | 首次同步需要几分钟，`docker compose logs -f cron` 看进度 |
 | 定时任务时间不对 | 容器时区必须为 `Asia/Shanghai`（镜像已装 `tzdata` 并设好） |
 | 重启后数据没了 | 卷没挂上；`docker volume inspect ntt-data` 确认，别把 `NT_DB_PATH` 指到容器可写层 |
-| 端口起不来 | `HOST_PORT` 被占用，换一个（脚本启动时会检测并提示） |
-| 外网打不开 | 服务器防火墙 / 云厂商安全组需放行 `HOST_PORT` |
+| 访问 502 且提示「无法连接上游」 | 网关起来了但后端没起；`docker compose ps` 看 `ntt-web` / `qdii-web` 是否 healthy |
+| 端口起不来 | `48881` 被占用，`./deploy.sh --port 50080` 换一个 |
+| 外网打不开 | 服务器防火墙 / 云厂商安全组需放行 `48881`（对外只这一个端口） |
+| `/qdii/` 打开是 404 | 网关的 `QDII_PREFIX` 与实际路径不一致（默认 `/qdii`），或 qdii-web 没起来 |
 
 ## 数据源与口径
 
@@ -430,12 +432,13 @@ QDII 场外基金受外汇额度限制，**天天变化**：同一只基金在�
 ## Docker：与国家队共存在同一份 Compose
 
 ```bash
-docker compose up -d --build   # 一次性起 4 个服务
+docker compose up -d --build   # 一次性起 5 个服务
 ```
 
 | 容器 | 角色 | 职责 | 端口 |
 |---|---|---|---|
-| `qdii-web` | `APP_ROLE=qdii-web` | QDII 看板 + `/api/qdii/*`（只展示） | `${QDII_HOST_PORT:-18081}` → 5001 |
+| `ntt-gateway` | `APP_ROLE=gateway` | 单端口入口，`/qdii/` 分发到 QDII | `${GATEWAY_HOST_PORT:-48881}` → 38881 |
+| `qdii-web` | `APP_ROLE=qdii-web` | QDII 看板 + `/api/qdii/*`（只展示） | 5001（仅容器内） |
 | `qdii-cron` | `APP_ROLE=qdii-cron` | 双日历调度抓取 | 无 |
 
 两个模块**共用镜像与数据卷**（`ntt-data`），但数据库文件独立（`data.db` / `qdii.db`），互不干扰。
@@ -444,8 +447,8 @@ docker compose up -d --build   # 一次性起 4 个服务
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `QDII_PORT` | `5001` | QDII Web 容器内端口 |
-| `QDII_HOST_PORT` | `18081` | 宿主机映射端口 |
+| `QDII_PORT` | `5001` | QDII Web 容器内端口（不对外映射） |
+| `QDII_PREFIX` | `/qdii` | 网关分发 QDII 的路径前缀 |
 | `QDII_SCHED_LIMITTIMES` | `09:00` | 限额/费率/跟踪误差（A 股交易日） |
 | `QDII_SCHED_SIGNALTIME` | `14:30` | 美股信号（美股交易日） |
 | `QDII_SCHED_PREMIUMTIME` | `14:30` | 场内溢价（A 股交易日） |
@@ -493,7 +496,7 @@ docker compose up -d --build   # 一次性起 4 个服务
 
 完整版本说明见 [Releases](https://github.com/turbomind66/invest-radar/releases)。
 
-- **（待发版）** — 一个域名两个面板：① 两个面板页头改为**选项卡**（「国家队 A股 / 全球 QDII 定投」），当前面板高亮、点另一个直接切换，取代原先的「→ 跳到对端」按钮；`PEER_URL` 现在支持**同域相对路径**（`/qdii/`、`/nt/`），换域名不用改配置；② 页面内所有接口请求改为**按当前访问路径自动拼前缀**（在 `/` 下请求 `/api/...`，在 `/qdii/` 下请求 `/qdii/api/...`），因此可以用 NPM/nginx 的路径反代把两个面板挂到同一域名下，**本地 `localhost:5000/5001` 直连行为完全不变**；③ 新增 `BASE_PATH` / `QDII_BASE_PATH` 环境变量，反代若保留前缀（不透传剥除）则由服务端剥掉再匹配路由；④ `VPS部署与反代指南.md` 重写第五节，给出「一个域名 + 路径前缀」与「两个子域名」两套 NPM 配置（含 Custom Location 与 Forward Path 的坑），README 补充等价的 nginx 配置样例。
+- **（待发版）** — 一个域名两个面板：① 两个面板页头改为**选项卡**（「国家队 A股 / 全球 QDII 定投」），当前面板高亮、点另一个直接切换，取代原先的「→ 跳到对端」按钮；`PEER_URL` 现在支持**同域相对路径**（`/qdii/`、`/nt/`），换域名不用改配置；② 页面内所有接口请求改为**按当前访问路径自动拼前缀**（在 `/` 下请求 `/api/...`，在 `/qdii/` 下请求 `/qdii/api/...`），因此可以用 NPM/nginx 的路径反代把两个面板挂到同一域名下，**本地 `localhost:5000/5001` 直连行为完全不变**；③ 新增 `BASE_PATH` / `QDII_BASE_PATH` 环境变量，反代若保留前缀（不透传剥除）则由服务端剥掉再匹配路由；④ `VPS部署与反代指南.md` 重写第五节，给出「一个域名 + 路径前缀」与「两个子域名」两套 NPM 配置（含 Custom Location 与 Forward Path 的坑），README 补充等价的 nginx 配置样例；⑤ **端口收敛为单一入口**：新增 `gateway.py`（零依赖反向代理，容器 38881 / 宿主 48881），按路径把 `/`、`/nt/` 分给国家队、`/qdii/` 分给 QDII，两个看板的内部端口（5000/5001）不再对外映射；NPM 因此**只需一个 Proxy Host**，不必再配 Custom Location，也不会出现「前缀没剥干净、请求打到另一个面板」的串台；`HOST_PORT` / `QDII_HOST_PORT` 退役，改为 `GATEWAY_HOST_PORT` / `GATEWAY_PORT`。
 - **v2.3.0** — 覆盖扩容与面板重构：① **基金池从 11 只扩到 59 只、大类从 4 个扩到 6 个**（新增法国CAC40、英国富时100，原有日经225/德国DAX 一并纳入完整链路）——代码与简称取自天天基金全量表，**跟踪标的逐只核对 F10「跟踪标的」字段**确认（不靠名字猜），场内对应 ETF 按「同公司同指数」反查，**28 只没有对应 ETF 的留空不硬配**，LOF 的 C 类份额因场内代码属 A 类也留空；② **「美股信号」改名「全球市场信号」**（分美股/亚太/欧洲/利率 4 组）——每个大类现在都有**自有信号**：纳指综合指数、标普500、日经225期货、德国DAX/法国CAC40（取不到海外指数现货，改用**境内对应场内 ETF 实时价代理**）、英国富时100（连境内 ETF 都没有，用美股 `usEWU` 代理）；**代理口径一律在名称与类型标签里写明，不冒充指数**；分组与标签由后端统一下发，将来加市场只改常量；③ **申购状态+限额与多平台费率合并为「④ 基金总览」表**（一只基金一个行块，固定年费属合同条款故提到基金级只列一次，真正按平台变的只有「在售」与「申购费」），限大额但单日不足 100 元的打「**变相暂停**」徽标（阈值与决策引擎一致）；④ **跟踪误差并入 ④ 表**并可排序（原独立的 ⑤ 跟踪误差卡片取消），基准改按大类配置、新浪外盘期货日K 兜底，**日经225 终于有跟踪误差**；⑤ 表头**两级排序**：点基金级列改「哪只基金在前」，点平台级列**只调整同一只基金内部各平台行的先后、各基金顺序不变**，排序在后端做、状态写入 URL；⑥ **长表格固定高度 + 内部滚动 + 表头 sticky 锁定**，页面高度大幅压缩；⑦ 修复「删除对象后旧行残留」导致页面同时显示新旧类别、统计只数偏大的问题（五张表统一写完即清理）；⑧ 规模扩大 6 倍后**抓取全面并发**（费率 8 线程、跟踪误差预取基准+6 线程），单轮抓取从十几分钟降到秒级。
 - **v2.2.1** — 面板整合与可排序：① **美股信号恢复 VIX 并新增 10 年期美债收益率（实时）**，两者**并列展示、并列参与避险判断**——VIX 看「市场已经恐慌到什么程度」（日频 CBOE 收盘，绝对水平 >30 硬触发、20~30 预警、单日跳升 ≥20% 提示急变），美债10Y 看「无风险利率是否在跳升」（实时 CNBC，单日上行 >30bp 硬触发、+15~30bp 提示逼近），两个判据维度不同不能加权平均，任一触发即倍数 ×0.5 且**同时触发只乘一次不叠加**；收益率涨跌一律用 **bp**（4.00%→4.04% 是 +4bp，不是 +1%）；② 修掉避险判据的**归因 bug**——旧代码把两者塞进一句话且只输出 VIX 数值，于是美债触发时会写「避险升温（VIX 15.0）→ ×0.5」，一个低于 30 阈值的数字却把仓位减半，看着就是算错，现改为谁触发写谁；③ 新增 `strategy.risk_off_assess()` 统一逐基金与大类决策的避险判断，未触发时也写当日实际取值，便于核对策略到底有没有在用它；④ 修复定投决策**柱状图纵轴名「倍数」被裁**（grid.top 太小 + yAxis.max 恰好等于最大值），并给柱顶加数值标签；⑤ **申购状态 + 限额**与**多平台费率矩阵合并为一张「基金总览」表**（一只基金一个行块，代码/名称/类别/状态/日限额/起购/固定年费纵向合并，右侧跟各平台「在售 + 申购费」行），新增 `qdii/board.py` 与 `/api/qdii/board`；**固定年费（管理费/托管费/销售服务费）是基金合同条款、各平台完全一致 → 提到基金级只列一次**，真正按平台变的只有「在售」与「申购费」；限大额但单日不足 100 元的打「变相暂停」徽标（阈值与决策引擎一致）；⑥ 费率矩阵补「**基金名称**」列，代码与名称纵向合并、平台顺序固定；⑦ 基金总览表头**两级排序**——点类别/申购状态/日限额/下一开放日/起购/管理费/托管费/销售服务费/年费合计改变「哪只基金在前」，点平台/在售/申购费**只调整同一只基金内部各平台行的先后、各基金顺序不变**；排序在后端做（口径唯一、可单测），状态写入 URL，刷新不丢。
 - **v2.2.0** — 口径细化：① 定投决策改按**大类**（纳斯达克100 / 标普500 / 日经225 / 德国DAX）输出「可买情况 + 建议倍数 + 理由」，去掉建议金额与具体基金——同一大类下各家基金同涨同跌，差别只在费率与限额；金额随各人基准额变化，倍数才是结论；② 美股信号把「纳指100」换成口语真正所指的**纳斯达克综合指数**（`usIXIC`，与纳指100 差约 10%），期货标注「纳指期货」；③ 场内溢价表改为**按场内 ETF 逐只计算**（10 只），补上此前从未进过表、却最该看的广发 **159941**；④ 新增「**折算溢价**」列——把 T+1 滞后的净值按该指数涨幅折算到最新收盘日，剔除滞后误差，实测纳指类折算后仍 13%~15%，说明高溢价的成因是 QDII 额度紧张而非数据滞后；⑤ 修复 VIX 死数据（腾讯 `usVIX` 自 2026-09-15 起不再更新），改用 CBOE 官方日收盘 CSV；⑥ 修复 ECharts 柱子不识别 CSS 变量、倍数柱全画成默认灰的配色问题。
