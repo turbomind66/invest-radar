@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 国家队买卖A股日报 —— Debian / Ubuntu VPS 一键部署脚本
+# invest-radar（国家队看板 + QDII 决策面板） —— Debian / Ubuntu VPS 一键部署脚本
 #
 # 用法：
 #   ./deploy.sh                    # Docker Compose 部署（默认，推荐）
@@ -14,7 +14,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${REPO_DIR}"
 
-IMAGE="ashare-national-team-tracker:latest"
+IMAGE="invest-radar:latest"
 VOLUME="ntt-data"
 MODE="compose"
 INSTALL_DOCKER=0
