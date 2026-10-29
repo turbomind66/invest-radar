@@ -2,10 +2,12 @@
 import sqlite3
 import os
 
-# 数据库路径：默认应用目录下 data.db。
+# 数据库路径：默认**仓库根目录**下 data.db。
+# ⚠️ 不要改回「本文件所在目录」：拆分为 national_team/ 三层结构后，历史库仍留在仓库根，
+#    按文件目录推导会新建一个空库，导致页面历史「凭空消失」（2026-10-29 踩过）。
 # 容器化部署时用 NT_DB_PATH 指向挂载的数据卷——否则 SQLite 会写进容器可写层，重建容器即丢。
-DB_PATH = os.environ.get("NT_DB_PATH") or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "data.db")
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.environ.get("NT_DB_PATH") or os.path.join(_PROJECT_ROOT, "data.db")
 
 # 四档资金流净额（元）：主力净 = 大单净 + 超大单净（东财口径，已勾稽验证）。
 # 解决「分时图大额买入被主力净额口径对冲/拆单吞掉」的问题。

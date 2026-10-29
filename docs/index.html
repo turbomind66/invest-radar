@@ -121,7 +121,7 @@
     .fresh .hint{display:none}.fresh .t{font-size:14.5px}.fresh .t b{font-size:15px}
   }
 </style>
-<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-29 06:49:42"};</script>
+<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-29 14:38:39"};</script>
 </head>
 <body>
 <div class="wrap">
@@ -130,6 +130,8 @@
       <h1>🛡️ 国家队买卖A股日报 <span class="tag">宽基ETF主力净流入代理</span></h1>
     </div>
     <div class="meta">
+      <a class="btn ghost" id="peerLink" href="#" title="同一主机的 QDII 面板（端口 +1）"
+         style="display:none;text-decoration:none;margin-right:8px">📈 QDII 定投面板 →</a>
       <div style="margin-top:8px"><button class="btn" id="refresh-btn" onclick="refresh()">🔄 立即刷新</button></div>
     </div>
   </header>
@@ -278,6 +280,19 @@ const state = { date:"", cats:new Set(), codes:new Set() };
 // 数据来自同目录 data.json，筛选在浏览器本地计算（无需后端）。
 const STATIC = !!window.__STATIC__;
 let STATIC_RAW = null;   // 全量快照缓存，只拉一次
+
+// 模块互跳：QDII 面板默认就在同一主机的「本端口 +1」（5000→5001，容器映射 18080→18081）。
+// Pages 静态站与 file:// 下没有对端服务，隐藏入口而不是给一个死链。
+(function initPeerLink(){
+  const a = document.getElementById("peerLink");
+  if(!a || STATIC || typeof location === "undefined") return;
+  const host = location.hostname || "";
+  if(location.protocol === "file:" || /\.github\.io$/i.test(host)) return;
+  const port = parseInt(location.port, 10);
+  if(!port) return;
+  a.href = location.protocol + "//" + host + ":" + (port + 1);
+  a.style.display = "";
+})();
 
 function buildQuery(){
   const p = new URLSearchParams();
