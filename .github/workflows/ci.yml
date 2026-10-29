@@ -18,10 +18,16 @@ jobs:
           python-version: '3.11'
 
       - name: 语法检查
-        run: python -m py_compile national_team/app.py national_team/db.py national_team/fetcher.py national_team/backfill.py national_team/staticsite.py
+        run: |
+          python -m py_compile national_team/app.py national_team/db.py national_team/fetcher.py \
+            national_team/backfill.py national_team/staticsite.py
+          python -m py_compile qdii/*.py common/*.py docker/healthcheck.py
 
       - name: 数据层单元测试（离线）
         run: python -m unittest discover -s national_team/tests -p "test_*.py" -v
+
+      - name: QDII 单元测试（离线，含跟踪误差合成序列）
+        run: python -m unittest discover -s qdii/tests -p "test_*.py" -v
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
