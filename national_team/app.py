@@ -32,7 +32,10 @@ import fetcher  # noqa: E402
 import intraday  # noqa: E402
 
 INDEX = os.path.join(BASE, "templates", "index.html")
-PORT = int(os.environ.get("PORT", "5000"))
+PORT = int(os.environ.get("PORT") or "5000")
+# 版本指纹：与 qdii 侧的 sig/codes 同用途，部署后 /api/status 里能一眼辨新旧代码。
+# 手动同步更新，或用 git rev-parse 生成一次写死。
+APP_VERSION = "v2.6.2-nt"
 # 站点路径前缀：域名反代把本面板挂在子路径（如 /nt）时，若 Nginx/NPM 保留前缀不剥，
 # 就在这里声明（BASE_PATH=/nt），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
 BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")
@@ -194,25 +197,41 @@ def do_fetch():
 
 
 # ---------------- 定时调度：收盘后自动抓取 ----------------
+_scheduler_last_run_date = None  # 记住最近一次自动抓的日期，防 16:00 之后每小时重抓
+
+
 def scheduler_loop():
+    """进程内定时器：北京时间 16:05 触发一次当日抓取。
+
+    ⚠️ 2026-10-30 修：旧实现 wait 上限 3600s，然后按「datetime.now().hour >= 16」
+    判定，等于 16:05 抓到之后、17:05/18:05/…/23:05 每次醒来都判定通过 → 一天里
+    重复 24 页东财 crawl + save_etf_daily DELETE/INSERT 至多半晚，
+    配合 fetcher 的部分覆盖 bug 会反复洗数据。现在按「日期」判重，
+    同一天只跑一次；抓取窗口也收窄到 [16:05, 17:00)。
+    """
+    global _scheduler_last_run_date
     while True:
         now = datetime.datetime.now()
-        # 目标时间：今天 16:05；若已过则明天
         target = now.replace(hour=16, minute=5, second=0, microsecond=0)
-        if now >= target:
+        if now >= target + datetime.timedelta(hours=1):
             target = target + datetime.timedelta(days=1)
         wait = (target - now).total_seconds()
-        # 上限保护，避免极端等待
-        time_sleep = min(wait, 3600)
-        threading.Event().wait(time_sleep)
-        # 到点后再确认（防止被截断的等待）
-        if datetime.datetime.now().hour >= 16 and fetcher.is_trading_day():
-            try:
-                do_fetch()
-            except Exception:
-                pass
-        # 等待到下一个整点再循环判断
-        threading.Event().wait(600)
+        # 上限保护，避免极端等待；到点重算
+        threading.Event().wait(max(60, min(wait, 3600)))
+        now = datetime.datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        # 只在窗口内跑，且当天没跑过才跑
+        if not (16 <= now.hour < 17):
+            continue
+        if _scheduler_last_run_date == today:
+            continue
+        if not fetcher.is_trading_day():
+            continue
+        _scheduler_last_run_date = today
+        try:
+            do_fetch()
+        except Exception as e:  # noqa: BLE001
+            print("[scheduler_loop] 抓取失败：%s: %s" % (type(e).__name__, e))
 
 
 def ensure_today():
@@ -282,15 +301,47 @@ def auto_ensure():
 
 # ---------------- HTTP 处理 ----------------
 class Handler(http.server.BaseHTTPRequestHandler):
-    def _send(self, code, body: bytes, ctype="application/json; charset=utf-8"):
+    def _send(self, code, body: bytes, ctype="application/json; charset=utf-8",
+              head_only=False):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        self.wfile.write(body)
+        if not head_only:
+            self.wfile.write(body)
 
     def do_GET(self):
+        # 兜底：任意未捕获异常都返回 500 JSON，而不是让 socketserver 直接
+        # handle_error 断连。断连在 Docker gateway 里会被包成 502「无法连接上游」、
+        # WorkBuddy combo_app 里会被吞成 200「服务预热中」→ 上层健康检查永远绿、
+        # 真实错误被完全吞掉（v2.6.1 修 QDII 时踩过一模一样的坑）。
+        try:
+            self._do_GET(head_only=False)
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            try:
+                self._send(500, json.dumps(
+                    {"error": "internal", "type": type(e).__name__,
+                     "msg": str(e)[:300]}, ensure_ascii=False).encode("utf-8"))
+            except Exception:
+                pass
+
+    def do_HEAD(self):
+        # HEAD 走同一路由，但只发头不发体，让 Docker healthcheck / 外部监控
+        # 可以 HEAD /api/status 而不是必须 GET（旧实现直接 501 Unsupported method）。
+        try:
+            self._do_GET(head_only=True)
+        except Exception:
+            try:
+                self.send_response(500)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            except Exception:
+                pass
+
+    def _do_GET(self, head_only=False):
         parsed = urllib.parse.urlparse(self.path)
         path = strip_base(parsed.path)
         q = urllib.parse.parse_qs(parsed.query)
@@ -306,38 +357,60 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path in ("/", "/index.html"):
             try:
-                self._send(200, render_index(), "text/html; charset=utf-8")
+                self._send(200, render_index(), "text/html; charset=utf-8",
+                           head_only=head_only)
             except Exception as e:
-                self._send(500, str(e).encode("utf-8"))
+                self._send(500, str(e).encode("utf-8"), head_only=head_only)
             return
         if path == "/api/data":
             auto_ensure()
             payload = build_payload(f_date, f_cats, f_codes)
             payload["signal"] = signal_label(payload["summary"]["total_main_net_yi"])
-            self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                       head_only=head_only)
             return
         if path == "/api/refresh":
-            res = do_fetch()
+            # 手动刷新仍然允许，但要跟 cron / 上一次点击串行：拿不到锁说明
+            # 已有同步在跑，直接返回 409 提示前端「稍后再试」，不再两个进程
+            # 抢写同一个 SQLite、也不再把当天已归档的数据洗掉。
+            from common.lock import FileLock
+            lock_path = os.environ.get("NT_REFRESH_LOCK") or os.path.join(
+                os.path.dirname(db.DB_PATH), ".nt-refresh.lock")
+            lk = FileLock(lock_path)
+            if not lk.acquire():
+                body = json.dumps(
+                    {"ok": False, "reason": "已有抓取在运行，请稍后重试"},
+                    ensure_ascii=False).encode("utf-8")
+                self._send(409, body, head_only=head_only)
+                return
+            try:
+                res = do_fetch()
+            finally:
+                lk.release()
             payload = build_payload(f_date, f_cats, f_codes)
             payload["signal"] = signal_label(payload["summary"]["total_main_net_yi"])
             payload["fetch_result"] = res
-            self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                       head_only=head_only)
             return
         if path == "/api/options":
             self._send(200, json.dumps({
                 "dates": db.get_dates(),
                 "cats": db.get_cats(),
                 "funds": db.get_funds(),
-            }, ensure_ascii=False).encode("utf-8"))
+            }, ensure_ascii=False).encode("utf-8"), head_only=head_only)
             return
         if path == "/api/status":
             self._send(200, json.dumps({
                 "last_fetch": db.get_meta("last_fetch", "—"),
                 "last_date": db.get_meta("last_date", "—"),
                 "news_ok": db.get_meta("news_ok", "1"),
-            }, ensure_ascii=False).encode("utf-8"))
+                # 版本指纹：与 qdii 侧一致，部署后一眼可辨线上跑的是新/旧代码
+                # （见 v2.6.1 修「部署后线上跑旧代码」根因）
+                "app_version": APP_VERSION,
+            }, ensure_ascii=False).encode("utf-8"), head_only=head_only)
             return
-        self._send(404, b"not found")
+        self._send(404, b"not found", head_only=head_only)
 
     def log_message(self, *args):
         pass

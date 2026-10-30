@@ -42,7 +42,11 @@ import strategy
 
 TEMPLATES = os.path.join(BASE, "templates")
 INDEX = os.path.join(TEMPLATES, "index.html")
-PORT = int(os.environ.get("QDII_PORT", "5001"))
+# 空字符串也退回默认：WorkBuddy / NPM 有时会注入 PORT= 空值，int("") 会直接
+# ValueError 让子进程起不来（combo_app 那边就表现为「预热中」永不结束）。
+PORT = int(os.environ.get("QDII_PORT") or "5001")
+# 版本指纹：/api/qdii/status 里带回，配合 sig/codes 让部署后一眼辨新/旧代码。
+APP_VERSION = "v2.6.2-qdii"
 # 站点路径前缀：域名反代把本面板挂在子路径（如 /qdii）时，若 Nginx/NPM 保留前缀不剥，
 # 就在这里声明（BASE_PATH=/qdii），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
 BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")
@@ -60,6 +64,7 @@ def route_api(path, query=None):
     if path == "/api/qdii/status":
         return {"status": "ok", "db": C.QDII_DB_PATH,
                 "pool_size": len(C.FUND_POOL), "now": _now(),
+                "app_version": APP_VERSION,
                 # 代码版本指纹：排查「部署后线上跑的还是旧代码」时一眼可辨。
                 # sig = MARKET_SIGNALS 首行长度（加了交易所代码字段后为 5）。
                 "sig": len(C.MARKET_SIGNALS[0]) if C.MARKET_SIGNALS else 0,

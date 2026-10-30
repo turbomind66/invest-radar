@@ -14,11 +14,12 @@
 
 环境变量：
     GATEWAY_PORT   容器内监听端口，默认 38881
-    NODE_UPSTREAM  国家队上游，默认 http://web:5000（单容器模式由 entrypoint 改成 127.0.0.1）
+    NT_UPSTREAM    国家队上游，默认 http://web:5000（单容器模式由 entrypoint 改成 127.0.0.1）
     QDII_UPSTREAM  QDII 上游，默认 http://qdii-web:5001
     QDII_PREFIX    QDII 路径前缀，默认 /qdii
     NT_PREFIX      国家队路径前缀（别名），默认 /nt
-    GATEWAY_TIMEOUT 上游超时秒数，默认 30
+    GATEWAY_TIMEOUT    上游读超时秒数，默认 180（覆盖 /api/refresh 最坏耗时）
+    GATEWAY_SOCK_TIMEOUT  单 socket 空闲超时秒数，默认 60（防 keep-alive 泄漏线程）
 
 命令行：
     python gateway.py --port 48881     # 裸机部署时对外只开这一个端口
@@ -49,7 +50,11 @@ NT_UPSTREAM = (os.environ.get("NT_UPSTREAM") or "http://web:5000").rstrip("/")
 QDII_UPSTREAM = (os.environ.get("QDII_UPSTREAM") or "http://qdii-web:5001").rstrip("/")
 QDII_PREFIX = "/" + (os.environ.get("QDII_PREFIX") or "qdii").strip("/")
 NT_PREFIX = "/" + (os.environ.get("NT_PREFIX") or "nt").strip("/")
-TIMEOUT = float(os.environ.get("GATEWAY_TIMEOUT", "30"))
+# 上游超时：旧默认 30s 短于 /api/refresh 最坏耗时（24 页 × 3 重试 × 20s），
+# 网关在浏览器还没收到响应前就 502，用户重试 → 多次并发抓取 + 抢 SQLite 写锁。
+# 改成 180s 兜住 refresh，同时给空闲 keep-alive 加 60s socket timeout（见 Handler）。
+TIMEOUT = float(os.environ.get("GATEWAY_TIMEOUT", "180"))
+SOCKET_TIMEOUT = float(os.environ.get("GATEWAY_SOCK_TIMEOUT", "60"))
 
 # 容器内访问上游，显式禁用代理（宿主机环境变量可能带 HTTP_PROXY）
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -72,8 +77,14 @@ def resolve(path: str) -> str:
 
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"   # 配合显式 Content-Length，浏览器可复用连接
+    # socket 空闲超时：不设的话 HTTP/1.1 keep-alive 会把每个空闲浏览器连接
+    # 长期挂在一个 handler 线程里，96M/0.25 核的 gateway 容器很容易线程/内存耗尽。
+    timeout = SOCKET_TIMEOUT
 
     def _proxy(self, method: str):
+        # _headers_sent：如果已经在往 wfile 写字节，异常时不能再调 _send 发 502
+        # （否则 send_response 触发 RuntimeError，socket 半路断，浏览器看到烂响应）
+        self._headers_sent = False
         parsed = urllib.parse.urlsplit(self.path)
         target = resolve(parsed.path)
         if parsed.query:
@@ -94,20 +105,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         try:
             with OPENER.open(req, timeout=TIMEOUT) as resp:
-                self._send(resp.status, resp.read(), resp.headers.get("Content-Type"))
+                self._send(resp.status, resp.read(), resp.headers)
         except urllib.error.HTTPError as exc:      # 后端的 404/500 原样回传
-            ctype = exc.headers.get("Content-Type") if exc.headers else None
-            self._send(exc.code, exc.read(), ctype)
+            self._send(exc.code, exc.read(), exc.headers)
         except Exception as exc:                    # 连不上上游
+            if getattr(self, "_headers_sent", False):
+                # 已经开始发响应了 → 只能断连，别二次 send_response 抛 RuntimeError
+                return
             msg = ("[gateway] 无法连接上游 %s\n%s\n"
                    "→ 请确认对应容器已启动（docker compose ps）\n" % (target, exc))
-            self._send(502, msg.encode("utf-8"), "text/plain; charset=utf-8")
+            self._send(502, msg.encode("utf-8"), None)
 
-    def _send(self, code: int, data: bytes, ctype=None):
+    def _send(self, code: int, data: bytes, headers=None):
+        """回传响应：状态码 + 除 hop-by-hop 外全部头 + 显式 Content-Length。
+
+        旧实现只透传 Content-Type，会把上游的 Location / Set-Cookie / ETag /
+        Last-Modified / Cache-Control 全部吞掉，任何后端重定向 / auth cookie /
+        条件请求都过不了网关。现在按上游原样转发，再剥掉 hop-by-hop 与 Host 类。
+        """
         self.send_response(code)
-        self.send_header("Content-Type", ctype or "application/octet-stream")
+        self._headers_sent = True
+        sent_ctype = False
+        if headers is not None:
+            try:
+                items = headers.items()
+            except AttributeError:
+                items = []
+            for key, value in items:
+                lk = key.lower()
+                if lk in HOP_BY_HOP or lk == "content-length":
+                    continue
+                if lk == "content-type":
+                    sent_ctype = True
+                self.send_header(key, value)
+        if not sent_ctype:
+            self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)
