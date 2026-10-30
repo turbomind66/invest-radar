@@ -2,13 +2,16 @@
 # invest-radar（国家队看板 + QDII 决策面板） —— Debian / Ubuntu VPS 一键部署脚本
 #
 # 用法：
-#   ./deploy.sh                    # Docker Compose 部署（默认，推荐）
+#   ./deploy.sh                    # 一键：拉取最新代码 + Docker Compose 部署（默认，推荐）
+#   ./deploy.sh --no-pull          # 跳过 git 拉取，用当前本地代码直接部署
 #   ./deploy.sh --run              # 纯 docker run 单容器部署（web + 调度合一）
 #   ./deploy.sh --port 48881       # 指定对外端口（默认 48881 -> 容器 38881）
 #   ./deploy.sh --install-docker   # 未装 Docker 时自动安装
 #   ./deploy.sh --help
 #
-# 说明：脚本可重复执行；更新代码后再次运行即完成升级（compose 模式会自动重新构建镜像）。
+# 说明：脚本可重复执行。默认先 `git pull --ff-only` 拉最新代码，再重建镜像并启动，
+#       所以「升级 = 再跑一次 ./deploy.sh」。
+#       本地若有未提交改动会自动跳过拉取（避免冲突），仍用当前代码完成部署。
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,13 +22,27 @@ VOLUME="ntt-data"
 MODE="compose"
 INSTALL_DOCKER=0
 GATEWAY_HOST_PORT=""
+DO_PULL=1
 
 info() { printf '\033[1;36m[deploy]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
-    sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    cat <<'USAGE'
+用法：
+  ./deploy.sh                    # 一键：拉取最新代码 + Docker Compose 部署（默认，推荐）
+  ./deploy.sh --no-pull          # 跳过 git 拉取，用当前本地代码直接部署
+  ./deploy.sh --run              # 纯 docker run 单容器部署（web + 调度合一）
+  ./deploy.sh --port 48881       # 指定对外端口（默认 48881 -> 容器 38881）
+  ./deploy.sh --install-docker   # 未装 Docker 时自动安装
+  ./deploy.sh --help             # 显示本帮助
+
+说明：
+  脚本可重复执行。默认先 git pull --ff-only 拉最新代码，再重建镜像并启动，
+  所以「升级 = 再跑一次 ./deploy.sh」。
+  本地若有未提交改动会自动跳过拉取（避免冲突），仍用当前代码完成部署。
+USAGE
     exit 0
 }
 
@@ -34,12 +51,55 @@ while [ $# -gt 0 ]; do
         --run) MODE="run"; shift ;;
         --port) GATEWAY_HOST_PORT="${2:-}"; shift 2 ;;
         --install-docker) INSTALL_DOCKER=1; shift ;;
+        --no-pull) DO_PULL=0; shift ;;
         -h|--help) usage ;;
         *) die "未知参数：$1（用 --help 查看用法）" ;;
     esac
 done
 
 port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1; }
+
+# ---- 0. 拉取最新代码（一键升级的关键一步）----
+# 只在 git 仓库里执行；非 git 目录（手动拷贝的代码）自动跳过，不报错。
+pull_latest() {
+    if [ "${DO_PULL}" = "0" ]; then
+        info "已指定 --no-pull，跳过代码拉取"
+        return 0
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        warn "未检测到 git，跳过代码拉取"
+        return 0
+    fi
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        warn "当前目录不是 git 仓库，跳过代码拉取"
+        return 0
+    fi
+
+    local branch
+    branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    local before after
+    before="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+    # 有未提交改动时，pull 可能冲突 —— 直接跳过，保证「脚本一定能跑完」
+    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+        warn "检测到本地有未提交改动，跳过 git pull（如需强制更新请先 git stash）"
+        return 0
+    fi
+
+    info "拉取最新代码（git pull --ff-only，分支 ${branch}）"
+    if git pull --ff-only; then
+        after="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        if [ "${before}" != "${after}" ]; then
+            info "代码已更新：${before} → ${after}"
+        else
+            info "代码已是最新（${after}）"
+        fi
+    else
+        warn "git pull 失败，继续用本地现有代码部署（如需重试请手动 git pull）"
+    fi
+}
+
+pull_latest
 
 # ---- 1. 环境检查 ----
 if ! command -v docker >/dev/null 2>&1; then
@@ -157,8 +217,9 @@ cat <<EOF
 提示：
   · 首次启动会自动从内置种子数据恢复最近 90 天历史，随后定时任务持续累积。
   · QDII 的场内溢价/分时类数据从部署当天起才累积，历史无法回补（上游仅给近几日）。
-  · 网关监听容器内 38881，宿主机映射 127.0.0.1:${GATEWAY_HOST_PORT}（仅本机可测，不对公网）。
-  · 公网访问走 NPM → gateway 容器 IP:38881 → 443，防火墙/安全组无需放行任何新端口。
-  · 若要公网直连裸机部署，把 compose 里 gateway 的端口映射改成 0.0.0.0 并放行 48881。
+  · 网关监听容器内 38881，宿主机映射 0.0.0.0:${GATEWAY_HOST_PORT}（NPM 等反代可经网桥访问）。
+  · 公网访问走 NPM → 宿主机 ${GATEWAY_HOST_PORT} → 443，防火墙/安全组只放行 22/80/443 即可。
+  · 若用 NPM（容器部署）反代：Forward Hostname 填宿主机内网 IP（如 172.17.0.1），Forward Port 填 ${GATEWAY_HOST_PORT}。
+  · 后续升级只需再跑一次本脚本（自动 git pull + 重建 + 重启）。
   · 建议用 Nginx 反代并配 HTTPS（见 README「Docker 部署」章节）。
 EOF
