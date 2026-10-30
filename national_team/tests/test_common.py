@@ -144,5 +144,44 @@ class FileLockCrossPlatformTests(unittest.TestCase):
         lk2.release()
 
 
+class ComboPickBackendTest(unittest.TestCase):
+    """combo_app.pick_backend 的 /qdii 前缀必须严格匹配，不能命中 /qdii-something。
+
+    v2.6.2 之前 `p.startswith("/qdii")` 会把 /qdii-x、/qdii2 都路由到 QDII 子进程，
+    两个面板 URL 命名重叠时（比如未来加 /qdii2 板块）就是串台 bug。
+    """
+
+    def test_paths(self):
+        # 只在 main 定义之后 import combo_app；顶层 spawn 已挪进 main()，
+        # 这里 import 不会再抢端口
+        import combo_app
+        cases = [
+            ("/", "nt"),
+            ("/qdii", "qdii"),
+            ("/qdii/", "qdii"),
+            ("/qdii/board", "qdii"),
+            ("/api/qdii/signal", "qdii"),
+            ("/api/data", "nt"),
+            ("/api/qdii2/foo", "nt"),   # 精确匹配 /api/qdii + 分隔符
+            ("/qdii-extra", "nt"),      # 旧实会误判成 qdii
+            ("/qdii2", "nt"),
+            ("/qdii?x=1", "qdii"),
+            ("/api/qdii/premium?sort=code", "qdii"),
+        ]
+        for path, expected in cases:
+            self.assertEqual(combo_app.pick_backend(path), expected,
+                             "%s 应路由到 %s" % (path, expected))
+
+    def test_combo_app_import_has_no_side_effect(self):
+        """import combo_app 不再抢端口（v5-safe-spawn 之前会在顶层 spawn 两个子进程）。"""
+        import combo_app
+        # PROC_DIAG 里的 port 在 import 后必须是 None（未 main() 之前）
+        self.assertIsNone(combo_app.PROC_DIAG["nt"]["port"])
+        self.assertIsNone(combo_app.PROC_DIAG["qdii"]["port"])
+        # 顶层 proc 也应为 None
+        self.assertIsNone(combo_app.PROC_DIAG["nt"]["proc"])
+        self.assertIsNone(combo_app.PROC_DIAG["qdii"]["proc"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
