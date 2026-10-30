@@ -314,19 +314,42 @@ def render_index(payload: dict, template: str = TEMPLATE) -> str:
     return html.replace("</head>", inject, 1)
 
 
+def _atomic_write(path: str, data: bytes) -> None:
+    """先写 .tmp 再 os.replace。中途异常/半写状态不会污染 Pages 或挂载卷。"""
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass  # overlayfs / 网络盘可能不支持 fsync，非致命
+    os.replace(tmp, path)
+
+
 def export(out_dir: str = DOCS_DIR, template: str = TEMPLATE,
            path: str = db.DB_PATH) -> dict:
-    """生成 docs/data.json + docs/index.html（+ .nojekyll）。返回摘要。"""
+    """生成 docs/data.json + docs/index.html（+ .nojekyll）。返回摘要。
+
+    2026-10-30 加固：data.json / index.html 都改成原子写；json.dump 补上
+    allow_nan=False + default=str —— 上游偶发 inf/NaN 时旧实现会写出合法的
+    Python JSON 却是浏览器 JSON.parse 拒收的 `NaN` 字面量，整站白屏；
+    Actions / 单容器 NT_DOCS_DIR 挂卷直出时半写状态也会被读到。
+    """
     os.makedirs(out_dir, exist_ok=True)
     payload = build_static_payload(path)
 
-    with open(os.path.join(out_dir, "data.json"), "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+    _atomic_write(
+        os.path.join(out_dir, "data.json"),
+        json.dumps(payload, ensure_ascii=False, allow_nan=False, default=str,
+                   separators=(",", ":")).encode("utf-8"),
+    )
+    _atomic_write(
+        os.path.join(out_dir, "index.html"),
+        render_index(payload, template).encode("utf-8"),
+    )
 
-    with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as f:
-        f.write(render_index(payload, template))
-
-    # 让 Pages 跳过 Jekyll 处理，避免任何下划线文件被吞
+    # 让 Pages 跳过 Jekyll 处理，避免任何下划线文件被吞（零字节，无需原子）
     open(os.path.join(out_dir, ".nojekyll"), "w").close()
 
     return {

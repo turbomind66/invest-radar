@@ -261,9 +261,18 @@ def render_index():
 
 def main():
     fetcher_pool.init_pool()
-    httpd = socketserver.ThreadingTCPServer(("0.0.0.0", PORT), Handler)
-    print("[qdii-app] listening on port %d (db=%s)" % (PORT, C.QDII_DB_PATH))
-    httpd.serve_forever()
+    # 监听地址：默认 0.0.0.0（Docker 容器内网 / 裸机部署对外服务）；
+    # combo_app 作为 WorkBuddy 单应用启动子进程时应注入 QDII_BIND=127.0.0.1，
+    # 让内部端口只在本机回环可达（否则「内部端口」会跟着父进程一起在宿主 LAN 上
+    # 打开、绕过网关的路径路由，Windows 上还会触发防火墙弹窗）。
+    bind = (os.environ.get("QDII_BIND") or "0.0.0.0").strip() or "0.0.0.0"
+    # 与 gateway.py / national_team/app.py 保持一致：允许快速重启复用 TIME_WAIT
+    # 端口，工作线程随主进程退出（否则 SIGTERM 会被 handler 里最长的 150s 上游读拖住）。
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    socketserver.ThreadingTCPServer.daemon_threads = True
+    with socketserver.ThreadingTCPServer((bind, PORT), Handler) as httpd:
+        print("[qdii-app] listening on %s:%d (db=%s)" % (bind, PORT, C.QDII_DB_PATH))
+        httpd.serve_forever()
 
 
 if __name__ == "__main__":

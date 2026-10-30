@@ -1,14 +1,42 @@
 """qdii/db.py — QDII 定投决策面板 SQLite 存储层（零第三方依赖）。
 
-数据库路径由环境变量 NT_QDII_DB_PATH 控制（默认本模块目录下 qdii.db），
-与 national_team 的 data.db 完全分离。所有写入通过 UPSERT（INSERT OR REPLACE /
-ON CONFLICT）保证重跑幂等。
+数据库路径由环境变量 NT_QDII_DB_PATH 控制（默认落在**仓库根**下的 qdii.db，
+与 national_team 的 data.db 同层），容器化部署时指向挂载卷才能持久化。
+所有写入通过 UPSERT（INSERT OR REPLACE / ON CONFLICT）保证重跑幂等。
+
+⚠️ 2026-10-30 修：旧默认是 `os.path.join(os.path.dirname(__file__), "qdii.db")`
+= 本模块所在目录 `qdii/` 下，正是 README 踩坑 #14 的原样复现：三层结构拆分
+后仓库根那份历史库被静默忽略、页面「只剩当天」。改回仓库根。
 """
 import sqlite3
 import os
 
-DB_PATH = os.environ.get("NT_QDII_DB_PATH") or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "qdii.db")
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.environ.get("NT_QDII_DB_PATH") or os.path.join(_PROJECT_ROOT, "qdii.db")
+_LEGACY_DB_PATH = os.path.join(_MODULE_DIR, "qdii.db")
+
+
+def _migrate_legacy_db():
+    """一次性把旧位置（qdii/qdii.db）的库搬到新默认（仓库根 qdii.db）。
+
+    只在环境变量没覆盖 + 新位置没文件 + 旧位置有文件时生效；容器/CI 环境
+    要么走 NT_QDII_DB_PATH、要么干净 runner 无旧库，都会自动跳过。
+    """
+    try:
+        if os.environ.get("NT_QDII_DB_PATH"):
+            return
+        if os.path.exists(DB_PATH) or not os.path.exists(_LEGACY_DB_PATH):
+            return
+        os.replace(_LEGACY_DB_PATH, DB_PATH)
+        print("[qdii.db] 已把旧位置 %s 迁移到仓库根 %s"
+              % (_LEGACY_DB_PATH, DB_PATH))
+    except OSError:
+        # 跨设备/权限/文件被占用等：不阻断启动，让用户下次再试或手动搬
+        pass
+
+
+_migrate_legacy_db()
 
 
 # ---- 第4节数据模型（与开发文档一致） ----

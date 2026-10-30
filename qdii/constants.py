@@ -9,8 +9,14 @@ import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE = os.path.dirname(os.path.abspath(__file__))
 
-# ---- 数据库路径（与 national_team 的 data.db 分离） ----
-QDII_DB_PATH = os.environ.get("NT_QDII_DB_PATH") or os.path.join(BASE, "qdii.db")
+# ---- 数据库路径（与 national_team 的 data.db 分离）----
+# 默认落在**仓库根**下的 qdii.db（容器内 /app/qdii.db），
+# 与 national_team/data.db 同层。曾经默认写成 os.path.join(BASE, "qdii.db")，
+# 拆层结构（national_team/ qdii/ common/）之后 BASE 变成了 qdii/ 子目录，
+# 于是历史库（仓库根那份 qdii.db）静默被忽略、页面「只剩当天」，
+# 就是 README 踩坑 #14 描述的那个坑。容器化部署时用 NT_QDII_DB_PATH
+# 指向挂载卷 —— 否则 SQLite 会写进容器可写层，重建容器即丢。
+QDII_DB_PATH = os.environ.get("NT_QDII_DB_PATH") or os.path.join(ROOT, "qdii.db")
 
 # ---- 调度时间（北京时间；容器已设 TZ=Asia/Shanghai） ----
 # 限额/状态/费率/跟踪误差：按 A 股交易日

@@ -376,9 +376,15 @@ def main():
         t.start()
     else:
         print("NT_AUTO_ENSURE=0：本实例只提供展示，抓取由定时任务容器负责")
+    # 监听地址：默认 0.0.0.0（Docker 容器内网 / 裸机部署对外服务）；
+    # combo_app 作为 WorkBuddy 单应用启动子进程时会注入 NT_BIND=127.0.0.1，
+    # 让 5000 只在本机回环可达（父进程通过网关对外，内部端口不落到宿主 LAN）。
+    bind = (os.environ.get("NT_BIND") or "0.0.0.0").strip() or "0.0.0.0"
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.ThreadingTCPServer(("0.0.0.0", PORT), Handler) as httpd:
-        print("国家队A股日报 running on http://0.0.0.0:%d" % PORT)
+    # 工作线程随主进程退出，避免 SIGTERM 时被某个最长 150s 的 /api/refresh 卡住
+    socketserver.ThreadingTCPServer.daemon_threads = True
+    with socketserver.ThreadingTCPServer((bind, PORT), Handler) as httpd:
+        print("国家队A股日报 running on http://%s:%d" % (bind, PORT))
         httpd.serve_forever()
 
 

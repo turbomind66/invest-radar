@@ -32,6 +32,16 @@ jobs:
       - name: 抓取并导出静态数据（国家队）
         run: python national_team/staticsite.py
 
+      # QDII 静态站导出前必须先抓数据。qdii.db 被 .gitignore 排除，
+      # Actions runner 每次都是空库 → 如果只跑 staticsite.py，board/decision
+      # 全 zero，git push 会把 docs/qdii/qdii_data.json 覆盖成空白快照。
+      # 这里显式跑一次 --once（limit + signal + premium 全抓），再让
+      # staticsite 从库里读。--allow-empty 不开，静默坏掉会被 skip-write 挡住。
+      - name: 抓取 QDII 数据（limit+fee+te+signal+premium 全跑一遍）
+        run: python qdii/qdii_scheduler.py --once
+        # 抓挂了就继续，交给 staticsite 的空覆盖保护决定「保留旧值 or 覆盖」
+        continue-on-error: true
+
       - name: 导出 QDII 静态站
         run: python qdii/staticsite.py
 
@@ -46,4 +56,9 @@ jobs:
           fi
           BJDATE=$(TZ=Asia/Shanghai date +%Y-%m-%d)
           git commit -m "data: 更新 ${BJDATE} 国家队 + QDII 快照"
-          git push
+          # 2026-10-30 修：schedule 触发时 actions/checkout@v4 会把 HEAD 置成
+          # detached（见 https://github.com/actions/checkout#usage），裸 `git push`
+          # 因为没有 refspec 直接失败。目前本 workflow 靠 workflow_dispatch 走
+          # 具名分支（能推），但注释掉的 schedule 一旦被取消启用就会立刻踩到 ——
+          # 显式 push HEAD:${GITHUB_REF_NAME}，两种触发方式都能安全推回。
+          git push origin "HEAD:${GITHUB_REF_NAME}"
