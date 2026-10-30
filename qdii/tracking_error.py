@@ -132,7 +132,10 @@ def fetch_benchmark_em(btype, bcode):
     url = ("https://push2his.eastmoney.com/api/qt/stock/kline/get?"
            "secid=%s&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56,f57,f58&"
            "klt=101&fqt=1&beg=20260101&end=20500101" % secid)
-    t = fetch_text(url, encoding="utf-8", use_proxy=None, retries=3)
+    # rotate_hosts=True：东财 push2his 按主机限流时（Remote end closed connection）
+    # 轮换到 1./2./82./11./7./23. 等镜像重试，而不是死磕同一台主机 4 次。
+    t = fetch_text(url, encoding="utf-8", use_proxy=None, retries=3,
+                   rotate_hosts=True)
     o = json.loads(t)
     k = o.get("data") or {}
     klines = k.get("klines") or []

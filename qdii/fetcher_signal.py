@@ -386,7 +386,9 @@ def fetch_em_global_index():
     for symbol, (_name, secid) in EM_GLOBAL_INDEX.items():
         try:
             url = EM_GLOBAL_URL.format(secid=secid)
-            txt = fetch_text(url, use_proxy=None, retries=1, timeout=15)
+            # rotate_hosts=True：push2 按主机限流时轮换到 push2delay/82./11. 镜像重试。
+            txt = fetch_text(url, use_proxy=None, retries=2, timeout=15,
+                             rotate_hosts=True)
             obj = json.loads(txt)
             d = obj.get("data") or {}
             if not d or d.get("f43") in (None, "", "-"):

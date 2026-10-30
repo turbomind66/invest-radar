@@ -107,9 +107,48 @@ def _auto_proxy(host: str) -> bool:
     return True
 
 
+# ---- 东财镜像主机池（rotate_hosts 用） ----
+# 背景：东财 push2 / push2his 在部分出口会被**按主机限流**，表现为
+#   http.client.RemoteDisconnected: Remote end closed connection without response
+# 此时「对同一台主机重试 N 次」毫无意义（每次都一样），换一台镜像反而立刻成功。
+# 实测（2026-10-30）：
+#   push2    可用：push2 / push2delay / 82.push2 / 11.push2
+#   push2his 可用：push2his / 1.push2his / 2.push2his / 82.push2his / 11.push2his
+#                 / 7.push2his / 23.push2his     （push2hisdelay 不存在，勿加）
+PUSH2_HOSTS = (
+    "push2.eastmoney.com",
+    "push2delay.eastmoney.com",
+    "82.push2.eastmoney.com",
+    "11.push2.eastmoney.com",
+)
+PUSH2HIS_HOSTS = (
+    "push2his.eastmoney.com",
+    "1.push2his.eastmoney.com",
+    "2.push2his.eastmoney.com",
+    "82.push2his.eastmoney.com",
+    "11.push2his.eastmoney.com",
+    "7.push2his.eastmoney.com",
+    "23.push2his.eastmoney.com",
+)
+
+
+def _mirror_pool(host: str):
+    """返回该主机可用的镜像池；非东财行情域名返回 None（不轮换）。"""
+    if host in PUSH2_HOSTS or host in ("push2delay.eastmoney.com",):
+        return PUSH2_HOSTS
+    if host == "push2his.eastmoney.com" or host.endswith(".push2his.eastmoney.com"):
+        return PUSH2HIS_HOSTS
+    return None
+
+
 def fetch_text(url, referer=None, encoding="utf-8", timeout=15,
-               use_proxy=None, retries=2, headers=None):
-    """抓取 URL 返回文本。本地地址自动直连；公网默认走环境代理。"""
+               use_proxy=None, retries=2, headers=None, rotate_hosts=False):
+    """抓取 URL 返回文本。本地地址自动直连；公网默认走环境代理。
+
+    rotate_hosts=True 且 URL 命中东财行情域名（push2 / push2his）时，
+    每次重试**换一台镜像主机**，而不是死磕同一台——用于对抗按主机限流。
+    默认 False，保持既有行为不变。
+    """
     host = urlparse(url).hostname or ""
     if use_proxy is None:
         use_proxy = _auto_proxy(host)
@@ -118,11 +157,15 @@ def fetch_text(url, referer=None, encoding="utf-8", timeout=15,
         req_headers["Referer"] = referer
     if headers:
         req_headers.update(headers)
+    pool = _mirror_pool(host) if rotate_hosts else None
     last = None
     for attempt in range(retries + 1):
+        target = url
+        if pool:
+            target = url.replace(host, pool[attempt % len(pool)], 1)
         try:
             opener = urllib.request.build_opener(_proxy_handler(use_proxy))
-            req = urllib.request.Request(url, headers=req_headers)
+            req = urllib.request.Request(target, headers=req_headers)
             with opener.open(req, timeout=timeout) as resp:
                 raw = resp.read()
                 try:

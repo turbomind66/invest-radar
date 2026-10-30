@@ -202,7 +202,20 @@ def sync_missing(days: int = 20, span: int = 121, path: str = db.DB_PATH) -> lis
         for d, items in fetcher.split_news_by_date(nnews).items():
             db.merge_news(d, items, path)
         db.set_meta("news_ok", "1" if nnews else "0", path)
-        done.append("新闻 %d 条" % len(nnews))
+        # 逐源明细：一眼看出是「上游挂了」还是「当天确实没有相关新闻」。
+        # 东财是按「关键词 × 页码」逐条请求的，先按源名聚合，否则日志会被刷屏。
+        rep = getattr(fetcher.fetch_news, "last_report", None) or []
+        agg = {}
+        for s, r, h, e in rep:
+            a = agg.setdefault(s, [0, 0, None])
+            a[0] += r
+            a[1] += h
+            if e and a[2] is None:
+                a[2] = e
+        brief = "；".join(
+            "%s 命中%d/原始%d%s" % (s, a[1], a[0], (" 失败:" + a[2]) if a[2] else "")
+            for s, a in agg.items())
+        done.append("新闻 %d 条（%s）" % (len(nnews), brief or "无源"))
     except Exception as e:
         notes.append("新闻抓取失败(%s)" % type(e).__name__)
 

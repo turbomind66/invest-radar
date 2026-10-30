@@ -562,20 +562,30 @@ def fetch_news() -> list:
                 "https://finance.sina.com.cn/"))
 
     scored = []
+    # 逐源诊断报告：[(源名, 原始条数, 入榜条数, 错误类型或 None)]
+    # 只有总数（"新闻 0 条"）时无法判断「上游挂了」还是「当天确实没有相关新闻」，
+    # VPS 上排查过一次，加上这个后日志一眼可见是哪个源在掉链子。
+    report = []
     for src, url, ref in raw:
         try:
             txt = _get(url, ref)
             txt = re.sub(r"^cb\(|\)$", "", txt.strip()) if txt.strip().startswith("cb(") else txt
             d = json.loads(txt)
-            for it in _extract_news_from_json(d):
+            items = _extract_news_from_json(d)
+            hit = 0
+            for it in items:
                 sc = _news_score(it["title"])
                 if sc <= 0:
                     continue
                 it["src"] = src
                 it["_score"] = sc
                 scored.append(it)
-        except Exception:
+                hit += 1
+            report.append((src, len(items), hit, None))
+        except Exception as e:
+            report.append((src, 0, 0, type(e).__name__))
             continue
+    fetch_news.last_report = report
 
     # 去重（同一标题多源命中只留一条，保留分高者）
     best = {}
