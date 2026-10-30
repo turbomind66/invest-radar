@@ -962,6 +962,66 @@ class EmGlobalIndexTest(unittest.TestCase):
             self.fs.fetch_em_global_index()
 
 
+class CnbcGlobalIndexTest(unittest.TestCase):
+    """全球市场信号欧洲/日本指数改走 CNBC 主源（.DAX/.CAC/.FTSE/.N225）。
+
+    沙箱到 CNBC 走代理可通，但单测用 mock 隔离，验证解析（含千分位逗号、带符号、
+    百分号清洗）与 symbol 映射（.N225→NK、展示名「日经225指数」）。
+    """
+    SAMPLE = json.dumps({"FormattedQuoteResult": {"FormattedQuote": [
+        {"symbol": ".DAX", "name": "Germany DAX", "last": "26,039.68",
+         "change": "+335.66", "change_pct": "+1.31%", "previous_day_closing": "25,704.02"},
+        {"symbol": ".CAC", "name": "CAC 40 Index", "last": "7,970.00",
+         "change": "0.00", "change_pct": "0.00%", "previous_day_closing": "7,970.00"},
+        {"symbol": ".FTSE", "name": "FTSE 100", "last": "10,722.07",
+         "change": "+27.57", "change_pct": "+0.26%", "previous_day_closing": "10,694.50"},
+        {"symbol": ".N225", "name": "Nikkei 225 Index", "last": "63,019.78",
+         "change": "-1,639.69", "change_pct": "-2.54%", "previous_day_closing": "64,659.47"},
+    ]}})
+
+    def setUp(self):
+        import fetcher_signal as fs
+        self.fs = fs
+        self._orig = fs.fetch_text
+        fs.fetch_text = lambda *a, **k: self.SAMPLE
+
+    def tearDown(self):
+        self.fs.fetch_text = self._orig
+
+    def test_symbols_present(self):
+        res = self.fs.fetch_cnbc_global_index()
+        self.assertEqual(set(res), {"DAX", "CAC40", "FTSE", "NK"})
+
+    def test_parse_dax(self):
+        res = self.fs.fetch_cnbc_global_index()
+        name, price, pct, chg, prev = res["DAX"]
+        self.assertEqual(name, "德国DAX指数")
+        self.assertAlmostEqual(price, 26039.68, places=2)
+        self.assertAlmostEqual(pct, 1.31, places=2)
+        self.assertAlmostEqual(chg, 335.66, places=2)
+        self.assertAlmostEqual(prev, 25704.02, places=2)
+
+    def test_parse_nikkei(self):
+        res = self.fs.fetch_cnbc_global_index()
+        name, price, pct, chg, prev = res["NK"]
+        self.assertEqual(name, "日经225指数")
+        self.assertAlmostEqual(price, 63019.78, places=2)
+        self.assertAlmostEqual(pct, -2.54, places=2)
+        self.assertAlmostEqual(chg, -1639.69, places=2)
+
+    def test_cac_zero_change(self):
+        res = self.fs.fetch_cnbc_global_index()
+        _n, price, pct, chg, _p = res["CAC40"]
+        self.assertAlmostEqual(price, 7970.00, places=2)
+        self.assertAlmostEqual(pct, 0.0, places=2)
+        self.assertAlmostEqual(chg, 0.0, places=2)
+
+    def test_empty_raises(self):
+        self.fs.fetch_text = lambda *a, **k: json.dumps({"FormattedQuoteResult": {}})
+        with self.assertRaises(ValueError):
+            self.fs.fetch_cnbc_global_index()
+
+
 class ChangeValueTest(unittest.TestCase):
     """change_value（涨跌值/绝对变动）全面铺开：美债=bp、指数/期货/VIX=点数差。"""
 

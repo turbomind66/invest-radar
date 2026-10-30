@@ -58,7 +58,8 @@ SINA_A_ETF = {
 SINA_A_ETF_URL = "https://hq.sinajs.cn/list=" + ",".join(SINA_A_ETF)
 # symbol → 展示名（写库用）
 SINA_A_ETF_NAME = {v[0]: v[1] for v in SINA_A_ETF.values()}
-# 欧洲三大指数：东财 push2 真实指数（VPS 可通；沙箱被墙由 fetch_us_signal 降级回 ETF 代理）。
+# 欧洲三大指数：东财 push2 真实指数 —— **备选源**（CNBC 主源，见 fetch_cnbc_global_index）。
+# 在 CNBC 单指数缺失时补全；本网络/部分 VPS 环境东财被墙时整体走 CNBC，不再依赖东财。
 # secid 沿用 tracking_error 模块已验证的东财全球指数代码（100.GDAXI 等）。
 EM_GLOBAL_INDEX = {
     "DAX": ("德国DAX指数", "100.GDAXI"),
@@ -216,6 +217,55 @@ def fetch_cnbc_ust10y():
     return last, bp, chg_pct, ("美东 " + as_of if as_of else "")
 
 
+def fetch_cnbc_global_index():
+    """CNBC 真实欧洲/日本指数（.DAX/.CAC/.FTSE/.N225）—— **主源**。
+
+    用户部署环境 CNBC 稳定可达（美债10Y 已用同出口 quote.cnbc.com）。
+    返回的 `last`/`change`/`change_pct`/`previous_day_closing` 齐全，无需 ETF 代理。
+    返回 {signal_symbol: (name, price, chg_pct, chg_value, prev_close)}。
+    全失败抛 ValueError，交 fetch_us_signal 降级到东财/ETF。
+
+    CNBC 的 change 是带符号字符串（"+335.66"）、change_pct 带百分号（"+1.31%"），
+    需清洗后转 float；last / previous_day_closing 含千分位逗号也要去。
+    """
+    url = ("https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol"
+           "?symbols=.DAX%7C.CAC%7C.FTSE%7C.N225&requestMethod=itv&noform=1"
+           "&partnerId=2&fund=1&exthrs=1&output=json")
+    txt = fetch_text(url, use_proxy=None, retries=2, timeout=20)
+    obj = json.loads(txt)
+    quotes = (obj.get("FormattedQuoteResult") or {}).get("FormattedQuote") or []
+    sym_map = {".DAX": "DAX", ".CAC": "CAC40", ".FTSE": "FTSE", ".N225": "NK"}
+    name_map = {"DAX": "德国DAX指数", "CAC40": "法国CAC40指数",
+                "FTSE": "英国富时100指数", "NK": "日经225指数"}
+
+    def _num(s):
+        if s is None:
+            return None
+        s = str(s).replace(",", "").replace("%", "").strip()
+        if not s:
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    res = {}
+    for q in quotes:
+        sym = sym_map.get(q.get("symbol"))
+        if not sym:
+            continue
+        price = _num(q.get("last"))
+        if price is None:
+            continue
+        chg = _num(q.get("change"))          # 涨跌值（点数差）
+        pct = _num(q.get("change_pct"))      # 涨跌幅%
+        prev = _num(q.get("previous_day_closing"))
+        res[sym] = (name_map[sym], price, pct, chg, prev)
+    if not res:
+        raise ValueError("CNBC 全球指数全部失败")
+    return res
+
+
 def fetch_em_global_index():
     """东财 push2 真实欧洲三大指数（VPS 可通；沙箱被墙由上层降级回 ETF 代理）。
 
@@ -285,6 +335,8 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
     try:
         futures = fetch_sina_futures()
         for hf_code, (symbol, name) in FUTURES_MAP.items():
+            if symbol == "NK":
+                continue  # 日经225 改由 CNBC 真实指数提供（见 cnbc_idx），不重复写
             got = futures.get(hf_code)
             if not got:
                 continue
@@ -335,29 +387,44 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
             rows.append((date, "SPX", "标普500现货", price, chg, 0, now, now, None, chg_val))
     except Exception as e:  # noqa: BLE001
         print("[signal] sina index failed:", e)
-    # 欧洲三大指数：优先东财真实指数（100.GDAXI/FCHI/FTSE），单个缺失时降级回 ETF 代理。
+    # 欧洲三大指数 + 日经225：主源 CNBC 真实指数（用户环境稳定可达），
+    # CNBC 缺失时依次降级 东财 push2 → sina/tencent ETF 代理（fail-safe，不回归）。
+    # 此前的「东财主 + ETF 兜底」在 VPS 上东财与 sina/tencent 整条链路都不通，
+    # 导致这几项长期为空；CNBC 与美债10Y 同源，是部署环境唯一稳定可达的境外源。
     try:
-        em_idx = fetch_em_global_index()
+        cnbc_idx = fetch_cnbc_global_index()
     except Exception as e:  # noqa: BLE001
-        print("[signal] 东财欧洲指数失败，降级 ETF 代理:", e)
-        em_idx = {}
-    for symbol, (name, price, chg, chg_val) in em_idx.items():
+        print("[signal] CNBC 全球指数失败，降级东财/ETF:", e)
+        cnbc_idx = {}
+    for symbol, (name, price, chg, chg_val, _prev) in cnbc_idx.items():
         rows.append((date, symbol, name, price, chg, 0, now, now, None, chg_val))
-    # 真实指数未取到的（东财不可达 / 单指数缺失）→ A股ETF(DAX/CAC40) + 美股ETF(FTSE) 代理兜底
-    proxy_missing = [s for s in ("DAX", "CAC40", "FTSE") if s not in em_idx]
-    if proxy_missing:
+    # CNBC 没取到的（网络抖动 / 单指数缺失）→ 东财真实指数补
+    missing = [s for s in ("DAX", "CAC40", "FTSE", "NK") if s not in cnbc_idx]
+    if missing:
         try:
-            a_etf = fetch_sina_a_etf()
-            for symbol in ("DAX", "CAC40"):
-                if symbol in a_etf:
-                    _n, price, prev, ts = a_etf[symbol]
-                    chg = round((price / prev - 1) * 100, 4) if prev else None
-                    chg_val = round(price - prev, 2) if prev else None
-                    rows.append((date, symbol, SINA_A_ETF_NAME[symbol] + "（代理）",
-                                 price, chg, 1, ts or now, now, None, chg_val))
-        except Exception as e2:  # noqa: BLE001
-            print("[signal] sina a-etf fallback failed:", e2)
-        if "FTSE" in proxy_missing:
+            em_idx = fetch_em_global_index()
+        except Exception:  # noqa: BLE001
+            em_idx = {}
+        for symbol in missing:
+            if symbol in em_idx:
+                _n, price, chg, chg_val = em_idx[symbol]
+                rows.append((date, symbol, _n, price, chg, 0, now, now, None, chg_val))
+        missing = [s for s in missing if s not in em_idx]
+        # 兜底：sina A股ETF(DAX/CAC40) + tencent usEWU(FTSE)；NK 无 ETF 代理则留空
+        if "DAX" in missing or "CAC40" in missing:
+            try:
+                a_etf = fetch_sina_a_etf()
+                for symbol in ("DAX", "CAC40"):
+                    if symbol in a_etf and symbol in missing:
+                        _n, price, prev, ts = a_etf[symbol]
+                        chg = round((price / prev - 1) * 100, 4) if prev else None
+                        chg_val = round(price - prev, 2) if prev else None
+                        rows.append((date, symbol, SINA_A_ETF_NAME[symbol] + "（代理）",
+                                     price, chg, 1, ts or now, now, None, chg_val))
+                        missing = [s for s in missing if s != symbol]
+            except Exception as e2:  # noqa: BLE001
+                print("[signal] sina a-etf fallback failed:", e2)
+        if "FTSE" in missing:
             try:
                 t = fetch_tencent_us("usEWU")
                 if "usEWU" in t:
