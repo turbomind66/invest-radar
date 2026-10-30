@@ -465,6 +465,8 @@ function computeStaticPayload(raw, date, cats, codes){
     partial_main: mainOk && (etf.length - cur.has_main) > 0,
     etf: etf,
     news: (raw.news && raw.news[selDate]) || [],
+    // 所选日期无新闻时的兜底（取最近有新闻的一天）
+    news_fallback: raw.news_fallback || null,
     history: history,
     filters: { date: selDate, cats: cats, codes: codes,
                filtered: !!(cats.length || codes.length), auto: !date,
@@ -691,7 +693,16 @@ function render(d){
   if(!d.news_ok){
     nl.innerHTML = `<li class="empty">新闻源暂未连通（上游接口限制），核心净买入数据不受影响。</li>`;
   } else if(!d.news || !d.news.length){
-    nl.innerHTML = `<li class="empty">${isHistory?"该历史日期无新闻记录（历史补数不回溯新闻）。":"今日暂无匹配“国家队/汇金/证金/增持”的新闻。"}</li>`;
+    // 所选日期没有新闻 → 展示最近有新闻的一天（并标注日期），而不是整块留空
+    const fb = d.news_fallback;
+    if(fb && fb.items && fb.items.length){
+      nl.innerHTML = fb.items.map(n=>`<li>
+        <a href="${esc(n.url||'#')}" target="_blank" rel="noopener">${esc(n.title)}</a>
+        <div class="t">${esc(n.time||"")}<span class="src">${esc(n.src||"")}</span></div></li>`).join("")
+        + `<li class="empty" style="border:0;padding-top:6px">（该日期无新闻，以上为 ${esc(fb.date||"")} 的记录）</li>`;
+    } else {
+      nl.innerHTML = `<li class="empty">${isHistory?"该历史日期无新闻记录（历史补数不回溯新闻）。":"今日暂无匹配“国家队/汇金/证金/增持”的新闻。"}</li>`;
+    }
   } else {
     nl.innerHTML = d.news.map(n=>`<li>
       <a href="${esc(n.url||'#')}" target="_blank" rel="noopener">${esc(n.title)}</a>

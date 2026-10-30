@@ -908,18 +908,30 @@ class SignalCoverageTest(unittest.TestCase):
     def test_market_groups_cover_all_signals(self):
         declared = {s[0] for s in C.MARKET_SIGNALS}
         groups = set(C.MARKET_GROUPS)
-        for sym, _name, grp, _kind in C.MARKET_SIGNALS:
+        for sym, _name, grp, _kind, _code in C.MARKET_SIGNALS:
             self.assertIn(grp, groups, "%s 的分组 %s 不在 MARKET_GROUPS 里" % (sym, grp))
         self.assertEqual(declared, set(s[0] for s in C.MARKET_SIGNALS))
 
     def test_european_signals_are_real_indices(self):
         """DAX/CAC40/FTSE 现在走东财真实指数，类型标签必须是「指数」且不得再标「代理」。"""
         real = {"DAX": "德国DAX指数", "CAC40": "法国CAC40指数", "FTSE": "英国富时100指数"}
-        for sym, name, _grp, kind in C.MARKET_SIGNALS:
+        for sym, name, _grp, kind, _code in C.MARKET_SIGNALS:
             if sym in real:
                 self.assertEqual(name, real[sym], "%s 名称应为真实指数名" % sym)
                 self.assertIn("指数", kind, "%s 类型应为指数" % sym)
                 self.assertNotIn("代理", kind, "%s 已是真实指数，不应再标代理" % sym)
+
+    def test_market_signals_have_exchange_code(self):
+        """每个信号都登记了交易所代码（第 5 字段），供面板展示对照行情软件。"""
+        # 期望代码：现货指数 / 期货 / 其他
+        expect = {"IXIC": "IXIC", "NDX_FUT": "NQ", "SPX": "SPX", "SPX_FUT": "ES",
+                  "NK": "NKY", "DAX": "DAX", "CAC40": "CAC", "FTSE": "UKX",
+                  "UST10Y": "US10Y", "VIX": "VIX"}
+        for row in C.MARKET_SIGNALS:
+            self.assertIn(row[0], expect, "%s 应在 expect 表中" % row[0])
+            self.assertEqual(len(row), 5, "%s 应为 5 元组(symbol,name,group,kind,code)" % row[0])
+            self.assertEqual(row[4], expect[row[0]],
+                             "%s 的交易所代码应为 %s，实际 %s" % (row[0], expect[row[0]], row[4]))
 
 
 class EmGlobalIndexTest(unittest.TestCase):

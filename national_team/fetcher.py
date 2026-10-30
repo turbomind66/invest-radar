@@ -1,5 +1,6 @@
 """抓取：国家队宽基ETF主力净流入（代理"国家队买卖A股"）+ 相关新闻。"""
 import urllib.request
+import urllib.parse
 import json
 import ssl
 import time
@@ -44,7 +45,57 @@ WATCHLIST = [
 ]
 
 FIELDS = "f12,f14,f2,f3,f4,f6,f62"
-NEWS_KEYWORDS = ["国家队", "汇金", "证金", "增持", "护盘", "ETF", "中央汇金", "主力资金", "宽基"]
+
+# ---- 新闻抓取配置（2026-10-30 重整）----
+# 旧的两个源已被上游改版废弃（实测）：
+#   新浪 roll pageid=515             → {"status":{"code":11,"msg":"param lid illegal"}}
+#   东财 search ?search_text=&type=12 → 400 Bad Request
+# 现用三个源，各自独立 try/except，任一挂掉不影响其它：
+#   1) 东财搜索 param= JSON 格式  —— keyword 精确（主源，命中即相关）
+#   2) 同花顺 7×24 快讯           —— 实时全量流，靠标题关键词过滤
+#   3) 新浪财经滚动 pageid=153     —— 全量流，靠标题关键词过滤
+NEWS_EM_KEYWORDS = ["国家队", "中央汇金", "证金公司", "汇金公司"]
+
+# 相关性分层：score 越大越靠前（同分按时间倒序）
+SCORE_STRONG = 2    # 标题含主体词
+SCORE_WEAK = 1      # 标题含弱词 + 语境
+
+# 主体词：唯一指向证券国家队（中央汇金/证金/汇金公司），标题命中即相关
+NEWS_STRONG = ["中央汇金", "证金公司", "汇金公司"]
+# 「国家队」一词在中文里还指科技/高校/航天/数据等领域的国家队，
+# 故需搭配金融语境才算命中本面板（A股资金动向）
+NEWS_GUOJIA = "国家队"
+# 金融语境词：必须是「资金/持仓」类实义词。
+# 注意排除「科创」「创业板」「机构」等泛词 —— 它们是板块名/泛称，
+# 会让「半导体国家队科创板IPO辅导」这类非金融条目误命中。
+NEWS_FIN_CTX = ["A股", "沪深", "上证", "深证", "宽基", "ETF",
+                "基金", "持仓", "重仓", "增持", "买入", "加仓", "建仓", "入市", "注资",
+                "举牌", "配置", "仓位", "资金", "净流入", "净买入", "主力",
+                "二级市场", "一二级市场", "股市", "资本市场", "上市公司", "两融", "份额"]
+
+# 弱主体词：单独出现易误伤（"汇金科技"等同名公司），需搭配语境
+NEWS_WEAK_SUBJECT = ["汇金", "证金"]
+# 动作词：需搭配 A 股/资金语境
+NEWS_ACTION = ["增持", "护盘", "主力资金", "宽基", "重仓"]
+# A 股语境
+NEWS_A_CTX = ["A股", "沪深", "上证", "深证", "创业板", "科创", "北交所", "宽基",
+              "场内", "基金", "份额", "净流入", "两市", "成交额", "主力", "板块", "市场"]
+# 买入语境：裸 ETF 标题（ETF午评/两市成交额/央行抛售ETF）不相关，
+# 只有出现买入/增持类语境才算国家队动向
+NEWS_BUY_CTX = ["增持", "买入", "加仓", "国家队", "汇金", "证金", "护盘", "净流入", "建仓"]
+# 误伤黑名单：「保证金」含「证金」子串；其余为公司/基金同名噪音
+NEWS_BLOCK = ["保证金", "汇金科技", "浙商汇金", "汇金通", "汇金蓝", "汇金诺", "汇金宝"]
+# 「国家队」的非金融义噪音（科技/高校/航天/数据等领域）
+NEWS_NOISE = ["数据国家队", "数据集团", "数据要素", "教育部", "高校", "职业院校",
+               "火箭", "商火", "商业航天", "科技国家队"]
+# 同题异写去重：同一条新闻的不同标题写法（如「中央汇金打假」「中央汇金公司打假」
+# 「中央汇金郑重提醒」）会刷屏挤掉时效新闻，故按事件特征词二次去重
+NEWS_EVENT_GROUPS = [
+    ("打假", ["打假", "仿冒", "李鬼", "声明", "郑重提醒", "严正声明"]),
+]
+
+
+
 
 # 东财 push2his 日K 路径可用性（None=未探测 / True=可用 / False=本次运行不可用）
 _EM_KLINE_OK = None
@@ -269,7 +320,29 @@ def sync_shares(days: int = 400, path: str = db.DB_PATH):
 
 
 def _norm_news_title(t: str) -> str:
-    return re.sub(r"\s+", " ", (t or "")).strip()
+    """去 HTML 标签 + 压空白。东财搜索结果标题含 <em> 高亮标签，需剥掉。"""
+    t = re.sub(r"<[^>]+>", "", (t or ""))
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _norm_news_time(t) -> str:
+    """统一时间格式为 'YYYY-MM-DD HH:MM'（可直接字符串排序）。
+
+    同花顺/新浪给 Unix 时间戳（如 1793335013），东财给 'YYYY-MM-DD HH:MM:SS'，
+    混用会导致排序错乱，故统一转换。
+    """
+    s = str(t or "").strip()
+    if not s:
+        return ""
+    if s.isdigit():
+        try:
+            return datetime.datetime.fromtimestamp(int(s)).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return ""
+    m = re.match(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})", s)
+    if m:
+        return m.group(1) + " " + m.group(2)
+    return s
 
 
 def _extract_news_from_json(obj, title_keys=("title", "t", "subject"), url_keys=("url", "u", "link"), time_keys=("ctime", "time", "date", "dt")):
@@ -295,45 +368,148 @@ def _extract_news_from_json(obj, title_keys=("title", "t", "subject"), url_keys=
         url = next((str(item.get(k, "")) for k in url_keys if item.get(k)), "")
         t = next((str(item.get(k, "")) for k in time_keys if item.get(k)), "")
         if title:
-            out.append({"title": _norm_news_title(title), "url": url, "time": t})
+            out.append({"title": _norm_news_title(title), "url": url, "time": _norm_news_time(t)})
     return out
 
 
+def _em_search_url(keyword: str, page: int = 1, page_size: int = 20) -> str:
+    """东财搜索 API（param= JSON 格式）。
+
+    旧版 ?search_text=...&type=12 已于上游废弃（400 Bad Request），
+    现版必须把检索条件放进 param 的 JSON 里，keyword 为检索词。
+    sort=default 为综合排序（相关度优先），比 sort=time 更贴合「国家队」主题。
+    """
+    param = {
+        "uid": "",
+        "keyword": keyword,
+        "type": ["cmsArticleWebOld"],
+        "client": "web",
+        "clientVersion": "curr",
+        "clientType": "web",
+        "param": {
+            "cmsArticleWebOld": {
+                "searchScope": "default",
+                "sort": "default",
+                "pageIndex": page,
+                "pageSize": page_size,
+            }
+        },
+    }
+    qs = urllib.parse.quote(json.dumps(param, ensure_ascii=False))
+    return "https://search-api-web.eastmoney.com/search/jsonp?cb=cb&param=" + qs
+
+
+def _news_score(title: str) -> int:
+    """标题相关性打分（0=不相关）。
+
+    检索源只作「候选池」，是否入榜一律以**标题**判定，避免正文提及即入榜
+    （东财搜「中央汇金」会带出大量「机构风向标 | 某公司持仓」类噪音）。
+
+    噪音治理：
+      - 「保证金」含「证金」子串 → 期货保证金调整通知被误收；
+      - 「汇金科技」「浙商汇金」等公司/基金名 → 三季报公告被误收；
+      - 裸 ETF 标题（ETF午评 / 两市成交额 / 央行抛售ETF）→ 非国家队动向；
+      - 「国家队」在中文里也指科技/高校/航天/数据等领域 → 须搭配金融语境。
+    """
+    if not title:
+        return 0
+    if any(b in title for b in NEWS_BLOCK):
+        return 0
+    if any(n in title for n in NEWS_NOISE):
+        return 0
+    # 中央汇金/证金公司/汇金公司：唯一指向证券国家队，命中即相关
+    if any(k in title for k in NEWS_STRONG):
+        return SCORE_STRONG
+    # 国家队：须搭配金融语境才属本面板
+    if NEWS_GUOJIA in title:
+        return SCORE_STRONG if any(c in title for c in NEWS_FIN_CTX) else 0
+    if any(k in title for k in NEWS_WEAK_SUBJECT):
+        return SCORE_WEAK if any(c in title for c in NEWS_A_CTX) else 0
+    if any(k in title for k in NEWS_ACTION):
+        return SCORE_WEAK if any(c in title for c in NEWS_A_CTX) else 0
+    if "ETF" in title:
+        return SCORE_WEAK if any(c in title for c in NEWS_BUY_CTX) else 0
+    return 0
+
+
 def fetch_news() -> list:
-    """多源尽力抓取与国家队相关的财经新闻，失败则降级返回空。"""
-    out = []
-    srcs = [
-        # 新浪滚动财经 (pageid 515)
-        ("新浪财经", "https://feed.mix.sina.com.cn/api/roll/get?pageid=515&ct=1&num=40&version=1",
-         "https://finance.sina.com.cn/"),
-        # 东方财富搜索
-        ("东方财富", "https://search-api-web.eastmoney.com/search/jsonp?cb=cb&search_text=%E5%9B%BD%E5%AE%B6%E9%98%9F&pageindex=1&pagesize=20&type=12",
-         "https://search.eastmoney.com/"),
-    ]
+    """多源尽力抓取与国家队相关的财经新闻，失败则降级返回空。
+
+    每个源独立 try/except：单源故障不影响其它源产出。
+    """
     raw = []
-    for src, url, ref in srcs:
+    # 主源：东财搜索（keyword 精确，作候选池；入榜仍以标题判定）
+    # 取 2 页：单页仅 20 条，含大量旧文，取 2 页可覆盖到「ETF数据专题-国家队今天买了啥」这类高价值条目
+    for kw in NEWS_EM_KEYWORDS:
+        for pg in (1, 2):
+            raw.append(("东方财富", _em_search_url(kw, page=pg), "https://search.eastmoney.com/"))
+    # 备源：同花顺 7×24 快讯（实时全量流，靠标题关键词过滤）
+    raw.append(("同花顺", "https://news.10jqka.com.cn/tapp/news/push/stock/?page=1&tag=&track=website&pagesize=30",
+                "https://news.10jqka.com.cn/"))
+    # 备源：新浪财经滚动（pageid=153 + lid=2516 全量流，靠标题关键词过滤）
+    raw.append(("新浪财经", "https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2516&k=&num=40&page=1",
+                "https://finance.sina.com.cn/"))
+
+    scored = []
+    for src, url, ref in raw:
         try:
             txt = _get(url, ref)
             txt = re.sub(r"^cb\(|\)$", "", txt.strip()) if txt.strip().startswith("cb(") else txt
             d = json.loads(txt)
-            items = _extract_news_from_json(d)
-            for it in items:
+            for it in _extract_news_from_json(d):
+                sc = _news_score(it["title"])
+                if sc <= 0:
+                    continue
                 it["src"] = src
-                raw.append(it)
+                it["_score"] = sc
+                scored.append(it)
         except Exception:
             continue
-    # 关键词过滤
-    seen = set()
-    for it in raw:
-        title = it["title"]
-        if not any(k in title for k in NEWS_KEYWORDS):
-            continue
-        key = title[:40]
-        if key in seen:
-            continue
-        seen.add(key)
+
+    # 去重（同一标题多源命中只留一条，保留分高者）
+    best = {}
+    for it in scored:
+        key = it["title"][:40]
+        if key not in best or it["_score"] > best[key]["_score"]:
+            best[key] = it
+    cand = sorted(best.values(),
+                  key=lambda x: (x["_score"], str(x.get("time") or "")),
+                  reverse=True)
+    # 同题异写去重：同一事件（打假/仿冒/声明类）只保留最新的一条，
+    # 否则「中央汇金打假」的 7 种写法会刷屏挤掉时效新闻
+    seen_events = set()
+    out = []
+    for it in cand:
+        ev = next((g for g, toks in NEWS_EVENT_GROUPS
+                   if any(t in it["title"] for t in toks)), None)
+        if ev:
+            if ev in seen_events:
+                continue
+            seen_events.add(ev)
         out.append(it)
-    return out[:12]
+        if len(out) >= 12:
+            break
+    for it in out:
+        it.pop("_score", None)
+    return out
+
+
+def split_news_by_date(news: list) -> dict:
+    """按新闻自身发布日期分组：{'2026-10-30': [row, ...], ...}。
+
+    为什么按发布日期而不是「抓取当天」归档：
+    06:00 补抓时 target_date() 指向的是**上一交易日**，若把当日新闻全记到
+    上一交易日名下，日期与新闻内容就对不上了。每条新闻带 time（YYYY-MM-DD HH:MM），
+    取其日期部分归档最贴合事实。
+    无法解析日期的条目归到 today。
+    """
+    groups = {}
+    today = datetime.date.today().isoformat()
+    for it in news or []:
+        t = str(it.get("time") or "")
+        d = t[:10] if len(t) >= 10 and t[4] == "-" and t[7] == "-" else today
+        groups.setdefault(d, []).append(it)
+    return groups
 
 
 def is_trading_day(d=None) -> bool:
@@ -353,7 +529,9 @@ def fetch_and_save(force: bool = False) -> dict:
     total_amount = sum(e["amount"] for e in etfs)
 
     db.save_etf_daily(today, etfs)
-    db.save_news(today, news)
+    # 新闻按自身发布日期归档（见 split_news_by_date 说明），增量合并不覆盖
+    for d, items in split_news_by_date(news).items():
+        db.merge_news(d, items)
     db.set_meta("last_fetch", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     db.set_meta("last_date", today)
     db.set_meta("news_ok", "1" if news else "0")
@@ -447,7 +625,10 @@ def backfill_date(date: str) -> dict:
             ok_main += 1
         time.sleep(0.08)
     db.save_etf_daily(date, rows)
-    db.save_news(date, [])  # 历史新闻无法精确还原，留空
+    # 历史新闻无法精确还原，但**不能清空**该日期已有的新闻
+    # （回补行情时会把同日期已抓到的新闻抹掉）。
+    if not db.get_news_by_date(date):
+        db.save_news(date, [])  # 该日期确实没有新闻记录时留空
     return {"date": date, "etf_count": len(rows), "mainnet_ok": ok_main, "missing": missing}
 
 

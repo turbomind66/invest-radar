@@ -180,6 +180,19 @@ def sync_missing(days: int = 20, span: int = 121, path: str = db.DB_PATH) -> lis
         except Exception as e:
             notes.append("实时校准失败(%s)" % type(e).__name__)
 
+    # 4) 新闻：定时同步路径也要抓。
+    #    此前只有 app.py 的手动刷新会调 fetch_news，导致 GitHub Actions /
+    #    Docker cron 跑出来的静态站 news 表恒为空 → 面板显示「新闻源暂未连通」。
+    #    按新闻自身发布日期归档（fetch_news 返回的 time 已归一为 'YYYY-MM-DD HH:MM'）。
+    try:
+        nnews = fetcher.fetch_news()
+        for d, items in fetcher.split_news_by_date(nnews).items():
+            db.merge_news(d, items, path)
+        db.set_meta("news_ok", "1" if nnews else "0", path)
+        done.append("新闻 %d 条" % len(nnews))
+    except Exception as e:
+        notes.append("新闻抓取失败(%s)" % type(e).__name__)
+
     if done:
         db.set_meta("last_fetch", bj_now().strftime("%Y-%m-%d %H:%M:%S"), path)
     # 同步状态写入 meta，页面"数据更新于"条会显示——失败不再静默
@@ -191,6 +204,14 @@ def sync_missing(days: int = 20, span: int = 121, path: str = db.DB_PATH) -> lis
 
 
 # ---------------- 组装静态数据 ----------------
+def _news_fallback(news: dict) -> dict:
+    """挑最近一个有新闻的日期，作为所选日期无新闻时的兜底展示。"""
+    for d in sorted(news or {}, reverse=True):
+        if news[d]:
+            return {"date": d, "items": news[d]}
+    return {"date": None, "items": []}
+
+
 def build_static_payload(path: str = db.DB_PATH, window_days: int = None) -> dict:
     """全量快照：所有日期的明细一次性打包，筛选交给前端算。
 
@@ -205,7 +226,10 @@ def build_static_payload(path: str = db.DB_PATH, window_days: int = None) -> dic
     if window_days and len(dates) > window_days:
         dates = dates[-window_days:]
     days = {d: db.get_etf_by_date(d, path=path) for d in dates}
-    news = {d: db.get_news_by_date(d, path=path) for d in dates}
+    # 新闻按**发布日期**归档，可能落在没有 ETF 明细的日期（如当日只出了新闻、
+    # 行情尚未回补）。只按 dates 取会丢掉这些条目，故此处取并集。
+    news_dates = sorted(set(dates) | set(db.get_news_dates(path)))
+    news = {d: db.get_news_by_date(d, path=path) for d in news_dates}
     # 一级市场申赎（ETF 份额）：按日期打包，前端与明细表合并展示
     # 只打包应用展示的交易日（本地库仍保留完整份额历史，供后续回补二级数据时复用）
     dset = set(dates)
@@ -222,6 +246,9 @@ def build_static_payload(path: str = db.DB_PATH, window_days: int = None) -> dic
         "news_ok": db.get_meta("news_ok", "1", path) == "1",
         "days": days,
         "news": news,
+        # 兜底新闻：所选日期没有新闻时，前端展示最近有新闻的那天，
+        # 并标注其日期（避免整块面板空着让人以为功能没了）。
+        "news_fallback": _news_fallback(news),
         "shares": shares,
         "history_full": history_full,
         # 疑似护盘/压盘模块：带最近 10 个有分时的日期（上限控制体积；库里存的是全量）
@@ -384,16 +411,17 @@ def main():
                   % (tk_total, tk_funds))
             # 缺口检测：某天没抓到且已滑出上游窗口 → 永久缺失，明确告知
             gap = intraday.gap_dates()
-            db.set_meta("intraday_gap", ",".join(gap) if gap else "", path)
+            # 注意：main() 里没有 path 变量，set_meta/get_meta 用默认 DB_PATH
+            db.set_meta("intraday_gap", ",".join(gap) if gap else "")
             if gap:
                 print("[intraday] ⚠ 分时历史有缺口（已无法回补）：%s" % ", ".join(gap))
             # 缺口并入同步状态（页面时间戳条可见）；幂等：先去掉旧提示再追加
-            base = db.get_meta("last_sync", "", path)
+            base = db.get_meta("last_sync", "")
             if "；⚠ 分时缺口" in base:
                 base = base.split("；⚠ 分时缺口")[0]
             if gap:
                 base += "；⚠ 分时缺口 %d 天（%s）" % (len(gap), ",".join(gap[:5]))
-            db.set_meta("last_sync", base, path)
+            db.set_meta("last_sync", base)
             intraday.notify_stub(None)
         except Exception as e:
             print("[intraday] 分时抓取失败（不影响主流程）：%s" % e)

@@ -273,6 +273,7 @@ def get_tick_dates(path: str = DB_PATH):
 
 
 def save_news(date: str, rows: list, path: str = DB_PATH):
+    """覆盖式保存某日新闻（先删后插）。"""
     conn = _conn(path)
     cur = conn.cursor()
     cur.execute("DELETE FROM news WHERE date=?", (date,))
@@ -283,6 +284,35 @@ def save_news(date: str, rows: list, path: str = DB_PATH):
         )
     conn.commit()
     conn.close()
+
+
+def merge_news(date: str, rows: list, path: str = DB_PATH) -> int:
+    """增量写入某日新闻：按标题去重，只补充库里没有的条目，返回新增条数。
+
+    新闻是「多条不同报道」，不同源/不同次抓取会拿到同一批标题。
+    用覆盖式保存会把先前已抓到的条目清掉（尤其同一天分两次抓，
+    第二次结果少就会丢条目），故这里做增量合并。
+    """
+    if not rows:
+        return 0
+    conn = _conn(path)
+    cur = conn.cursor()
+    have = {r[0] for r in cur.execute(
+        "SELECT title FROM news WHERE date=?", (date,)).fetchall()}
+    n = 0
+    for r in rows:
+        title = (r.get("title") or "").strip()
+        if not title or title in have:
+            continue
+        have.add(title)
+        cur.execute(
+            "INSERT INTO news(date,time,title,url,src) VALUES(?,?,?,?,?)",
+            (date, r.get("time", ""), title, r.get("url", ""), r.get("src", "")),
+        )
+        n += 1
+    conn.commit()
+    conn.close()
+    return n
 
 
 def set_meta(key: str, value: str, path: str = DB_PATH):
@@ -416,6 +446,21 @@ def get_news_by_date(date: str, path: str = DB_PATH):
     ).fetchall()
     conn.close()
     return [{"time": r[0], "title": r[1], "url": r[2], "src": r[3]} for r in rows]
+
+
+def get_news_dates(path: str = DB_PATH):
+    """所有有新闻记录的日期（降序）。"""
+    conn = _conn(path)
+    rows = conn.execute(
+        "SELECT DISTINCT date FROM news ORDER BY date DESC").fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+def get_latest_news_date(path: str = DB_PATH):
+    """最近一个有新闻的日期；没有则返回 None。"""
+    d = get_news_dates(path)
+    return d[0] if d else None
 
 
 def get_history(cats=None, codes=None, path: str = DB_PATH, limit_days: int = 0):

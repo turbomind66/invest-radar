@@ -116,11 +116,11 @@
   <div class="grid2">
     <div class="card">
       <h2>② 全球市场信号 <span class="tag" id="signalGroups"></span></h2>
-      <div class="warn" style="margin-bottom:8px;">⚠️ <b>海外指数现货、VIX</b> 为「上一交易日·非实时」（北京时间14:30美东已收盘）；
-        <b>期货</b>（CME Globex 近24h）、<b>美债10Y</b>（CNBC 报价）、<b>境内场内 ETF</b> 为<b>实时</b>。
-        <br>欧洲/亚太有几类<b>取不到海外指数现货</b>（东财接口在本网络恒断、腾讯/新浪无对应代码），
-        改用<b>境内对应场内 ETF 实时价</b>代理；<b>英国富时100 连境内 ETF 都没有</b>，用美股
-        <code>usEWU</code>（iShares MSCI 英国 ETF）代理 —— 代理项名称里标了「代理」，不冒充指数。</div>
+      <div class="warn" style="margin-bottom:8px;">⚠️ <b>海外指数现货、VIX</b> 为「上一交易日·非实时」——美股交易时段对应北京时间约 21:30–次日 04:00(夏)/05:00(冬)，
+        北京时间 14:30 抓取时美股处于休市时段（美东约 01:30–02:30），取到的就是上一交易日收盘值；
+        <b>期货</b>（CME Globex 近24h）、<b>美债10Y</b>（CNBC 实时报价）、<b>境内场内 ETF</b> 为<b>实时</b>。
+        <br>欧洲/亚太指数（DAX/CAC40/FTSE/日经225）经 <b>CNBC 真实指数</b>抓取（同样为上一当地交易日收盘、非实时）；
+        仅当 CNBC 与东财均不可达时，才降级回<b>境内对应场内 ETF</b>（DAX/CAC40）或美股 <code>usEWU</code>（富时100）代理 —— 代理项名称标「代理」，不冒充指数。</div>
       <div class="tscroll" style="max-height:330px;">
       <table id="signalTable"><thead><tr>
         <th>标的</th><th>最新价</th><th>涨跌值</th><th>涨跌幅</th><th>实时?</th>
@@ -325,6 +325,7 @@ function renderSignal(rows, meta, groups){
       const rt=r.is_realtime? '<span class="pill p-green">实时</span>' : '<span class="pill" style="background:#f1f5f9;color:#475569">昨收·非实时</span>';
       // 类型标签（指数/期货/场内ETF/美股ETF·代理…）由后端下发
       const m=meta[r.symbol]||{};
+      const code = m.code || "";
       let sub = m.kind || (r.is_realtime?'期货 · 24h 连续':'现货 · 上一交易日收盘');
       if(isUst) sub='实时 · 收益率 · 防御阈值 日升 '+UST_HARD_BP+'bp';
       if(isVix) sub='日频 · 上一交易日收盘 · 防御阈值 '+VIX_HARD;
@@ -352,7 +353,7 @@ function renderSignal(rows, meta, groups){
         if(r.change_bp>UST_HARD_BP) flag='<span class="pill p-red">已触发防御 ×0.5</span>';
         else if(r.change_bp>=UST_WARN_BP) flag='<span class="pill p-limit">逼近阈值</span>';
       }
-      tr.innerHTML='<td>'+r.name+'<br><small style="color:#94a3b8">'+sub+'</small></td>'+
+      tr.innerHTML='<td>'+r.name+(code?' <code style="background:#eef2f7;padding:1px 5px;border-radius:4px;font-size:11px;color:#475569">'+code+'</code>':'')+'<br><small style="color:#94a3b8">'+sub+'</small></td>'+
         '<td>'+price+'</td>'+
         '<td>'+valHtml+'</td>'+
         '<td>'+pctHtml+'</td>'+

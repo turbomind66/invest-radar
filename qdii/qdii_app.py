@@ -75,7 +75,7 @@ def route_api(path, query=None):
         # meta/groups 来自 constants.MARKET_SIGNALS：分组（美股/科技/亚太/欧洲/利率）
         # 与类型标签（指数/期货/场内ETF/美股ETF·代理…）由后端统一下发，
         # 前端不硬编码口径，将来加新市场只改常量。
-        meta = {s[0]: {"name": s[1], "group": s[2], "kind": s[3]}
+        meta = {s[0]: {"name": s[1], "group": s[2], "kind": s[3], "code": s[4]}
                 for s in C.MARKET_SIGNALS}
         return {"rows": fetcher_signal.get_latest_us_signal(),
                 "meta": meta, "groups": C.MARKET_GROUPS}

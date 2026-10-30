@@ -134,7 +134,7 @@
     .fresh .hint{display:none}.fresh .t{font-size:14.5px}.fresh .t b{font-size:15px}
   }
 </style>
-<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-30 07:22:21", "worker_url": "", "peer_url": "qdii/"};</script>
+<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-30 13:14:24", "worker_url": "", "peer_url": "qdii/"};</script>
 <script>/* common/static_refresh.js — 静态托管站共享刷新逻辑（国家队 / QDII 复用）
  *
  * 由 national_team/app.py 与 qdii 的 render_index / staticsite 在「构建或响应时」
@@ -538,6 +538,8 @@ function computeStaticPayload(raw, date, cats, codes){
     partial_main: mainOk && (etf.length - cur.has_main) > 0,
     etf: etf,
     news: (raw.news && raw.news[selDate]) || [],
+    // 所选日期无新闻时的兜底（取最近有新闻的一天）
+    news_fallback: raw.news_fallback || null,
     history: history,
     filters: { date: selDate, cats: cats, codes: codes,
                filtered: !!(cats.length || codes.length), auto: !date,
@@ -764,7 +766,16 @@ function render(d){
   if(!d.news_ok){
     nl.innerHTML = `<li class="empty">新闻源暂未连通（上游接口限制），核心净买入数据不受影响。</li>`;
   } else if(!d.news || !d.news.length){
-    nl.innerHTML = `<li class="empty">${isHistory?"该历史日期无新闻记录（历史补数不回溯新闻）。":"今日暂无匹配“国家队/汇金/证金/增持”的新闻。"}</li>`;
+    // 所选日期没有新闻 → 展示最近有新闻的一天（并标注日期），而不是整块留空
+    const fb = d.news_fallback;
+    if(fb && fb.items && fb.items.length){
+      nl.innerHTML = fb.items.map(n=>`<li>
+        <a href="${esc(n.url||'#')}" target="_blank" rel="noopener">${esc(n.title)}</a>
+        <div class="t">${esc(n.time||"")}<span class="src">${esc(n.src||"")}</span></div></li>`).join("")
+        + `<li class="empty" style="border:0;padding-top:6px">（该日期无新闻，以上为 ${esc(fb.date||"")} 的记录）</li>`;
+    } else {
+      nl.innerHTML = `<li class="empty">${isHistory?"该历史日期无新闻记录（历史补数不回溯新闻）。":"今日暂无匹配“国家队/汇金/证金/增持”的新闻。"}</li>`;
+    }
   } else {
     nl.innerHTML = d.news.map(n=>`<li>
       <a href="${esc(n.url||'#')}" target="_blank" rel="noopener">${esc(n.title)}</a>
@@ -1048,8 +1059,8 @@ function renderTick(d){
     const cardsData = [
       {k:"集中扫货事件", v:String(tk.buy_events), sub:"大单净买主导", cls:"red"},
       {k:"集中抛压事件", v:String(tk.sell_events), sub:"大单净卖主导", cls:"green"},
-      {k:"大买单合计", v:fmt(tk.buy_amount/1e8)+" 亿", sub:`单笔≥${fmt((th.big||0)/1e8,2)}亿`, cls:"red"},
-      {k:"大卖单合计", v:fmt(tk.sell_amount/1e8)+" 亿", sub:"主动卖出分量", cls:"green"},
+      {k:"大买单合计", v:fmt(tk.buy_amount/1e8)+" 亿", sub:`单笔≥${fmt((th.big||0)/1e4,0)}万`, cls:"red"},
+      {k:"大卖单合计", v:fmt(tk.sell_amount/1e8)+" 亿", sub:`单笔≥${fmt((th.big||0)/1e4,0)}万`, cls:"green"},
     ];
     cards.innerHTML = cardsData.map(c=>`
       <div class="card"><div class="k">${c.k}</div>
@@ -1078,8 +1089,8 @@ function renderTick(d){
   }
   if(note){
     const th = tk.thresholds || {};
-    note.innerHTML = `判定口径：单笔大单 ≥ <b>${fmt((th.big||0)/1e8,2)}</b> 亿元；窗口(5分钟)内<b>大买单占比 ≥ ${fmt((th.buy_ratio||0)*100,0)}%</b>`
-      + `且<b>净买 ≥ ${fmt((th.min_win_amt||0)/1e8,1)}</b> 亿、价格上行 → 记「集中扫货」(疑似主动托盘)；反之记「集中抛压」。`
+    note.innerHTML = `判定口径：单笔大单 ≥ <b>${fmt((th.big||0)/1e4,0)}</b> 万元；窗口(5分钟)内<b>大买单占比 ≥ ${fmt((th.buy_ratio||0)*100,0)}%</b>`
+      + `且<b>净买 ≥ ${fmt((th.min_win_amt||0)/1e4,0)}</b> 万元、价格上行 → 记「集中扫货」(疑似主动托盘)；反之记「集中抛压」。`
       + `<br>数据源为东财逐笔成交滚动明细，<b>盘后仅尾盘快照</b>，盘中多次采样可累积全天大单分布；若方案A 同窗口有护盘信号，则升级为「逐笔印证」。`;
   }
 }
@@ -1378,6 +1389,11 @@ if(STATIC){
   }
   var note = document.querySelector(".note");
   if(note) note.innerHTML += " <b>本站为静态托管版</b>：数据由定时任务抓取；点「刷新当日行情」可浏览器直连拉取当天实时价与资金流（需上游可达），点「全量更新」触发后台重算（配置 Worker 后）。";
+}
+// 服务端模式(VPS 跑 app.py)：「刷新当日行情」与「立即刷新」调用同一后端，隐藏冗余按钮
+if(!STATIC){
+  var _tb = document.getElementById("refresh-today-btn");
+  if(_tb) _tb.style.display = "none";
 }
 loadData();
 </script>

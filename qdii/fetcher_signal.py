@@ -244,6 +244,10 @@ def fetch_cnbc_global_index():
         s = str(s).replace(",", "").replace("%", "").strip()
         if not s:
             return None
+        # CNBC 用 'UNCH' 表示「未变动」（收盘价=昨收价）→ 涨跌为 0，
+        # 直接 float 会失败返回 None，导致该指数在面板上缺涨跌幅。
+        if s.upper() in ("UNCH", "UNCHANGED", "N/A", "NA", "--"):
+            return 0.0
         try:
             return float(s)
         except ValueError:
@@ -330,6 +334,12 @@ def fetch_sina_a_etf():
 def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
     date = date or datetime.date.today().isoformat()
     now = datetime.datetime.now().isoformat(timespec="seconds")
+    # 确保旧库补齐新增列（change_value / change_bp）：本函数是唯一不依赖
+    # app/scheduler 启动时 init_db 的入口，缺列会直接 INSERT 失败。
+    try:
+        db.init_db(path).close()
+    except Exception:
+        pass
     rows = []
     # 期货（实时）
     try:

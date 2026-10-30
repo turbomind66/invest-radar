@@ -86,6 +86,38 @@ class TestStorage(unittest.TestCase):
         self.assertEqual(news[0]["title"], "汇金增持宽基ETF")
         self.assertEqual(news[0]["src"], "测试源")
 
+    def test_merge_news_is_idempotent_and_additive(self):
+        """增量合并：重复抓不产生重复条目，新条目能补进来，已有条目不丢。"""
+        a = {"time": "09:30", "title": "国家队增持宽基ETF", "url": "u1", "src": "s1"}
+        b = {"time": "10:00", "title": "中央汇金声明", "url": "u2", "src": "s2"}
+        self.assertEqual(db.merge_news(D1, [a], path=self.path), 1)
+        self.assertEqual(db.merge_news(D1, [a], path=self.path), 0)   # 重复不新增
+        self.assertEqual(db.merge_news(D1, [a, b], path=self.path), 1)  # 只补新的
+        news = db.get_news_by_date(D1, path=self.path)
+        self.assertEqual(len(news), 2)
+        self.assertEqual({n["title"] for n in news},
+                         {"国家队增持宽基ETF", "中央汇金声明"})
+
+    def test_merge_news_does_not_drop_existing(self):
+        """覆盖式保存会清空旧条目；merge_news 不得如此。"""
+        db.save_news(D1, [{"time": "09:30", "title": "旧条目", "url": "u0", "src": "s0"}],
+                     path=self.path)
+        db.merge_news(D1, [{"time": "10:00", "title": "新条目", "url": "u1", "src": "s1"}],
+                      path=self.path)
+        titles = {n["title"] for n in db.get_news_by_date(D1, path=self.path)}
+        self.assertIn("旧条目", titles)
+        self.assertIn("新条目", titles)
+
+    def test_news_dates_and_latest(self):
+        """兜底展示用：找出最近一个有新闻的日期。"""
+        self.assertIsNone(db.get_latest_news_date(path=self.path))
+        db.merge_news(D2, [{"time": "10:00", "title": "较新", "url": "u", "src": "s"}],
+                      path=self.path)
+        db.merge_news(D3, [{"time": "10:00", "title": "最新", "url": "u", "src": "s"}],
+                      path=self.path)
+        self.assertEqual(db.get_latest_news_date(path=self.path), D3)
+        self.assertEqual(db.get_news_dates(path=self.path), [D3, D2])
+
     def test_meta_roundtrip(self):
         db.set_meta("last_fetch", "2026-10-28 16:05:00", path=self.path)
         self.assertEqual(db.get_meta("last_fetch", path=self.path), "2026-10-28 16:05:00")

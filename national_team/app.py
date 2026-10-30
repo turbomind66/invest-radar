@@ -93,6 +93,12 @@ def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
         e["chg_shares"] = s.get("chg_shares")
         e["net_sub"] = s.get("net_sub")
     news = db.get_news_by_date(sel_date, path) if sel_date else []
+    # 兜底新闻：所选日期没有新闻时取最近有新闻的那天（避免面板整块空白）
+    news_fallback = {"date": None, "items": []}
+    if not news:
+        fd = db.get_latest_news_date(path)
+        if fd:
+            news_fallback = {"date": fd, "items": db.get_news_by_date(fd, path)}
     # 历史序列：未筛选用全量汇总（趋势图展示完整区间，日期=二级∪一级并集）；
     # 筛选时用窗口内聚合（与静态端浏览器自算同口径）
     if cats or codes:
@@ -122,6 +128,7 @@ def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
         "partial_main": partial_main,
         "etf": etf,
         "news": news,
+        "news_fallback": news_fallback,
         "history": history,
         "filters": {
             "date": sel_date,
