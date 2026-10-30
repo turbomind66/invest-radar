@@ -1306,6 +1306,11 @@ if(STATIC){
   var note = document.querySelector(".note");
   if(note) note.innerHTML += " <b>本站为静态托管版</b>：数据由定时任务抓取；点「刷新当日行情」可浏览器直连拉取当天实时价与资金流（需上游可达），点「全量更新」触发后台重算（配置 Worker 后）。";
 }
+// 服务端模式(VPS 跑 app.py)：「刷新当日行情」与「立即刷新」调用同一后端，隐藏冗余按钮
+if(!STATIC){
+  var _tb = document.getElementById("refresh-today-btn");
+  if(_tb) _tb.style.display = "none";
+}
 loadData();
 </script>
 </body>

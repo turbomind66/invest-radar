@@ -623,6 +623,12 @@ if(STATIC){
   if(tb && !__w) tb.style.display = "none";
 }
 
+// 服务端模式(VPS 跑 app.py)：「刷新当日行情」与「立即刷新」调用同一后端，隐藏冗余按钮
+if(!STATIC){
+  var _tb = document.getElementById("refresh-today-btn");
+  if(_tb) _tb.style.display = "none";
+}
+
 if(STATIC){ loadStatic(); } else { loadAll(); }
 </script>
 </body>
