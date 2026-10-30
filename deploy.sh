@@ -59,6 +59,25 @@ done
 
 port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1; }
 
+# 端口占用检测：区分两种情况
+#   a) 被**本项目自己的容器**占用 → 升级重建场景，compose 会自动接管，属正常，不是冲突
+#   b) 被**其它服务**占用           → 真冲突，才需要提醒换端口
+check_port_conflict() {
+    local port="$1"
+    local owners
+    owners="$(docker ps --format '{{.Names}}|{{.Ports}}' 2>/dev/null \
+             | grep -- ":${port}->" | cut -d'|' -f1 | tr '\n' ' ' | sed 's/ $//' || true)"
+    if [ -n "${owners}" ]; then
+        info "端口 ${port} 当前由本项目容器占用（${owners}），重建时自动接管 —— 属正常升级流程，不是端口冲突"
+        return 0
+    fi
+    if port_in_use "${port}"; then
+        warn "端口 ${port} 已被其它服务占用，可能与服务器上已有服务冲突。"
+        warn "如需更换：./deploy.sh --port <其它端口>，或改 .env 里的 GATEWAY_HOST_PORT。"
+    fi
+    return 0
+}
+
 # ---- 0. 拉取最新代码（一键升级的关键一步）----
 # 只在 git 仓库里执行；非 git 目录（手动拷贝的代码）自动跳过，不报错。
 pull_latest() {
@@ -148,8 +167,7 @@ GATEWAY_HOST_PORT="$(grep -m1 '^GATEWAY_HOST_PORT=' .env | cut -d= -f2 | tr -d '
 [ -n "${GATEWAY_HOST_PORT}" ] || GATEWAY_HOST_PORT=48881
 
 if port_in_use "${GATEWAY_HOST_PORT}"; then
-    warn "端口 ${GATEWAY_HOST_PORT} 已被占用，可能与服务器上已有服务冲突。"
-    warn "如需更换：./deploy.sh --port <其它端口>，或改 .env 里的 GATEWAY_HOST_PORT。"
+    check_port_conflict "${GATEWAY_HOST_PORT}"
 fi
 
 # ---- 3. 构建并启动 ----
