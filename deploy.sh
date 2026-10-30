@@ -116,8 +116,11 @@ check_port_conflict() {
     if [ -n "${owners}" ]; then
         # 把占用者分成「我们自己的」和「别人的」
         local our_list other_list
-        our_list="$(printf '%s\n' "${owners}" | grep -E "${ours_pattern}" | tr '\n' ' ' | sed 's/ $//')"
-        other_list="$(printf '%s\n' "${owners}" | grep -Ev "${ours_pattern}" | tr '\n' ' ' | sed 's/ $//')"
+        # ⚠️ 两处 grep 都必须带 `|| true`：脚本开了 set -e，而 grep 无匹配时返回 1，
+        # 命令替换的退出码会直接让整条赋值语句失败 —— 升级场景（端口已被本项目容器占用、
+        # other_list 必然空）会当场静默退出，屏幕上只看到「代码已是最新」就没了下文。
+        our_list="$(printf '%s\n' "${owners}" | grep -E "${ours_pattern}" | tr '\n' ' ' | sed 's/ $//' || true)"
+        other_list="$(printf '%s\n' "${owners}" | grep -Ev "${ours_pattern}" | tr '\n' ' ' | sed 's/ $//' || true)"
         if [ -n "${our_list}" ]; then
             info "端口 ${port} 由本项目容器占用（${our_list}），重建时自动接管 —— 属正常升级流程"
         fi
@@ -220,7 +223,9 @@ if [ -n "${GATEWAY_HOST_PORT}" ]; then
 fi
 
 # 对外只有这一个端口：宿主机 GATEWAY_HOST_PORT -> 容器 GATEWAY_PORT(38881)
-GATEWAY_HOST_PORT="$(grep -m1 '^GATEWAY_HOST_PORT=' .env | cut -d= -f2 | tr -d '[:space:]')"
+# 同样要 `|| true`：.env 里没有这一行时 grep 返回 1，在 set -e 下会让脚本静默退出
+# （下一行还有 48881 兜底，作者本意就是允许它缺失）。
+GATEWAY_HOST_PORT="$(grep -m1 '^GATEWAY_HOST_PORT=' .env | cut -d= -f2 | tr -d '[:space:]' || true)"
 [ -n "${GATEWAY_HOST_PORT}" ] || GATEWAY_HOST_PORT=48881
 
 if port_in_use "${GATEWAY_HOST_PORT}"; then
