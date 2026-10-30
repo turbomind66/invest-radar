@@ -630,14 +630,20 @@ def build_view(date: str, path: str = db.DB_PATH):
     tick_buy = [e for e in tick_events if e["kind"] == "tick_buy"]
     tick_sell = [e for e in tick_events if e["kind"] == "tick_sell"]
     tick_rows = db.get_tick_by_date(date, path=path)
+    # 合计口径必须统计【全部】大单，而非仅「集中事件」金额：
+    # 盘后快照里大单散落各窗口、形不成集中事件，若只汇总事件金额会恒为 0，
+    # 造成"有 12 笔大单却显示 0.00 亿"的假象。方向口径与 compute_tick_events 一致
+    # （direction==1 记买，其余记卖），保证合计与事件净额可对齐。
+    tick_buy_amt = sum(r.get("amount") or 0 for r in tick_rows if r.get("direction") == 1)
+    tick_sell_amt = sum(r.get("amount") or 0 for r in tick_rows if r.get("direction") != 1)
     tick_summary = {
         "has_data": bool(tick_rows),
         "big_count": len(tick_rows),
         "events": tick_events,
         "buy_events": len(tick_buy),
         "sell_events": len(tick_sell),
-        "buy_amount": sum(e["amount"] for e in tick_buy),
-        "sell_amount": sum(e["amount"] for e in tick_sell),
+        "buy_amount": tick_buy_amt,
+        "sell_amount": tick_sell_amt,
         "thresholds": {"big": TICK_BIG, "huge": TICK_HUGE, "buy_ratio": BUY_RATIO,
                        "min_win_amt": MIN_WIN_AMT, "window": TICK_WIN},
     }

@@ -290,6 +290,35 @@ class TestTickDetect(unittest.TestCase):
         self.assertIn("thresholds", v["tick"])
         self.assertEqual(v["tick"]["thresholds"]["big"], intraday.TICK_BIG)
 
+    def test_tick_totals_include_all_rows_not_just_events(self):
+        """回归：盘后快照里大单散落各窗口、形不成集中事件时，
+        「大买单合计/大卖单合计」仍须汇总【全部】大单金额，不能为 0。"""
+        tmp = tempfile.mkdtemp()
+        try:
+            p = os.path.join(tmp, "s.db")
+            db.init_db(p)
+            # 5 笔大单：3 买 2 卖，分散在不同时段，净额均不足 → 不会触发集中事件
+            _tick(p, D1, "510300", "沪深300ETF", "沪深300", [
+                ("11:30:02", 4.105, 3088, 1, 3088 * 4.105 * 100),
+                ("14:55:10", 4.110, 5000, 2, 5000 * 4.110 * 100),
+                ("14:56:01", 2.950, 2000, 1, 2000 * 2.950 * 100),
+                ("14:57:22", 2.960, 1500, 2, 1500 * 2.960 * 100),
+                ("14:58:00", 1.850, 3000, 1, 3000 * 1.850 * 100),
+            ])
+            v = intraday.build_view(D1, path=p)["tick"]
+            self.assertEqual(v["big_count"], 5)
+            self.assertEqual(v["buy_events"], 0)   # 无集中事件
+            self.assertEqual(v["sell_events"], 0)
+            # 合计必须覆盖全部大单（3 买 + 2 卖），不能为零
+            expect_buy = 3088 * 4.105 * 100 + 2000 * 2.950 * 100 + 3000 * 1.850 * 100
+            expect_sell = 5000 * 4.110 * 100 + 1500 * 2.960 * 100
+            self.assertAlmostEqual(v["buy_amount"], expect_buy, delta=1)
+            self.assertAlmostEqual(v["sell_amount"], expect_sell, delta=1)
+            self.assertGreater(v["buy_amount"], 0)
+            self.assertGreater(v["sell_amount"], 0)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

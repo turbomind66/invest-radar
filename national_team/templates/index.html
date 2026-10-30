@@ -975,8 +975,8 @@ function renderTick(d){
     const cardsData = [
       {k:"集中扫货事件", v:String(tk.buy_events), sub:"大单净买主导", cls:"red"},
       {k:"集中抛压事件", v:String(tk.sell_events), sub:"大单净卖主导", cls:"green"},
-      {k:"大买单合计", v:fmt(tk.buy_amount/1e8)+" 亿", sub:`单笔≥${fmt((th.big||0)/1e8,2)}亿`, cls:"red"},
-      {k:"大卖单合计", v:fmt(tk.sell_amount/1e8)+" 亿", sub:"主动卖出分量", cls:"green"},
+      {k:"大买单合计", v:fmt(tk.buy_amount/1e8)+" 亿", sub:`单笔≥${fmt((th.big||0)/1e4,0)}万`, cls:"red"},
+      {k:"大卖单合计", v:fmt(tk.sell_amount/1e8)+" 亿", sub:`单笔≥${fmt((th.big||0)/1e4,0)}万`, cls:"green"},
     ];
     cards.innerHTML = cardsData.map(c=>`
       <div class="card"><div class="k">${c.k}</div>
@@ -1005,8 +1005,8 @@ function renderTick(d){
   }
   if(note){
     const th = tk.thresholds || {};
-    note.innerHTML = `判定口径：单笔大单 ≥ <b>${fmt((th.big||0)/1e8,2)}</b> 亿元；窗口(5分钟)内<b>大买单占比 ≥ ${fmt((th.buy_ratio||0)*100,0)}%</b>`
-      + `且<b>净买 ≥ ${fmt((th.min_win_amt||0)/1e8,1)}</b> 亿、价格上行 → 记「集中扫货」(疑似主动托盘)；反之记「集中抛压」。`
+    note.innerHTML = `判定口径：单笔大单 ≥ <b>${fmt((th.big||0)/1e4,0)}</b> 万元；窗口(5分钟)内<b>大买单占比 ≥ ${fmt((th.buy_ratio||0)*100,0)}%</b>`
+      + `且<b>净买 ≥ ${fmt((th.min_win_amt||0)/1e4,0)}</b> 万元、价格上行 → 记「集中扫货」(疑似主动托盘)；反之记「集中抛压」。`
       + `<br>数据源为东财逐笔成交滚动明细，<b>盘后仅尾盘快照</b>，盘中多次采样可累积全天大单分布；若方案A 同窗口有护盘信号，则升级为「逐笔印证」。`;
   }
 }
