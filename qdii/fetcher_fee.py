@@ -165,20 +165,38 @@ def fetch_platform_fee(date: str = None, path: str = C.QDII_DB_PATH):
         code = f["code"]
         info, ap = raw.get(code) or ({}, None)
         # ---- 天天基金行 ----
-        tt_on_sale = 0 if lmap.get(code) == "SUSPEND" else (1 if info else 0)
-        db.upsert_row(conn, "qdii_platform_fee",
-                      ["code", "platform", "on_sale", "sub_fee_rate",
-                       "sub_fee_discount", "redeem_fee_ladder",
-                       "sales_service_fee", "mgmt_fee", "custodian_fee",
-                       "redeem_free_days", "dca_status", "large_sub_limit",
-                       "source", "fetched_at"],
-                      [code, "天天基金", tt_on_sale,
-                       info.get("sub_fee_rate"), info.get("sub_fee_discount"),
-                       info.get("redeem_fee_ladder"), info.get("sales_service_fee"),
-                       info.get("mgmt_fee"), info.get("custodian_fee"),
-                       None, info.get("dca_status"), info.get("large_sub_limit"),
-                       "eastmoney_rateinfo", now],
-                      "code,platform")
+        # ⚠️ 2026-10-30 修：`info={}` 只代表**本次没抓到**（网络抽风/上游改版），
+        # 不代表这只基金「费率全空 + 不可售」。旧逻辑把空 info 直接 upsert 成
+        # 一堆 NULL 并把 on_sale 从 1 翻到 0，一次瞬时失败就把已归档的历史费率
+        # 洗掉、把在售基金标成不可售（支付宝分支已经有类似保护，补齐另两平台）。
+        if info:
+            tt_on_sale = 0 if lmap.get(code) == "SUSPEND" else 1
+            db.upsert_row(conn, "qdii_platform_fee",
+                          ["code", "platform", "on_sale", "sub_fee_rate",
+                           "sub_fee_discount", "redeem_fee_ladder",
+                           "sales_service_fee", "mgmt_fee", "custodian_fee",
+                           "redeem_free_days", "dca_status", "large_sub_limit",
+                           "source", "fetched_at"],
+                          [code, "天天基金", tt_on_sale,
+                           info.get("sub_fee_rate"), info.get("sub_fee_discount"),
+                           info.get("redeem_fee_ladder"), info.get("sales_service_fee"),
+                           info.get("mgmt_fee"), info.get("custodian_fee"),
+                           None, info.get("dca_status"), info.get("large_sub_limit"),
+                           "eastmoney_rateinfo", now],
+                          "code,platform")
+        else:
+            # 抓不到就完全跳过：保留库里既有的费率与在售状态。
+            # 只在库里此前压根没这只基金时才补一行占位，且不动 on_sale。
+            existing = conn.execute(
+                "SELECT 1 FROM qdii_platform_fee WHERE code=? AND platform=?",
+                (code, "天天基金")).fetchone()
+            if not existing:
+                db.upsert_row(conn, "qdii_platform_fee",
+                              ["code", "platform", "on_sale", "source", "fetched_at"],
+                              [code, "天天基金",
+                               0 if lmap.get(code) == "SUSPEND" else 1,
+                               "eastmoney_rateinfo", now],
+                              "code,platform")
         # ---- 支付宝行 ----
         if ap and ap.get("sale_status"):
             sale = ap["sale_status"]
@@ -206,17 +224,21 @@ def fetch_platform_fee(date: str = None, path: str = C.QDII_DB_PATH):
         #   · 申购状态：跟随基金公司限购公告（与天天基金同源）
         #   · 起购：理财通常见 10 元
         # source 标 rule:licai，前端据此显示「规则推算」徽标，不伪装成实时数据。
-        base_rate = info.get("sub_fee_rate")      # 原申购费率（与天天基金同列语义）
-        licai_rate = round(base_rate * 0.1, 4) if base_rate else None   # 1 折后
-        licai_on_sale = 0 if lmap.get(code) == "SUSPEND" else 1
-        db.upsert_row(conn, "qdii_platform_fee",
-                      ["code", "platform", "on_sale", "sub_fee_rate",
-                       "sub_fee_discount", "mgmt_fee", "custodian_fee",
-                       "buy_start", "source", "fetched_at"],
-                      [code, "理财通", licai_on_sale, base_rate, licai_rate,
-                       info.get("mgmt_fee"), info.get("custodian_fee"),
-                       10.0, "rule:licai", now],
-                      "code,platform")
+        # ⚠️ 2026-10-30 修：理财通是「按天天基金原费率 × 0.1 推算」，
+        # 抓不到天天基金时 base_rate=None 会把整行的 mgmt_fee/custodian_fee 洗成 NULL。
+        # 与天天分支同理：只有拿到 info 才写；否则保留库里既有的推算结果。
+        if info:
+            base_rate = info.get("sub_fee_rate")      # 原申购费率（与天天基金同列语义）
+            licai_rate = round(base_rate * 0.1, 4) if base_rate else None   # 1 折后
+            licai_on_sale = 0 if lmap.get(code) == "SUSPEND" else 1
+            db.upsert_row(conn, "qdii_platform_fee",
+                          ["code", "platform", "on_sale", "sub_fee_rate",
+                           "sub_fee_discount", "mgmt_fee", "custodian_fee",
+                           "buy_start", "source", "fetched_at"],
+                          [code, "理财通", licai_on_sale, base_rate, licai_rate,
+                           info.get("mgmt_fee"), info.get("custodian_fee"),
+                           10.0, "rule:licai", now],
+                          "code,platform")
         cnt += 1
     # 清理**不在基金池内**的历史行：基金池会增删（2026-10-29 移除了 8 只），
     # 只 upsert 不删除的话，原始接口会返回早已移出池子的基金。

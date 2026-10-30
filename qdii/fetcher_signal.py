@@ -496,11 +496,19 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
         rows.append((date, "VIX", "VIX波动率", vix_close, vix_chg, 0, vix_date, now, None, vix_val))
     except Exception as e:  # noqa: BLE001
         print("[signal] cboe vix failed, fallback tencent:", e)
+        # ⚠️ 2026-10-30 修：旧代码 `price, chg = t2["usVIX"]` 从 3 元组里
+        # 只解 2 个变量 → 立刻 ValueError；即便解出来，append 的 tuple 是
+        # 9 项但 upsert 需要 10 项（change_value 列缺位）→ ProgrammingError。
+        # 两处异常都被外层吞掉，导致 CBOE 挂掉时 VIX 直接消失、
+        # risk_off_assess 拿到 vix=None → 避险 ×0.5 开关永远不动，页面毫无提示。
         try:
             t2 = fetch_tencent_us("usVIX")
-            if "usVIX" in t2:
-                price, chg = t2["usVIX"]
-                rows.append((date, "VIX", "VIX波动率", price, chg, 0, now, now, None))
+            got = t2.get("usVIX")
+            if got:
+                price, chg, prev = got  # fetch_tencent_us 返回 (price, chg, prev)
+                chg_val = round(price - prev, 4) if (price is not None and prev) else None
+                rows.append((date, "VIX", "VIX波动率", price, chg, 0, now, now,
+                             None, chg_val))
         except Exception as e2:  # noqa: BLE001
             print("[signal] vix unavailable:", e2)
     # 新浪（非实时：标普500 现货）

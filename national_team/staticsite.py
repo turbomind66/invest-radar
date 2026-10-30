@@ -411,17 +411,32 @@ def main():
                 n, funds, len(ds_list), sig_n))
             # 方案C（逐笔大额买单）：归档大单 + 联动升级方案A 信号。
             # 数据源是滚动窗口，盘后仅剩尾盘快照；盘中多次采样可累积全天大单分布。
+            #
+            # ⚠️ 2026-10-30 修：旧实现对 ds_list 里每一天都调 archive_tick，
+            # 但东财 stock/details/get?pos=-1 没有日期参数、始终返回**当前**滚动窗口，
+            # 于是同一次全量同步会把今天的尾盘快照以「过去 5 个交易日」的标签
+            # 反复写入 intraday_tick，data.json 里 5 天大单看起来都在 →
+            # 静态站下次 restore_tick_rows 又原样导回库里，形成自我强化的污染。
+            # 正确姿势：逐笔大单只能归档到「今日」；历史日只做 detect（对已存在的
+            # 归档重算信号），不再触发抓取。
             tk_total, tk_funds = 0, 0
+            tick_notes = []
+            today_iso = tgt  # archive() 已经保证 tgt 是最近交易日字符串
             for ds in ds_list:
                 try:
-                    tn, tf = intraday.archive_tick(ds)
+                    if ds == today_iso:
+                        tn, tf = intraday.archive_tick(ds)
+                        tk_total += tn
+                        tk_funds = max(tk_funds, tf)
                     intraday.detect_tick(ds)
-                    tk_total += tn
-                    tk_funds = max(tk_funds, tf)
                 except Exception as e:
-                    notes.append("逐笔大单归档失败(%s)" % type(e).__name__)
-            print("[tick] 逐笔大单归档 %d 行 / 覆盖 %d 只基金（盘后仅尾盘快照，盘中采样可累积全天）"
-                  % (tk_total, tk_funds))
+                    tick_notes.append("%s:%s" % (ds, type(e).__name__))
+            if tk_total or today_iso in ds_list:
+                print("[tick] 逐笔大单归档 %d 行 / 覆盖 %d 只基金（盘后仅尾盘快照，"
+                      "盘中采样可累积全天；历史日只重算 detect，不重抓滚动窗口）"
+                      % (tk_total, tk_funds))
+            if tick_notes:
+                print("[tick] ⚠ 逐笔大单处理失败：%s" % ", ".join(tick_notes))
             # 缺口检测：某天没抓到且已滑出上游窗口 → 永久缺失，明确告知
             gap = intraday.gap_dates()
             # 注意：main() 里没有 path 变量，set_meta/get_meta 用默认 DB_PATH

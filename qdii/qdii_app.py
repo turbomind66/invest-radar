@@ -63,7 +63,12 @@ def route_api(path, query=None):
                 # 代码版本指纹：排查「部署后线上跑的还是旧代码」时一眼可辨。
                 # sig = MARKET_SIGNALS 首行长度（加了交易所代码字段后为 5）。
                 "sig": len(C.MARKET_SIGNALS[0]) if C.MARKET_SIGNALS else 0,
-                "codes": [s[4] for s in C.MARKET_SIGNALS] if C.MARKET_SIGNALS and len(C.MARKET_SIGNALS[0]) > 4 else []}
+                # ⚠️ 2026-10-30 修：旧写法 `[s[4] for s in MARKET_SIGNALS] if ...
+                # and len(MARKET_SIGNALS[0]) > 4` 只看第 0 行长度，混用 4/5 元组时
+                # 后面的 s[4] 直接 IndexError → status 500。而 status 恰好是
+                # gateway/combo 健康检查轮询的接口，本身挂掉时页面就会一直
+                # 停在「预热中」、真实错误被吞掉。改成按每行长度取值。
+                "codes": [(s[4] if len(s) > 4 else "") for s in (C.MARKET_SIGNALS or [])]}
     if path == "/api/qdii/funds":
         return {"funds": db.get_fund_pool()}
     if path == "/api/qdii/limit":

@@ -184,9 +184,18 @@ def fetch_em_main_net() -> dict:
 
     返回 {code: {main_net, huge_net, big_net, mid_net, small_net}}，单位元。
     东财口径：主力净 = 超大单净 + 大单净（f62 = f66 + f72，已勾稽验证）。
+
+    ⚠️ 2026-10-30 修：旧实现在某一页抛异常时 `break` 整个循环，
+    单页网络抽风就会把当天/前几天的资金流静默截断（尤其是 page 1 失败时
+    返回空 dict → em_ok=False → fetch_and_save 用 save_etf_daily 先 DELETE
+    再 INSERT，把当天已归档的四档数据全部洗成 NULL，页面「主力净 = —」）。
+    `_get` 已经带 3 次主机轮换重试；到这里还失败说明这一页确实拿不到，
+    但**其它页可能正常**，所以跳过这一页继续下一页，最后由调用方按
+    「拿到多少只」决定要不要覆盖旧值。
     """
     wl_map = {c: (nm, cat) for c, nm, cat in WATCHLIST}
     found = {}
+    failed_pages = []
     for pn in range(1, 25):
         url = (
             "https://push2.eastmoney.com/api/qt/clist/get?pn=%d&pz=100&po=1&np=1"
@@ -194,8 +203,13 @@ def fetch_em_main_net() -> dict:
         )
         try:
             d = json.loads(_get(url))
-        except Exception:
-            break
+        except Exception as e:  # noqa: BLE001
+            failed_pages.append(pn)
+            # 连续失败过多 → 主机族整体不可达，早点退出别拖
+            if len(failed_pages) >= 3:
+                print("[em] 资金流多页失败(%s)：%s" % (failed_pages, e))
+                break
+            continue
         diff = (d.get("data") or {}).get("diff", [])
         if not diff:
             break
@@ -212,6 +226,8 @@ def fetch_em_main_net() -> dict:
         if len(found) == len(WATCHLIST):
             break
         time.sleep(0.25)
+    # 让调用方能感知「本次只拿到部分」，从而选择安全的写入策略（COALESCE 而非 DELETE）
+    fetch_em_main_net.last_coverage = len(found)
     return found
 
 
@@ -518,7 +534,14 @@ def is_trading_day(d=None) -> bool:
 
 
 def fetch_and_save(force: bool = False) -> dict:
-    """抓取当日数据并入库。返回状态摘要。"""
+    """抓取当日数据并入库。返回状态摘要。
+
+    写入策略（2026-10-30 加固）：
+    - 只有当「主力接口全绿 + 观察池 14 只全部拿到」时才走覆盖式
+      `save_etf_daily`（先 DELETE 当日旧行再 INSERT）；
+    - 部分覆盖 / 主力接口挂了 → 改走 `upsert_etf_rows`（COALESCE，
+      空值不覆盖旧值），避免抓 1 页失败就把已归档的四档数据洗成 NULL。
+    """
     today = datetime.date.today().strftime("%Y-%m-%d")
     if not is_trading_day():
         return {"ok": False, "reason": "非交易日（周末），跳过抓取", "date": today}
@@ -528,7 +551,17 @@ def fetch_and_save(force: bool = False) -> dict:
     total_main_net = sum((e["main_net"] or 0) for e in etfs)
     total_amount = sum(e["amount"] for e in etfs)
 
-    db.save_etf_daily(today, etfs)
+    coverage = getattr(fetch_em_main_net, "last_coverage", 0)
+    full_snapshot = em_ok and coverage >= len(WATCHLIST)
+    if full_snapshot:
+        db.save_etf_daily(today, etfs)
+    else:
+        n = db.upsert_etf_rows(today, etfs)
+        if em_ok:
+            print("[fetch] 东财资金流仅覆盖 %d/%d，改用 COALESCE 保留旧值 (%d 行)"
+                  % (coverage, len(WATCHLIST), n))
+        else:
+            print("[fetch] 东财资金流不可达，价格入库走 upsert 以保留 main_net 旧值 (%d 行)" % n)
     # 新闻按自身发布日期归档（见 split_news_by_date 说明），增量合并不覆盖
     for d, items in split_news_by_date(news).items():
         db.merge_news(d, items)
@@ -542,6 +575,7 @@ def fetch_and_save(force: bool = False) -> dict:
         "date": today,
         "etf_count": len(etfs),
         "mainnet_ok": em_ok,
+        "coverage": coverage,
         "total_main_net_yi": round(total_main_net / 1e8, 2),
         "total_amount_yi": round(total_amount / 1e8, 2),
         "news_count": len(news),
