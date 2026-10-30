@@ -19,9 +19,25 @@ jobs:
 
       - name: 语法检查
         run: |
-          python -m py_compile national_team/app.py national_team/db.py national_team/fetcher.py \
-            national_team/backfill.py national_team/staticsite.py
-          python -m py_compile qdii/*.py common/*.py docker/healthcheck.py gateway.py
+          # 覆盖两个看板 + 单端口网关 + WorkBuddy combo 主入口 + 容器健康检查 +
+          # common 层。旧版遗漏 scheduler.py / intraday.py / trigger_daily.py /
+          # combo_app.py —— combo_app 是 WorkBuddy 唯一入口，语法坏掉 CI 却全绿，
+          # 部署才发现就已经太晚。
+          python -m py_compile \
+            national_team/app.py national_team/db.py national_team/fetcher.py \
+            national_team/backfill.py national_team/staticsite.py \
+            national_team/intraday.py national_team/scheduler.py \
+            national_team/trigger_daily.py \
+            qdii/qdii_app.py qdii/db.py qdii/constants.py qdii/board.py \
+            qdii/fetcher_pool.py qdii/fetcher_limit.py qdii/fetcher_fee.py \
+            qdii/fetcher_signal.py qdii/fetcher_premium.py \
+            qdii/tracking_error.py qdii/strategy.py \
+            qdii/qdii_scheduler.py qdii/staticsite.py \
+            common/http.py common/lock.py common/market_calendar.py \
+            docker/healthcheck.py gateway.py combo_app.py
+
+      - name: QDII 静态导出（同时验证 allow_nan=False / 空覆盖保护可用）
+        run: python qdii/staticsite.py --allow-empty
 
       - name: 数据层单元测试（离线）
         run: python -m unittest discover -s national_team/tests -p "test_*.py" -v

@@ -237,7 +237,7 @@ cd /opt/invest-radar/invest-radar
 docker compose ps                 # 状态
 docker compose logs -f cron       # 抓取日志
 docker compose logs -f web        # 看板日志
-docker compose run --rm -T --entrypoint python cron staticsite.py   # 立刻抓一次
+docker compose run --rm -T --entrypoint python cron national_team/staticsite.py   # 立刻抓一次
 docker compose restart cron       # 重启调度
 git pull && ./deploy.sh           # 升级（重新构建并启动，数据卷保留）
 ```

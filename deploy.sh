@@ -49,7 +49,16 @@ USAGE
 while [ $# -gt 0 ]; do
     case "$1" in
         --run) MODE="run"; shift ;;
-        --port) GATEWAY_HOST_PORT="${2:-}"; shift 2 ;;
+        --port)
+            # 2026-10-30 修：`--port` 后面没值时 shift 2 会失败、
+            # 加上 set -e 直接崩掉整脚本，用户看不到任何提示。
+            if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+                die "--port 需要跟一个端口号（如 ./deploy.sh --port 50080）"
+            fi
+            case "$2" in
+                *[!0-9]*) die "--port 参数必须是纯数字，收到：$2" ;;
+            esac
+            GATEWAY_HOST_PORT="$2"; shift 2 ;;
         --install-docker) INSTALL_DOCKER=1; shift ;;
         --no-pull) DO_PULL=0; shift ;;
         -h|--help) usage ;;
@@ -62,17 +71,34 @@ port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1; }
 # 端口占用检测：区分两种情况
 #   a) 被**本项目自己的容器**占用 → 升级重建场景，compose 会自动接管，属正常，不是冲突
 #   b) 被**其它服务**占用           → 真冲突，才需要提醒换端口
+# 2026-10-30 修：旧实现只看 `docker ps` 里有没有 :PORT-> 的端口映射，
+# 任意容器（比如服务器上跑的其他 sonarr/jellyfin 占 48881）都会被判成
+# 「本项目容器占用 → 属正常升级流程」，把真冲突误报成正常，然后 compose up
+# 立刻因端口占用失败、日志里看不到原因。现在按我们的 5 个 container_name
+# 白名单筛占用者，命中才认「自己人」。
 check_port_conflict() {
     local port="$1"
-    local owners
+    local ours_pattern='^(ntt-gateway|ntt-web|ntt-cron|qdii-web|qdii-cron|ntt)$'
+    local owners other_owners
     owners="$(docker ps --format '{{.Names}}|{{.Ports}}' 2>/dev/null \
-             | grep -- ":${port}->" | cut -d'|' -f1 | tr '\n' ' ' | sed 's/ $//' || true)"
+             | awk -F'|' -v p=":${port}->" '$2 ~ p {print $1}' || true)"
     if [ -n "${owners}" ]; then
-        info "端口 ${port} 当前由本项目容器占用（${owners}），重建时自动接管 —— 属正常升级流程，不是端口冲突"
+        # 把占用者分成「我们自己的」和「别人的」
+        local our_list other_list
+        our_list="$(printf '%s\n' "${owners}" | grep -E "${ours_pattern}" | tr '\n' ' ' | sed 's/ $//')"
+        other_list="$(printf '%s\n' "${owners}" | grep -Ev "${ours_pattern}" | tr '\n' ' ' | sed 's/ $//')"
+        if [ -n "${our_list}" ]; then
+            info "端口 ${port} 由本项目容器占用（${our_list}），重建时自动接管 —— 属正常升级流程"
+        fi
+        if [ -n "${other_list}" ]; then
+            warn "端口 ${port} 同时被其它容器占用（${other_list}），compose up 会失败"
+            warn "请停掉那些容器或换端口：./deploy.sh --port <其它端口>"
+            die "端口冲突（详见上方 warn），部署中止"
+        fi
         return 0
     fi
     if port_in_use "${port}"; then
-        warn "端口 ${port} 已被其它服务占用，可能与服务器上已有服务冲突。"
+        warn "端口 ${port} 已被非 Docker 的其它服务占用。"
         warn "如需更换：./deploy.sh --port <其它端口>，或改 .env 里的 GATEWAY_HOST_PORT。"
     fi
     return 0
