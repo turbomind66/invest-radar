@@ -62,16 +62,58 @@ def init_db(path: str = DB_PATH):
             PRIMARY KEY(date, code, minute, kind))"""
     )
     # 逐笔大额成交（方案C：逐笔大额买单识别）的归档：来源东财 stock/details/get 滚动明细。
-    # 只存"大单"（单笔成交额 ≥ 阈值），控制体积；direction: 1=主动买 / 2=主动卖 / 其它=中性。
+    # 只存"大单"（单笔成交额 ≥ 阈值），控制体积；direction: 1=主动买 / 2=主动卖 / 0=中性或未知。
+    #
+    # ⚠️ 主键**不含 direction**（2026-10-30 修正）：
+    #   旧版本把东财 f54（成交笔数）误当买卖方向写进 direction，主键又含 direction，
+    #   方向修正后同一笔成交会以不同 direction 落成两行 → 大单金额被重复计数。
+    #   主键去掉 direction 后，方向修正只需 REPLACE 同一行即可覆盖，不会产生重复。
     cur.execute(
         """CREATE TABLE IF NOT EXISTS intraday_tick(
             date TEXT, code TEXT, name TEXT, cat TEXT,
             ttime TEXT, price REAL, volume REAL, direction INTEGER, amount REAL,
-            PRIMARY KEY(date, code, ttime, price, volume, direction))"""
+            PRIMARY KEY(date, code, ttime, price, volume))"""
     )
+    _migrate_tick_table(cur)
     cur.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     conn.commit()
     conn.close()
+
+
+def _migrate_tick_table(cur):
+    """intraday_tick 表结构迁移（2026-10-30）。
+
+    旧表主键含 direction，而旧版本写入的 direction 其实是东财 f54（成交笔数，取值 3~97），
+    并非买卖方向。修复方向解析后：
+      1) 主键去掉 direction，避免同一笔成交因 direction 不同而落成两行（金额重复计数）；
+      2) 历史行的 direction 全是笔数，语义无效 → 统一置 0（中性/未知），
+         既不误判成买也不误判成卖；金额等其它字段仍然有效，保留。
+    迁移幂等：已是新结构则直接返回。
+    """
+    cols = [r[1] for r in cur.execute("PRAGMA table_info(intraday_tick)")]
+    if not cols:
+        return
+    # 读旧主键列（pk>0 的列，按 pk 序号排序）
+    pk_cols = [r[1] for r in sorted(
+        (r for r in cur.execute("PRAGMA table_info(intraday_tick)") if r[5]),
+        key=lambda r: r[5])]
+    if "direction" not in pk_cols:
+        return  # 已是新结构
+    # 旧结构 → 重建
+    cur.execute("ALTER TABLE intraday_tick RENAME TO intraday_tick_old")
+    cur.execute(
+        """CREATE TABLE intraday_tick(
+            date TEXT, code TEXT, name TEXT, cat TEXT,
+            ttime TEXT, price REAL, volume REAL, direction INTEGER, amount REAL,
+            PRIMARY KEY(date, code, ttime, price, volume))"""
+    )
+    # 旧行的 direction 是笔数（语义无效）→ 置 0；其余字段原样保留
+    cur.execute(
+        """INSERT OR REPLACE INTO intraday_tick
+            (date,code,name,cat,ttime,price,volume,direction,amount)
+           SELECT date,code,name,cat,ttime,price,volume,0,amount FROM intraday_tick_old"""
+    )
+    cur.execute("DROP TABLE intraday_tick_old")
 
 
 def _conn(path: str = DB_PATH):
@@ -234,7 +276,9 @@ def save_tick_rows(date: str, rows: list, path: str = DB_PATH):
     """写入某日逐笔大单归档（来自东财 stock/details/get）。
 
     rows 每项：{code, name, cat, ttime(HH:MM:SS), price, volume(手), direction, amount(元)}
-    主键 (date,code,ttime,price,volume,direction) 去重：盘中多次采样幂等追加，不重复。
+    direction: 1=主动买 / 2=主动卖 / 0=中性或未知（口径见 intraday.fetch_details）。
+    主键 (date,code,ttime,price,volume) 去重（**不含 direction**）：
+    盘中多次采样幂等追加不重复；方向修正后重写同一行即可覆盖，不会产生重复大单。
     """
     conn = _conn(path)
     cur = conn.cursor()

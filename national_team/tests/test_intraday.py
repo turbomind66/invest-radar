@@ -208,10 +208,15 @@ class TestTickDetect(unittest.TestCase):
 
     # ---------- 解析 ----------
     def test_fetch_details_parses_and_self_computes_amount(self):
-        """fetch_details 应正确解析每行并自算金额=手数×价×100（不依赖金额列）。"""
+        """fetch_details 应正确解析每行并自算金额=手数×价×100（不依赖金额列）。
+
+        东财 details 的真实列序（2026-10-30 实测）：
+            f51=时间, f52=价格, f53=成交量(手), **f54=笔数**, **f55=成交性质**
+        下方样本取自真实返回：笔数 19/49，成交性质 1(买)/2(卖)。
+        """
         fake = json.dumps({"data": {"details": [
-            "09:31:00,1.00,10000,1,100",
-            "09:32:00,1.02,5000,2,51",
+            "09:31:00,1.00,10000,19,1",
+            "09:32:00,1.02,5000,49,2",
         ]}})
         orig = intraday._get
         intraday._get = lambda url, **k: fake
@@ -222,6 +227,28 @@ class TestTickDetect(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0], ("09:31:00", 1.0, 10000, 1, 10000 * 1.0 * 100))
         self.assertEqual(rows[1], ("09:32:00", 1.02, 5000, 2, 5000 * 1.02 * 100))
+
+    def test_fetch_details_direction_comes_from_f55_not_f54(self):
+        """方向必须取 f55（成交性质），不能取 f54（笔数）—— 防回归。
+
+        背景（2026-10-30 实际踩过）：旧实现取 f54 当方向，f54 实为成交笔数
+        （取值 3~97），于是所有大单都被判成卖单 —— 面板表现为
+        「大买单合计 0.00 亿 / 大卖单合计 2.12 亿」，且集中扫货永不触发。
+        """
+        fake = json.dumps({"data": {"details": [
+            "14:45:47,4.078,2105,19,1",   # 笔数 19，成交性质 1 → 主动买
+            "14:46:53,4.079,45667,49,2",  # 笔数 49，成交性质 2 → 主动卖
+            "14:52:10,4.080,15000,12,1",  # 笔数 12，成交性质 1 → 主动买
+            "14:58:30,4.081,30000,8,3",   # 成交性质 3（其它）→ 中性 0
+        ]}})
+        orig = intraday._get
+        intraday._get = lambda url, **k: fake
+        try:
+            rows = intraday.fetch_details("510300", lmt=10)
+        finally:
+            intraday._get = orig
+        self.assertEqual([r[3] for r in rows], [1, 2, 1, 0],
+                         "方向应依次为 买/卖/买/中性（f54 笔数不得被当作方向）")
 
     # ---------- 聚合判定 ----------
     def test_tick_buy_and_sell_detected(self):
@@ -316,6 +343,64 @@ class TestTickDetect(unittest.TestCase):
             self.assertAlmostEqual(v["sell_amount"], expect_sell, delta=1)
             self.assertGreater(v["buy_amount"], 0)
             self.assertGreater(v["sell_amount"], 0)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_tick_windows_include_all_windows_not_only_events(self):
+        """回归（2026-10-30）：表格应展示**所有**含大单的时段。
+
+        背景：面板「逐笔大额买单/集中扫货」表格的列本就是窗口聚合口径
+        （时段/基金/方向/大买单额/大卖单额/净买/买单占比/价格涨跌），
+        但旧实现只把「达集中阈值」的窗口放进 events，于是盘后快照下
+        （大单散落、形不成集中事件）表格整表空白 —— 丁总反馈「表格没显示出来」。
+        """
+        tmp = tempfile.mkdtemp()
+        try:
+            p = os.path.join(tmp, "s.db")
+            db.init_db(p)
+            # 两个时段：0930 集中扫货（达标）、1455 净额不足（未达阈值）
+            _tick(p, D1, "510300", "沪深300ETF", "沪深300", [
+                ("09:31:00", 1.00, 10000, 1, 100e4),
+                ("09:32:00", 1.02, 10000, 1, 102e4),
+                ("09:33:00", 1.05, 10000, 1, 105e4),
+                ("14:55:10", 4.110, 500, 2, 500 * 4.110 * 100),
+            ])
+            v = intraday.build_view(D1, path=p)["tick"]
+            wins = v["windows"]
+            self.assertEqual(len(wins), 2, "两个时段都应出现在 windows 里")
+            kinds = {w["window"]: w["kind"] for w in wins}
+            self.assertEqual(kinds.get("0930"), "tick_buy")
+            self.assertEqual(kinds.get("1455"), "neutral",
+                             "净额不足的时段应标 neutral（未达阈值），而非被丢弃")
+            # events 仍只含达标的（供信号联动用）
+            self.assertEqual(len(v["events"]), 1)
+            self.assertEqual(v["events"][0]["window"], "0930")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_tick_neutral_direction_excluded_from_buy_and_sell(self):
+        """回归：方向未知（direction=0，中性/历史错口径）的大单不计买入也不计卖出。
+
+        背景：旧实现 `if direction==1: buy else: sell` 把所有非 1 全算卖单，
+        加上上游把 f54（笔数）当方向，导致「大买单合计恒为 0」。
+        """
+        tmp = tempfile.mkdtemp()
+        try:
+            p = os.path.join(tmp, "s.db")
+            db.init_db(p)
+            _tick(p, D1, "510300", "沪深300ETF", "沪深300", [
+                ("09:31:00", 1.00, 10000, 1, 100e4),   # 主动买
+                ("09:32:00", 1.00, 10000, 2, 100e4),   # 主动卖
+                ("09:33:00", 1.00, 10000, 0, 100e4),   # 方向未知
+            ])
+            v = intraday.build_view(D1, path=p)["tick"]
+            self.assertEqual(v["big_count"], 3)
+            self.assertAlmostEqual(v["buy_amount"], 100e4, delta=1)
+            self.assertAlmostEqual(v["sell_amount"], 100e4, delta=1)
+            self.assertAlmostEqual(v["neutral_amount"], 100e4, delta=1)
+            # 中性单不应污染净额：净买 = 买 - 卖 = 0
+            w = [x for x in v["windows"] if x["window"] == "0930"][0]
+            self.assertEqual(w["net"], 0)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

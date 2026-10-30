@@ -976,14 +976,21 @@ class SignalCoverageTest(unittest.TestCase):
 
 
 class EmGlobalIndexTest(unittest.TestCase):
-    """欧洲三大指数改走东财真实指数（100.GDAXI/FCHI/FTSE）。
+    """欧洲三大指数走东财真实指数（100.GDAXI/FCHI/FTSE）—— 备选源。
 
     沙箱到东财 push2 被墙，故用 mock 验证解析逻辑；生产 VPS 直连。
+
+    ⚠️ 字段语义（2026-10-30 实测校正，此前注释与实现都写反了）：
+        f43=最新价  f60=昨收  **f169=涨跌额(点)**  **f170=涨跌幅(%)**
+    实测样本：DAX f43=26039.68 f60=25704.02 f169=335.66 f170=1.31
+    交叉验证：f43-f60 == f169 ✓，f169/f60*100 ≈ f170 ✓
+    原实现把 f169 当涨跌幅、f170 当涨跌额 → 面板上「涨跌幅」显示成点数、
+    「涨跌值」显示成百分数，两列完全颠倒。
     """
 
     SAMPLE = json.dumps({"rc": 0, "data": {
-        "f43": "19234.56", "f57": "GDAXI", "f58": "德国DAX",
-        "f169": "-0.30", "f170": "-58.23"}})
+        "f43": "26039.68", "f57": "GDAXI", "f58": "德国DAX",
+        "f60": "25704.02", "f169": "335.66", "f170": "1.31"}})
 
     def setUp(self):
         import fetcher_signal as fs
@@ -997,12 +1004,22 @@ class EmGlobalIndexTest(unittest.TestCase):
     def test_parse_dax(self):
         res = self.fs.fetch_em_global_index()
         self.assertIn("DAX", res)
-        name, price, chg, chg_val = res["DAX"]
+        name, price, pct, chg_val = res["DAX"]
         self.assertEqual(name, "德国DAX指数")
-        self.assertAlmostEqual(price, 19234.56, places=2)
-        self.assertAlmostEqual(chg, -0.30, places=2)
-        # f170 = 涨跌额（绝对变动），直接作为「涨跌值」
-        self.assertAlmostEqual(chg_val, -58.23, places=2)
+        self.assertAlmostEqual(price, 26039.68, places=2)
+        # f170 = 涨跌幅（%），f169 = 涨跌额（点）—— 勿颠倒
+        self.assertAlmostEqual(pct, 1.31, places=2)
+        self.assertAlmostEqual(chg_val, 335.66, places=2)
+
+    def test_change_value_derived_from_price_and_prev(self):
+        """f169/f170 缺失时，用 f43 − f60(昨收) 自算涨跌额，并用昨收自算涨跌幅。"""
+        self.fs.fetch_text = lambda *a, **k: json.dumps({"rc": 0, "data": {
+            "f43": "26039.68", "f57": "GDAXI", "f58": "德国DAX",
+            "f60": "25704.02"}})
+        res = self.fs.fetch_em_global_index()
+        _n, _p, pct, chg_val = res["DAX"]
+        self.assertAlmostEqual(chg_val, 335.66, places=2)
+        self.assertAlmostEqual(pct, round(335.66 / 25704.02 * 100, 4), places=3)
 
     def test_all_three_present(self):
         # 三指数各自独立 try/except，逐个验证 secid 映射（mock 对三个 secid 返回同一份样本）
@@ -1069,10 +1086,102 @@ class CnbcGlobalIndexTest(unittest.TestCase):
         self.assertAlmostEqual(pct, 0.0, places=2)
         self.assertAlmostEqual(chg, 0.0, places=2)
 
+    def test_unch_parsed_as_none_not_zero(self):
+        """回归（2026-10-30）：CNBC 的 'UNCH' 必须解析为 None（无数据），不能当 0。
+
+        背景：实测 .DAX/.CAC 返回 change/change_pct='UNCH' 且 previous_day_closing
+        等于 last —— 是**该 symbol 快照没带涨跌字段**（数据缺失），不是「涨跌为零」。
+        若当 0 处理，面板会显示假的「0.00 / 0.00%」，而 DAX 当日实际是 +335.66(+1.31%)。
+        """
+        self.fs.fetch_text = lambda *a, **k: json.dumps(
+            {"FormattedQuoteResult": {"FormattedQuote": [
+                {"symbol": ".DAX", "name": "Germany DAX", "last": "26,039.68",
+                 "change": "UNCH", "change_pct": "UNCH",
+                 "previous_day_closing": "26,039.68"},
+            ]}})
+        res = self.fs.fetch_cnbc_global_index()
+        _n, price, pct, chg, prev = res["DAX"]
+        self.assertAlmostEqual(price, 26039.68, places=2)
+        self.assertIsNone(pct, "'UNCH' 应解析为 None（无涨跌数据），而非 0")
+        self.assertIsNone(chg, "'UNCH' 应解析为 None（无涨跌数据），而非 0")
+
     def test_empty_raises(self):
         self.fs.fetch_text = lambda *a, **k: json.dumps({"FormattedQuoteResult": {}})
         with self.assertRaises(ValueError):
             self.fs.fetch_cnbc_global_index()
+
+
+class SinaGlobalIndexTest(unittest.TestCase):
+    """全球市场信号欧洲/日本指数改走新浪 znb_ **主源**（2026-10-30）。
+
+    为什么不用 CNBC 当主源：实测 CNBC 的 .DAX/.CAC 快照不完整 ——
+    change/change_pct='UNCH'、previous_day_closing 被填成等于 last、
+    open/high/low 全 0.00（只有这两个坏了，FTSE/N225 正常）。
+    新浪 hq.sinajs.cn 是本项目既有价格主源（gb_inx 标普500 就走它），VPS 必可达，
+    且 znb_ 四个指数涨跌值完整（与东财/CNBC 三方交叉验证一致）。
+
+    字段序（2026-10-30 实测 `var hq_str_znb_DAX`）：
+        [0]名称 [1]现价 [2]涨跌额 [3]涨跌幅% ... [9]昨收
+    """
+    SAMPLE = (
+        'var hq_str_znb_DAX="德国DAX30,26039.6797,335.66,1.31,9/26/2025,1758859200,'
+        '2026-10-30,01:00:02,25724.0195,25704.0195,26106.1895,25720.6895,0";\n'
+        'var hq_str_znb_CAC="法国CAC40,7970.0000,83.04,1.05,9/26/2025,1758859200,'
+        '2026-10-30,01:05:45,7931.9097,7886.9600,7998.1196,7923.2197,0";\n'
+        'var hq_str_znb_UKX="英国富时100,10722.0700,27.57,0.26,9/26/2025,1758859200,'
+        '2026-10-30,00:35:30,10694.0200,10694.5000,10773.7000,10694.0200,0";\n'
+        'var hq_str_znb_NKY="日经225,63289.8900,-1369.58,-2.12,2:12 AM,1759126320,'
+        '2026-10-30,14:30:02,64344.3700,64659.4700,64589.0400,62711.4200,0";\n'
+        'var hq_str_znb_XXX="";\n'
+    )
+
+    def setUp(self):
+        import fetcher_signal as fs
+        self.fs = fs
+        self._orig = fs.fetch_text
+        fs.fetch_text = lambda *a, **k: self.SAMPLE
+
+    def tearDown(self):
+        self.fs.fetch_text = self._orig
+
+    def test_symbols_present(self):
+        res = self.fs.fetch_sina_global_index()
+        self.assertEqual(set(res), {"DAX", "CAC40", "FTSE", "NK"})
+
+    def test_parse_dax(self):
+        res = self.fs.fetch_sina_global_index()
+        name, price, pct, chg = res["DAX"]
+        self.assertEqual(name, "德国DAX指数")
+        self.assertAlmostEqual(price, 26039.6797, places=3)
+        self.assertAlmostEqual(pct, 1.31, places=2)
+        self.assertAlmostEqual(chg, 335.66, places=2)
+
+    def test_parse_cac40(self):
+        res = self.fs.fetch_sina_global_index()
+        name, price, pct, chg = res["CAC40"]
+        self.assertEqual(name, "法国CAC40指数")
+        self.assertAlmostEqual(price, 7970.0, places=2)
+        self.assertAlmostEqual(pct, 1.05, places=2)
+        self.assertAlmostEqual(chg, 83.04, places=2)
+
+    def test_parse_negative_change(self):
+        res = self.fs.fetch_sina_global_index()
+        _n, price, pct, chg = res["NK"]
+        self.assertAlmostEqual(price, 63289.89, places=2)
+        self.assertAlmostEqual(pct, -2.12, places=2)
+        self.assertAlmostEqual(chg, -1369.58, places=2)
+
+    def test_empty_raises(self):
+        self.fs.fetch_text = lambda *a, **k: 'var hq_str_znb_DAX="";'
+        with self.assertRaises(ValueError):
+            self.fs.fetch_sina_global_index()
+
+    def test_sina_and_cnbc_agree_on_ftse(self):
+        """交叉校验：新浪与 CNBC 对 FTSE 的涨跌值应一致（两源独立，值相同才可信）。"""
+        res = self.fs.fetch_sina_global_index()
+        _n, _p, pct, chg = res["FTSE"]
+        self.assertAlmostEqual(pct, 0.26, places=2)
+        self.assertAlmostEqual(chg, 27.57, places=2)
 
 
 class ChangeValueTest(unittest.TestCase):

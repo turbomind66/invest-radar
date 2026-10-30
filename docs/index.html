@@ -134,7 +134,7 @@
     .fresh .hint{display:none}.fresh .t{font-size:14.5px}.fresh .t b{font-size:15px}
   }
 </style>
-<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-30 13:14:24", "worker_url": "", "peer_url": "qdii/"};</script>
+<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-30 16:05:25", "worker_url": "", "peer_url": "qdii/"};</script>
 <script>/* common/static_refresh.js — 静态托管站共享刷新逻辑（国家队 / QDII 复用）
  *
  * 由 national_team/app.py 与 qdii 的 render_index / staticsite 在「构建或响应时」
@@ -1053,7 +1053,8 @@ function renderTick(d){
     return;
   }
   const ev = tk.events || [];
-  if(sub) sub.textContent = `逐笔大单识别 · ${tk.big_count} 笔大单 · ${ev.length} 个集中事件`;
+  const wins = tk.windows || ev || [];
+  if(sub) sub.textContent = `逐笔大单识别 · ${tk.big_count} 笔大单 · ${wins.length} 个大单时段 · ${ev.length} 个集中事件`;
   if(cards){
     const th = tk.thresholds || {};
     const cardsData = [
@@ -1067,13 +1068,18 @@ function renderTick(d){
       <div class="v ${c.cls}">${c.v}</div><div class="sub">${c.sub}</div></div>`).join("");
   }
   if(tbody){
-    if(!ev.length){
-      tbody.innerHTML = `<tr><td colspan="8" class="empty">当日未识别到符合阈值的大单集中事件</td></tr>`;
+    // 表格列本就是「窗口聚合」口径（时段/基金/方向/买卖额/净买/占比/涨跌），
+    // 因此展示**所有含大单的窗口**，用「方向」列区分是否达集中阈值 ——
+    // 只展示达标事件时，盘后快照下表格会整表空白（看不到已抓到的大单）。
+    const wins = tk.windows || tk.events || [];
+    if(!wins.length){
+      tbody.innerHTML = `<tr><td colspan="8" class="empty">当日未抓到符合阈值的大单</td></tr>`;
     } else {
-      tbody.innerHTML = ev.map(e=>{
-        const kindTxt = e.kind==="tick_buy"
-          ? `<span class="num red">集中扫货</span>`
-          : `<span class="num green">集中抛压</span>`;
+      tbody.innerHTML = wins.map(e=>{
+        let kindTxt;
+        if(e.kind==="tick_buy") kindTxt = `<span class="num red">集中扫货</span>`;
+        else if(e.kind==="tick_sell") kindTxt = `<span class="num green">集中抛压</span>`;
+        else kindTxt = `<span class="num" style="color:#94a3b8">未达阈值</span>`;
         return `<tr>
           <td>${esc(e.window)}</td>
           <td>${esc(e.name||e.code)}（${esc(e.code)}）</td>
@@ -1089,9 +1095,12 @@ function renderTick(d){
   }
   if(note){
     const th = tk.thresholds || {};
+    const neu = tk.neutral_amount || 0;
     note.innerHTML = `判定口径：单笔大单 ≥ <b>${fmt((th.big||0)/1e4,0)}</b> 万元；窗口(5分钟)内<b>大买单占比 ≥ ${fmt((th.buy_ratio||0)*100,0)}%</b>`
       + `且<b>净买 ≥ ${fmt((th.min_win_amt||0)/1e4,0)}</b> 万元、价格上行 → 记「集中扫货」(疑似主动托盘)；反之记「集中抛压」。`
-      + `<br>数据源为东财逐笔成交滚动明细，<b>盘后仅尾盘快照</b>，盘中多次采样可累积全天大单分布；若方案A 同窗口有护盘信号，则升级为「逐笔印证」。`;
+      + `<br>表格逐行展示<b>所有含大单的时段</b>，「方向」列标「集中扫货/抛压」表示已达标，标「未达阈值」表示有大单但未构成集中。`
+      + `数据源为东财逐笔成交滚动明细，<b>盘后仅尾盘快照</b>，盘中多次采样可累积全天大单分布；若方案A 同窗口有护盘信号，则升级为「逐笔印证」。`
+      + (neu>0 ? `<br><span style="color:#94a3b8">注：另有 ${fmt(neu/1e8)} 亿大单方向未知（历史归档口径修正前抓取），未计入买入/卖出合计。</span>` : "");
   }
 }
 

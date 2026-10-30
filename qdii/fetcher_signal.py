@@ -73,7 +73,26 @@ EM_GLOBAL_INDEX = {
     "FTSE": ("英国富时100指数", "100.FTSE"),
 }
 EM_GLOBAL_URL = ("https://push2.eastmoney.com/api/qt/stock/get"
-                 "?secid={secid}&fields=f43,f57,f58,f169,f170&invt=2&fltt=2")
+                 "?secid={secid}&fields=f43,f57,f58,f60,f169,f170&invt=2&fltt=2")
+# 新浪全球指数（znb_ 前缀）：欧洲三大指数 + 日经225 —— **主源**（2026-10-30 新增）。
+# 为什么不用 CNBC 当主源：实测 CNBC 的 .DAX/.CAC 快照不完整（change/change_pct='UNCH'、
+# previous_day_closing 被填成等于 last、open/high/low 全 0），只有这两个坏了；
+# 而新浪 hq.sinajs.cn 是本项目既有的价格主源（gb_inx 标普500 就走它），VPS 必然可达。
+# znb_ 代码 → 信号 symbol 映射（新浪用的代码与面板 symbol 不同名，别混）。
+SINA_GLOBAL_INDEX = {
+    "znb_DAX": "DAX",
+    "znb_CAC": "CAC40",
+    "znb_UKX": "FTSE",
+    "znb_NKY": "NK",
+}
+SINA_GLOBAL_INDEX_NAME = {
+    "DAX": "德国DAX指数",
+    "CAC40": "法国CAC40指数",
+    "FTSE": "英国富时100指数",
+    "NK": "日经225指数",
+}
+SINA_GLOBAL_INDEX_URL = ("https://hq.sinajs.cn/list="
+                         + ",".join(SINA_GLOBAL_INDEX.keys()))
 # VIX：腾讯 usVIX 的数值自 2026-09-15 起就不再更新（实测长期停在 21.67），
 # 拿它当避险开关等于开关永远不动。改用 CBOE 官方日收盘 CSV（权威、日频、T+1）。
 CBOE_VIX_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
@@ -223,16 +242,83 @@ def fetch_cnbc_ust10y():
     return last, bp, chg_pct, ("美东 " + as_of if as_of else "")
 
 
+def fetch_sina_global_index():
+    """新浪全球指数（znb_ 前缀）：欧洲三大指数 + 日经225 —— **主源**。
+
+    2026-10-30 实测新增。原因：CNBC 对 .DAX / .CAC 这两个 symbol 的行情快照
+    不完整 —— change/change_pct 返回 'UNCH'、previous_day_closing 被错误填成
+    等于 last（26,039.68 == 26,039.68），open/high/low 全为 0.00，
+    而 FTSE / N225 正常 ⇒ 只有这两个坏了。CNBC 之外又实测过：
+    Yahoo（403）、stooq（JS 挑战页）、东财 push2（部分出口整段断链）均不可用。
+    新浪 hq.sinajs.cn 是本项目**既有的价格主源**（gb_inx 标普500 就走它），
+    VPS 上必然可达，且 znb_ 这四个指数的涨跌值完整 —— 三方交叉验证一致：
+        DAX   : sina 335.66 / 1.31%  ==  东财 f169/f170 335.66 / 1.31
+        CAC40 : sina  83.04 / 1.05%  ==  东财 f169/f170  83.04 / 1.05
+        FTSE  : sina  27.57 / 0.26%  ==  CNBC +27.57 / +0.26%
+
+    字段（2026-10-30 实测 `var hq_str_znb_DAX`，共 13 段）：
+        [0]名称 [1]现价 [2]**涨跌额** [3]**涨跌幅%** [4]起始日期 [5]时间戳
+        [6]日期 [7]时间 [8]开盘 [9]昨收 [10]最高 [11]最低 [12]成交量
+    ⚠️ 涨跌值/涨跌幅必须直接用 [2]/[3]（新浪官方算好的，含分红/拆细校正），
+    不要拿 [1]/[9] 重算 —— 与 gb_inx 同理（错用会得到反向涨跌）。
+
+    返回 {signal_symbol: (name, price, chg_pct, chg_value)}。
+    """
+    txt = fetch_text(SINA_GLOBAL_INDEX_URL, referer="https://finance.sina.com.cn/",
+                     encoding="gbk", use_proxy=None, retries=2)
+    res = {}
+    for m in re.finditer(r'var hq_str_(znb_\w+)="([^"]*)"', txt):
+        sym, body = m.group(1), m.group(2)
+        parts = body.split(",")
+        if len(parts) < 10:
+            continue
+        try:
+            price = float(parts[1])
+        except (ValueError, TypeError):
+            continue
+
+        def _num(idx):
+            v = (parts[idx] or "").strip()
+            if v in ("", "--", "-"):
+                return None
+            try:
+                return float(v)
+            except ValueError:
+                return None
+
+        chg_value = _num(2)      # 涨跌额（点）
+        chg_pct = _num(3)        # 涨跌幅（%）
+        # 缺值时用「现价 − 昨收([9])」自算兜底
+        prev = _num(9)
+        if chg_value is None and prev:
+            chg_value = round(price - prev, 4)
+        if chg_pct is None and prev:
+            chg_pct = round((price / prev - 1) * 100, 4)
+        target = SINA_GLOBAL_INDEX.get(sym)
+        if not target:
+            continue
+        res[target] = (SINA_GLOBAL_INDEX_NAME[target], price, chg_pct, chg_value)
+    if not res:
+        raise ValueError("新浪全球指数全部失败")
+    return res
+
+
 def fetch_cnbc_global_index():
-    """CNBC 真实欧洲/日本指数（.DAX/.CAC/.FTSE/.N225）—— **主源**。
+    """CNBC 真实欧洲/日本指数（.DAX/.CAC/.FTSE/.N225）—— 备选源。
 
     用户部署环境 CNBC 稳定可达（美债10Y 已用同出口 quote.cnbc.com）。
-    返回的 `last`/`change`/`change_pct`/`previous_day_closing` 齐全，无需 ETF 代理。
     返回 {signal_symbol: (name, price, chg_pct, chg_value, prev_close)}。
     全失败抛 ValueError，交 fetch_us_signal 降级到东财/ETF。
 
     CNBC 的 change 是带符号字符串（"+335.66"）、change_pct 带百分号（"+1.31%"），
     需清洗后转 float；last / previous_day_closing 含千分位逗号也要去。
+
+    ⚠️ 2026-10-30 修正：'UNCH' **不能当 0**。
+    实测 .DAX / .CAC 返回 change='UNCH'、change_pct='UNCH'，且
+    previous_day_closing == last（26,039.68 == 26,039.68）——说明这两个 symbol
+    的行情快照本身没带涨跌字段，是**数据缺失**而非「涨跌为零」。
+    若当 0 处理，面板会显示假的「0.00 / 0.00%」，而 DAX 当日实际是 +335.66（+1.31%）。
+    现在 UNCH 一律解析为 None（无数据），由上层降级到东财 push2 取真实涨跌。
     """
     url = ("https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol"
            "?symbols=.DAX%7C.CAC%7C.FTSE%7C.N225&requestMethod=itv&noform=1"
@@ -250,10 +336,10 @@ def fetch_cnbc_global_index():
         s = str(s).replace(",", "").replace("%", "").strip()
         if not s:
             return None
-        # CNBC 用 'UNCH' 表示「未变动」（收盘价=昨收价）→ 涨跌为 0，
-        # 直接 float 会失败返回 None，导致该指数在面板上缺涨跌幅。
+        # 'UNCH' = 该字段无数据（不是「涨跌为零」）；'N/A'/'--' 同理。
+        # 返回 None 让上层降级到东财取真实涨跌，勿当 0（否则显示假的平盘）。
         if s.upper() in ("UNCH", "UNCHANGED", "N/A", "NA", "--"):
-            return 0.0
+            return None
         try:
             return float(s)
         except ValueError:
@@ -277,10 +363,18 @@ def fetch_cnbc_global_index():
 
 
 def fetch_em_global_index():
-    """东财 push2 真实欧洲三大指数（VPS 可通；沙箱被墙由上层降级回 ETF 代理）。
+    """东财 push2 真实欧洲三大指数（备选源；CNBC 主源，见 fetch_cnbc_global_index）。
 
     与 constants.MARKET_SIGNALS 的 DAX/CAC40/FTSE 一一对应，symbol 即 DAX/CAC40/FTSE。
-    字段（东财 push2，fltt=2 原始值）：f43=最新价 f57=代码 f58=名称 f169=涨跌幅% f170=涨跌额。
+
+    ⚠️ 字段语义（2026-10-30 实测校正，此前写反了）：
+        f43 = 最新价      f60 = 昨收
+        **f169 = 涨跌额（点数差）**  例：DAX 335.66
+        **f170 = 涨跌幅（%）**      例：DAX 1.31
+    原实现把 f169 当涨跌幅、f170 当涨跌额，导致面板上「涨跌幅」显示成点数、
+    「涨跌值」显示成百分数。实测对照：f43 - f60 == f169（DAX 26039.68-25704.02=335.66）。
+    当 f169/f170 缺失时，用 f43 - f60 自算涨跌额，再用涨跌额/昨收自算涨跌幅。
+
     逐个 secid 独立 try/except：某指数失败只丢该条，不拖垮其余；全失败抛 ValueError 交上层降级。
     """
     res = {}
@@ -293,12 +387,26 @@ def fetch_em_global_index():
             if not d or d.get("f43") in (None, "", "-"):
                 continue
             price = float(d["f43"])
-            raw = d.get("f169")
-            chg = float(raw) if raw not in (None, "", "--") else None
-            # f170 = 涨跌额（绝对变动，单位点），直接作为 change_value
-            raw_v = d.get("f170")
-            change_value = float(raw_v) if raw_v not in (None, "", "--") else None
-            res[symbol] = (EM_GLOBAL_INDEX[symbol][0], price, chg, change_value)
+
+            def _f(key):
+                v = d.get(key)
+                if v in (None, "", "-", "--"):
+                    return None
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return None
+
+            prev = _f("f60")
+            # f169 = 涨跌额（点），f170 = 涨跌幅（%）
+            change_value = _f("f169")
+            change_pct = _f("f170")
+            # 缺失时用昨收自算
+            if change_value is None and prev:
+                change_value = round(price - prev, 4)
+            if change_pct is None and prev and change_value is not None:
+                change_pct = round((price / prev - 1) * 100, 4)
+            res[symbol] = (EM_GLOBAL_INDEX[symbol][0], price, change_pct, change_value)
         except Exception as e:  # noqa: BLE001
             print("[signal] 东财 %s 失败: %s" % (secid, e))
             continue
@@ -403,30 +511,48 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
             rows.append((date, "SPX", "标普500现货", price, chg, 0, now, now, None, chg_val))
     except Exception as e:  # noqa: BLE001
         print("[signal] sina index failed:", e)
-    # 欧洲三大指数 + 日经225：主源 CNBC 真实指数（用户环境稳定可达），
-    # CNBC 缺失时依次降级 东财 push2 → sina/tencent ETF 代理（fail-safe，不回归）。
-    # 此前的「东财主 + ETF 兜底」在 VPS 上东财与 sina/tencent 整条链路都不通，
-    # 导致这几项长期为空；CNBC 与美债10Y 同源，是部署环境唯一稳定可达的境外源。
-    try:
-        cnbc_idx = fetch_cnbc_global_index()
-    except Exception as e:  # noqa: BLE001
-        print("[signal] CNBC 全球指数失败，降级东财/ETF:", e)
-        cnbc_idx = {}
-    for symbol, (name, price, chg, chg_val, _prev) in cnbc_idx.items():
-        rows.append((date, symbol, name, price, chg, 0, now, now, None, chg_val))
-    # CNBC 没取到的（网络抖动 / 单指数缺失）→ 东财真实指数补
-    missing = [s for s in ("DAX", "CAC40", "FTSE", "NK") if s not in cnbc_idx]
-    if missing:
+    # 欧洲三大指数 + 日经225：**三源合并**（新浪 znb_ 主源 + 东财 push2 + CNBC）。
+    #
+    # 为什么这样设计（2026-10-30 逐源实测）：
+    #   - 新浪 znb_（hq.sinajs.cn）：四个指数的现价/昨收/涨跌额/涨跌幅全有，
+    #     且是本项目既有价格主源 → VPS 必可达，**主源**；
+    #   - 东财 push2：f43/f60/f169/f170 齐全，但部分出口整段断链 → **备源**；
+    #   - CNBC：FTSE/N225 正常，但 .DAX/.CAC 快照坏（change='UNCH'、昨收=现价）
+    #     → **备源**（对 FTSE/N225 仍可作交叉校验）。
+    # 合取规则：价格取任一可用值；涨跌取「真正给得出」的那个（新浪→东财→CNBC）。
+    # 三源都没有的指数才落到 sina/tencent ETF 代理（fail-safe，不回归）。
+    idx_all = {}
+    for label, fn in (("sina", fetch_sina_global_index),
+                      ("em", fetch_em_global_index),
+                      ("cnbc", fetch_cnbc_global_index)):
         try:
-            em_idx = fetch_em_global_index()
-        except Exception:  # noqa: BLE001
-            em_idx = {}
-        for symbol in missing:
-            if symbol in em_idx:
-                _n, price, chg, chg_val = em_idx[symbol]
-                rows.append((date, symbol, _n, price, chg, 0, now, now, None, chg_val))
-        missing = [s for s in missing if s not in em_idx]
-        # 兜底：sina A股ETF(DAX/CAC40) + tencent usEWU(FTSE)；NK 无 ETF 代理则留空
+            got = fn()
+        except Exception as e:  # noqa: BLE001
+            print("[signal] %s 全球指数失败: %s" % (label, e))
+            continue
+        for sym, val in got.items():
+            # 新浪/东财: (name, price, pct, chg_value)；CNBC: (name, price, pct, chg_value, prev)
+            name, price, pct, chg_val = val[0], val[1], val[2], val[3]
+            cur = idx_all.get(sym)
+            if cur is None:
+                idx_all[sym] = [name, price, pct, chg_val, label]
+            else:
+                # 价格：优先新浪（主源，最权威的官方口径）
+                if cur[4] != "sina" and label == "sina":
+                    cur[1] = price
+                # 涨跌：谁先给出真实值用谁（sina > em > cnbc 的优先级由遍历顺序保证）
+                if cur[2] is None and pct is not None:
+                    cur[2], cur[3] = pct, chg_val
+
+    for symbol in ("DAX", "CAC40", "FTSE", "NK"):
+        v = idx_all.get(symbol)
+        if v:
+            _n, price, chg, chg_val, _src = v
+            rows.append((date, symbol, _n, price, chg, 0, now, now, None, chg_val))
+
+    # 三源都没覆盖的 → 兜底：sina A股ETF(DAX/CAC40) + tencent usEWU(FTSE)；NK 无 ETF 代理则留空
+    missing = [s for s in ("DAX", "CAC40", "FTSE", "NK") if s not in idx_all]
+    if missing:
         if "DAX" in missing or "CAC40" in missing:
             try:
                 a_etf = fetch_sina_a_etf()

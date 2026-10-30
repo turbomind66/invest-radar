@@ -422,9 +422,15 @@ def _secid_of(code: str) -> str:
 def fetch_details(code: str, lmt: int = 2000):
     """抓东财逐笔成交明细（滚动窗口），返回 [(ttime, price, volume手, direction, amount元)]。
 
-    每行形如 "15:29:58,4.152,25,1,1"：时间,价格,手数,方向(1买/2卖/其它=中性),金额。
-    金额列单位有歧义，这里不依赖它，自算 amount = 手数 × 价格 × 100（ETF 一手=100 股）。
-    方向枚举以盘中实测为准（暂按 1≈主动买 / 2≈主动卖）。
+    东财 details 接口（fields2=f51,f52,f53,f54,f55）的真实列序为：
+        f51=时间, f52=价格, f53=成交量(手), **f54=笔数**, **f55=成交性质**
+
+    ⚠️ 2026-10-30 修正：此前误把 **f54（笔数，取值 3~97 的成交笔数）** 当成买卖方向，
+    结果所有大单都被判成「卖单」（面板上表现为「大买单合计 0.00 亿、大卖单合计 2.12 亿」，
+    且因买单占比恒为 0，永远识别不出「集中扫货」）。
+    正确的方向列是 **f55 成交性质**：1=主动买、2=主动卖、其它=中性(0)。
+
+    金额不依赖接口的金额列（单位有歧义），自算 amount = 手数 × 价格 × 100（ETF 一手=100 股）。
     盘后接口冻结（只返回当日最后一笔左右），盘中会滚动返回最近若干笔。
     """
     sid = _secid_of(code)
@@ -442,9 +448,15 @@ def fetch_details(code: str, lmt: int = 2000):
             continue
         try:
             t, price, vol = p[0], float(p[1]), int(p[2])
-            direction = int(p[3]) if p[3].isdigit() else 0
         except ValueError:
             continue
+        # f55 = 成交性质：1=主动买 / 2=主动卖 / 其它=中性(0)
+        # （f54 是笔数，不能当方向用 —— 见上面说明）
+        try:
+            raw_dir = int(p[4])
+        except ValueError:
+            raw_dir = 0
+        direction = raw_dir if raw_dir in (1, 2) else 0
         amount = vol * price * 100
         out.append((t, price, vol, direction, amount))
     return out
@@ -526,12 +538,17 @@ def _win_of(ttime: str) -> int:
     return ((h * 60 + m) // TICK_WIN) * TICK_WIN
 
 
-def compute_tick_events(date: str, path: str = db.DB_PATH):
-    """纯读：把当日大单按 (code, 5分钟窗口) 聚合，识别「集中扫货/抛压」事件。
+def compute_tick_windows(date: str, path: str = db.DB_PATH):
+    """纯读：把当日大单按 (code, 5分钟窗口) 聚合，返回**所有**含大单的窗口。
 
-    不写库。信号方向：
+    每个窗口带 `kind` 标记：
       tick_buy  ：窗口内大单净买为正、大买单占比 ≥ BUY_RATIO、价格上行 → 疑似主动托盘
       tick_sell ：窗口内大单净卖为负、大卖单占比高、价格下行 → 疑似集中抛压
+      neutral   ：有大单但未达集中阈值（盘后快照的常态）
+    ⚠️ 2026-10-30：此前只有「达阈值」的窗口才进 events，导致面板表格在
+    无集中事件时整表空白（丁总反馈「表格没显示出来」）。而表格的列设计
+    （时段/基金/方向/大买单额/大卖单额/净买/买单占比/价格涨跌）本就是
+    **窗口聚合口径** —— 应展示所有含大单的窗口，用「方向」列区分是否达阈值。
     """
     rows = db.get_tick_by_date(date, path=path)
     if not rows:
@@ -542,13 +559,18 @@ def compute_tick_events(date: str, path: str = db.DB_PATH):
         key = (r["code"], wb)
         b = buckets.setdefault(key, {"code": r["code"], "name": r["name"], "cat": r["cat"],
                                      "win": wb, "buy": 0.0, "sell": 0.0,
-                                     "buy_n": 0, "sell_n": 0, "prices": []})
+                                     "buy_n": 0, "sell_n": 0, "neutral_n": 0,
+                                     "prices": []})
+        # direction: 1=主动买 / 2=主动卖 / 0=中性或方向未知。
+        # 中性单既不计买也不计卖（此前 else 分支把非 1 全当卖，导致买单占比恒为 0）。
         if r["direction"] == 1:
             b["buy"] += r["amount"]; b["buy_n"] += 1
-        else:
+        elif r["direction"] == 2:
             b["sell"] += r["amount"]; b["sell_n"] += 1
+        else:
+            b["neutral_n"] += 1
         b["prices"].append(r["price"])
-    events = []
+    out = []
     for (code, wb), b in buckets.items():
         net = b["buy"] - b["sell"]
         tot = b["buy"] + b["sell"]
@@ -560,18 +582,30 @@ def compute_tick_events(date: str, path: str = db.DB_PATH):
         elif net <= -MIN_WIN_AMT and (1 - buy_ratio) >= BUY_RATIO and up < UP_MIN:
             kind = "tick_sell"
         else:
-            continue
-        events.append({
+            kind = "neutral"
+        out.append({
             "code": code, "name": b["name"], "cat": b["cat"],
             "window": "%02d%02d" % (wb // 60, wb % 60),
             "buy": round(b["buy"]), "sell": round(b["sell"]), "net": round(net),
-            "buy_n": b["buy_n"], "sell_n": b["sell_n"],
+            "buy_n": b["buy_n"], "sell_n": b["sell_n"], "neutral_n": b["neutral_n"],
             "buy_ratio": round(buy_ratio, 2), "up_pct": round(up * 100, 3),
             "kind": kind,
-            "amount": round(b["buy"] if kind == "tick_buy" else abs(b["sell"])),
+            "amount": round(abs(net) if net else (b["buy"] + b["sell"])),
         })
-    events.sort(key=lambda e: -e["amount"])
-    return events
+    # 排序：先按是否达阈值（集中事件优先），再按金额绝对值降序
+    out.sort(key=lambda e: (0 if e["kind"] != "neutral" else 1, -e["amount"]))
+    return out
+
+
+def compute_tick_events(date: str, path: str = db.DB_PATH):
+    """纯读：识别「集中扫货/抛压」事件（仅含达阈值的窗口）。
+
+    不写库。信号方向：
+      tick_buy  ：窗口内大单净买为正、大买单占比 ≥ BUY_RATIO、价格上行 → 疑似主动托盘
+      tick_sell ：窗口内大单净卖为负、大卖单占比高、价格下行 → 疑似集中抛压
+    """
+    return [e for e in compute_tick_windows(date, path=path)
+            if e["kind"] in ("tick_buy", "tick_sell")]
 
 
 def detect_tick(date: str, path: str = db.DB_PATH):
@@ -626,24 +660,31 @@ def build_view(date: str, path: str = db.DB_PATH):
     pressure = [s for s in sigs if s["kind"] == "pressure"]
     conf = [s for s in sigs if s["level"] == "confirmed" or s["level"] == "confirmed_by_tick"]
     # 方案C：逐笔大额买单识别（基于东财滚动明细，纯读聚合，不写库）
-    tick_events = compute_tick_events(date, path=path)
+    tick_windows = compute_tick_windows(date, path=path)
+    tick_events = [e for e in tick_windows if e["kind"] in ("tick_buy", "tick_sell")]
     tick_buy = [e for e in tick_events if e["kind"] == "tick_buy"]
     tick_sell = [e for e in tick_events if e["kind"] == "tick_sell"]
     tick_rows = db.get_tick_by_date(date, path=path)
     # 合计口径必须统计【全部】大单，而非仅「集中事件」金额：
     # 盘后快照里大单散落各窗口、形不成集中事件，若只汇总事件金额会恒为 0，
-    # 造成"有 12 笔大单却显示 0.00 亿"的假象。方向口径与 compute_tick_events 一致
-    # （direction==1 记买，其余记卖），保证合计与事件净额可对齐。
+    # 造成"有 12 笔大单却显示 0.00 亿"的假象。
+    # 方向口径与 compute_tick_events 保持一致：1=买 / 2=卖 / 0=中性（方向未知，不计入买卖）。
     tick_buy_amt = sum(r.get("amount") or 0 for r in tick_rows if r.get("direction") == 1)
-    tick_sell_amt = sum(r.get("amount") or 0 for r in tick_rows if r.get("direction") != 1)
+    tick_sell_amt = sum(r.get("amount") or 0 for r in tick_rows if r.get("direction") == 2)
+    tick_neutral_amt = sum(r.get("amount") or 0 for r in tick_rows
+                            if r.get("direction") not in (1, 2))
     tick_summary = {
         "has_data": bool(tick_rows),
         "big_count": len(tick_rows),
         "events": tick_events,
+        # 所有含大单的窗口（含未达集中阈值的），供表格逐行展示 ——
+        # 否则无集中事件时表格整表空白，看不到已抓到的大单分布。
+        "windows": tick_windows,
         "buy_events": len(tick_buy),
         "sell_events": len(tick_sell),
         "buy_amount": tick_buy_amt,
         "sell_amount": tick_sell_amt,
+        "neutral_amount": tick_neutral_amt,
         "thresholds": {"big": TICK_BIG, "huge": TICK_HUGE, "buy_ratio": BUY_RATIO,
                        "min_win_amt": MIN_WIN_AMT, "window": TICK_WIN},
     }
