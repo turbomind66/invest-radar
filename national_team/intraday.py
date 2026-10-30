@@ -558,7 +558,7 @@ def compute_tick_windows(date: str, path: str = db.DB_PATH):
         wb = _win_of(r["ttime"])
         key = (r["code"], wb)
         b = buckets.setdefault(key, {"code": r["code"], "name": r["name"], "cat": r["cat"],
-                                     "win": wb, "buy": 0.0, "sell": 0.0,
+                                     "win": wb, "buy": 0.0, "sell": 0.0, "neutral": 0.0,
                                      "buy_n": 0, "sell_n": 0, "neutral_n": 0,
                                      "prices": []})
         # direction: 1=主动买 / 2=主动卖 / 0=中性或方向未知。
@@ -568,7 +568,7 @@ def compute_tick_windows(date: str, path: str = db.DB_PATH):
         elif r["direction"] == 2:
             b["sell"] += r["amount"]; b["sell_n"] += 1
         else:
-            b["neutral_n"] += 1
+            b["neutral"] += r["amount"]; b["neutral_n"] += 1
         b["prices"].append(r["price"])
     out = []
     for (code, wb), b in buckets.items():
@@ -587,10 +587,13 @@ def compute_tick_windows(date: str, path: str = db.DB_PATH):
             "code": code, "name": b["name"], "cat": b["cat"],
             "window": "%02d%02d" % (wb // 60, wb % 60),
             "buy": round(b["buy"]), "sell": round(b["sell"]), "net": round(net),
+            # 方向未知（历史归档口径修正前抓的）大单金额：买卖列会是 0，
+            # 前端单列展示，避免「有行但数字全是 0」的误读。
+            "neutral": round(b["neutral"]),
             "buy_n": b["buy_n"], "sell_n": b["sell_n"], "neutral_n": b["neutral_n"],
             "buy_ratio": round(buy_ratio, 2), "up_pct": round(up * 100, 3),
             "kind": kind,
-            "amount": round(abs(net) if net else (b["buy"] + b["sell"])),
+            "amount": round(abs(net) if net else (b["buy"] + b["sell"] + b["neutral"])),
         })
     # 排序：先按是否达阈值（集中事件优先），再按金额绝对值降序
     out.sort(key=lambda e: (0 if e["kind"] != "neutral" else 1, -e["amount"]))

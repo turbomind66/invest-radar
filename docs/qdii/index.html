@@ -86,7 +86,7 @@
   .chart{width:100%;height:260px;}
   .warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:8px 10px;border-radius:8px;font-size:12px;}
 </style>
-<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-30 19:27:57", "worker_url": "", "peer_url": "../"};</script>
+<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-30 22:23:47", "worker_url": "", "peer_url": "../"};</script>
 <script>/* common/static_refresh.js — 静态托管站共享刷新逻辑（国家队 / QDII 复用）
  *
  * 由 national_team/app.py 与 qdii 的 render_index / staticsite 在「构建或响应时」
@@ -189,16 +189,12 @@
   <div class="grid2">
     <div class="card">
       <h2>② 全球市场信号 <span class="tag" id="signalGroups"></span></h2>
-      <div class="warn" style="margin-bottom:8px;">⚠️ <b>各市场交易时段不同，「状态」列按<b>北京时间</b>实时判定</b>（<code>common/market_session</code>）：
-        <b>日经225</b> 东京 09:00–15:30 = 北京 <b>08:00–14:30</b>，下午 14:30 后看到的就是<b>当天收盘价</b>（比 A 股早 1 小时收）；
-        <b>DAX / CAC40 / FTSE</b> 北京约 15:00–16:00 至次日 00:30，晚间时段为<b>实时</b>；
-        <b>纳指/标普现货、VIX</b> 美东 09:30–16:00 = 北京 21:30–次日 04:00(夏)/05:00(冬)，
-        北京 21:30 之前显示的才是<b>上一交易日收盘</b>；
-        <b>期货</b>（CME Globex 近24h）、<b>美债10Y</b>（CNBC 实时报价）、<b>境内场内 ETF</b> 为<b>实时</b>。
-        <br>欧洲/亚太指数（DAX/CAC40/FTSE/日经225）经 <b>新浪全球指数</b>抓取；
-        新浪 <code>znb_</code> 为主源（与项目既有的标普500 同出口，部署环境稳定可达），
-        <b>东财 push2</b>、<b>CNBC</b> 为备源（三源交叉校验：FTSE 两源数值完全一致）；
-        仅当三者均不可达时，才降级回<b>境内对应场内 ETF</b>（DAX/CAC40）或美股 <code>usEWU</code>（富时100）代理 —— 代理项名称标「代理」，不冒充指数。</div>
+      <div class="warn" style="margin-bottom:8px;">⚠️ <b>「状态」列按北京时间实时判定</b>（各市场交易时段不同）：
+        <br>· <b>日经225</b> 北京 08:00–14:30 交易，14:30 后看到的是<b>当天收盘价</b>（比 A 股早 1 小时收，不是昨收）；
+        <br>· <b>DAX / CAC40 / FTSE</b> 北京约 15:00–16:00 至次日 00:30 交易，<b>晚间为实时</b>；
+        <br>· <b>纳指/标普现货、VIX</b> 北京 21:30–次日 04:00(夏)/05:00(冬) 交易，<b>21:30 之前显示的是上一交易日收盘</b>；
+        <br>· <b>期货</b>（近 24h 连续）、<b>美债10Y</b>、<b>境内场内 ETF</b> 为<b>实时</b>。
+        <br><span style="color:#94a3b8">数据源：欧洲/亚太指数以新浪全球指数为主、东财与 CNBC 交叉校验；三源都不可达时降级为境内场内 ETF 代理（名称带「代理」标注，不冒充指数）。</span></div>
       <div class="tscroll" style="max-height:330px;">
       <table id="signalTable"><thead><tr>
         <th>标的</th><th>最新价</th><th>涨跌值</th><th>涨跌幅</th><th>状态</th>
@@ -277,6 +273,10 @@
 
 <script>
 function fmtPct(v){ if(v===null||v===undefined||isNaN(v)) return '—'; return (v>=0?'+':'')+v.toFixed(2)+'%'; }
+// ⚠️ 2026-10-30 修：本模板此前没有 esc()，而信号表渲染调用了它 ——
+// 浏览器一跑到第一个数据行就抛 ReferenceError，分组头画得出、数据行全不渲染，
+// 表现为「全球市场信号表格只剩分组标题、下面全空」。补上定义（与国家队模板同款）。
+function esc(s){ return String(s===null||s===undefined?'':s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
 function clsPct(v){ if(v===null||v===undefined||isNaN(v)) return ''; return v>=0?'up':'down'; }
 function el(id){ return document.getElementById(id); }
 function poolName(code){ return (window.__pool||[]).find(f=>f.code===code)||{}; }
@@ -394,7 +394,7 @@ function renderSignal(rows, meta, groups){
   buckets.forEach(b=>{
     if(b.group){
       const trh=document.createElement('tr');
-      trh.innerHTML='<td colspan="4" class="grpRow">'+b.group+'</td>';
+      trh.innerHTML='<td colspan="5" class="grpRow">'+esc(b.group)+'</td>';
       tb.appendChild(trh);
     }
     b.list.forEach(r=>{

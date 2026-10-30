@@ -35,7 +35,7 @@ INDEX = os.path.join(BASE, "templates", "index.html")
 PORT = int(os.environ.get("PORT") or "5000")
 # 版本指纹：与 qdii 侧的 sig/codes 同用途，部署后 /api/status 里能一眼辨新旧代码。
 # 手动同步更新，或用 git rev-parse 生成一次写死。
-APP_VERSION = "v2.6.7-nt"
+APP_VERSION = "v2.6.8-nt"
 # 站点路径前缀：域名反代把本面板挂在子路径（如 /nt）时，若 Nginx/NPM 保留前缀不剥，
 # 就在这里声明（BASE_PATH=/nt），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
 BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")

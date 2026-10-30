@@ -53,6 +53,9 @@ jobs:
       - name: 前端渲染逻辑测试（DOM 桩件，离线）
         run: node national_team/tests/test_frontend.js
 
+      - name: QDII 全球信号表渲染测试（DOM 桩件，离线）
+        run: node qdii/tests/test_signal_render.js
+
       - name: 静态模式一致性测试（前端筛选 vs 服务端逻辑）
         run: node national_team/tests/test_static.js
 
