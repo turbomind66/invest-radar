@@ -933,6 +933,37 @@ class SignalCoverageTest(unittest.TestCase):
             self.assertEqual(row[4], expect[row[0]],
                              "%s 的交易所代码应为 %s，实际 %s" % (row[0], expect[row[0]], row[4]))
 
+    def test_signal_meta_tolerates_4tuple_constants(self):
+        """常量仍是旧版 4 元组时，/api/qdii/signal 不能崩。
+
+        背景：沙箱里 constants.py 与 qdii_app.py 版本不一致（部署未整体刷新）时，
+        直接取 s[4] 会抛 IndexError —— 在 BaseHTTPRequestHandler 里未捕获异常会让
+        连接无响应断开，上层反代判为「子进程未就绪」，页面永远停在「预热中」。
+        故此处必须兼容 4 元组（code 落空串，页面不显示徽标而已）。
+        """
+        import qdii_app
+        orig = C.MARKET_SIGNALS
+        try:
+            C.MARKET_SIGNALS = [(s[0], s[1], s[2], s[3]) for s in orig]
+            data = qdii_app.route_api("/api/qdii/signal")
+            self.assertIsNotNone(data, "旧版 4 元组常量不应导致接口失败")
+            meta = data.get("meta") or {}
+            self.assertEqual(len(meta), len(orig))
+            for sym, v in meta.items():
+                self.assertEqual(v.get("code", ""), "", "%s 的 code 应为空串" % sym)
+                self.assertTrue(v.get("name"), "%s 仍应带名称" % sym)
+        finally:
+            C.MARKET_SIGNALS = orig
+
+    def test_signal_meta_has_code_with_current_constants(self):
+        """当前常量下 code 必须真实下发（不能被兼容逻辑写成空串）。"""
+        import qdii_app
+        data = qdii_app.route_api("/api/qdii/signal")
+        meta = data.get("meta") or {}
+        self.assertTrue(meta)
+        for sym, v in meta.items():
+            self.assertTrue(v.get("code"), "%s 应带交易所代码" % sym)
+
 
 class EmGlobalIndexTest(unittest.TestCase):
     """欧洲三大指数改走东财真实指数（100.GDAXI/FCHI/FTSE）。

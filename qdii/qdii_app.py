@@ -75,7 +75,11 @@ def route_api(path, query=None):
         # meta/groups 来自 constants.MARKET_SIGNALS：分组（美股/科技/亚太/欧洲/利率）
         # 与类型标签（指数/期货/场内ETF/美股ETF·代理…）由后端统一下发，
         # 前端不硬编码口径，将来加新市场只改常量。
-        meta = {s[0]: {"name": s[1], "group": s[2], "kind": s[3], "code": s[4]}
+        # 第 5 字段是交易所代码（可选）：用 len 守卫兼容 4 元组的旧版常量，
+        # 避免常量与本模块版本不一致时 s[4] 抛 IndexError 把整个连接打断
+        # （表现是接口无响应、页面一直「预热中」，而非 500）。
+        meta = {s[0]: {"name": s[1], "group": s[2], "kind": s[3],
+                       "code": (s[4] if len(s) > 4 else "")}
                 for s in C.MARKET_SIGNALS}
         return {"rows": fetcher_signal.get_latest_us_signal(),
                 "meta": meta, "groups": C.MARKET_GROUPS}
@@ -157,6 +161,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body_bytes)
 
     def do_GET(self):
+        # 兜底：任何未捕获异常都返回 500 JSON，而不是让连接无响应断开
+        # （无响应会让上层反向代理判定「子进程未就绪」，页面一直停在「预热中」，
+        #  真实报错被吞掉、极难排查）。
+        try:
+            self._do_GET()
+        except Exception as e:  # noqa: BLE001
+            try:
+                self._send(json.dumps({"error": "internal", "type": type(e).__name__,
+                                        "msg": str(e)[:300]}, ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8", 500)
+            except Exception:
+                pass
+
+    def _do_GET(self):
         path = strip_base(self.path.split("?")[0])
         # 解析查询串（表头排序用）：sort/psort=列键，dir/pdir=asc|desc
         query = {}
