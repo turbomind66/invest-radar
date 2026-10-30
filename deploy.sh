@@ -232,12 +232,41 @@ if port_in_use "${GATEWAY_HOST_PORT}"; then
     check_port_conflict "${GATEWAY_HOST_PORT}"
 fi
 
+# ---- 2.5 小内存机器提示 ----
+# Compose 五容器的内存上限合计 832MB（96+256+192+128+160），≤1GB 物理内存的机器上
+# 叠加系统与其它服务必然 OOM，表现就是「部署时 SSH 掉线、过一会自愈」。
+if [ "${MODE}" = "compose" ] && [ -r /proc/meminfo ]; then
+    _mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || true)"
+    if [ -n "${_mem_kb}" ] && [ "${_mem_kb}" -lt 1200000 ] 2>/dev/null; then
+        warn "本机物理内存约 $(( _mem_kb / 1024 ))MB：Compose 五容器内存上限合计 832MB，极易 OOM 导致 SSH 掉线"
+        warn "建议改用单容器模式：./deploy.sh --run"
+    fi
+fi
+
 # ---- 3. 构建并启动 ----
+# 两种形态互斥：单容器 ntt 与 Compose 五容器共用同一个对外端口和数据卷，
+# 同时存在会互相抢端口（Compose 的 ntt-gateway 会一直卡在 Created 起不来），
+# 且小内存机器上两套一起跑必然 OOM。故每次部署前先清掉「另一种形态」的残留。
+# 只动容器，不碰数据卷 ntt-data，历史数据不受影响。
 if [ "${MODE}" = "compose" ]; then
+    if docker ps -a --format '{{.Names}}' | grep -qx ntt; then
+        warn "检测到单容器 ntt 仍在（占用对外端口 ${GATEWAY_HOST_PORT}）→ 先移除，否则 ntt-gateway 起不来"
+        docker rm -f ntt >/dev/null 2>&1 || true
+    fi
     info "使用 Docker Compose 部署（ntt-gateway + ntt-web / ntt-cron / qdii-web / qdii-cron 五个服务）"
     docker compose up -d --build
     WEB_NAME="ntt-web"
 else
+    _leftover=""
+    for _n in ntt-gateway ntt-web ntt-cron qdii-web qdii-cron; do
+        if docker ps -a --format '{{.Names}}' | grep -qx "${_n}"; then
+            _leftover="${_leftover} ${_n}"
+        fi
+    done
+    if [ -n "${_leftover}" ]; then
+        warn "检测到 Compose 形态残留（${_leftover}）→ 单容器模式下先移除，避免端口抢占与内存超限"
+        for _n in ${_leftover}; do docker rm -f "${_n}" >/dev/null 2>&1 || true; done
+    fi
     info "使用单容器部署（web + 调度在同一容器）"
     docker build -t "${IMAGE}" .
     if docker ps -a --format '{{.Names}}' | grep -qx ntt; then
