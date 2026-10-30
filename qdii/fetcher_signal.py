@@ -129,7 +129,7 @@ def fetch_tencent_us(codes=None):
         except (ValueError, TypeError):
             continue
         chg = (price / prev - 1) * 100 if prev else 0.0
-        res[sym] = (price, chg)
+        res[sym] = (price, chg, prev)
     return res
 
 
@@ -143,6 +143,7 @@ def fetch_sina_us_index():
     [5] 是「最高价」不是昨收，用错会得到反向涨跌：
     实测标普500 最新价 7720.39、[2]=-0.30（正确），错用 [5]=7699.61 算成 +0.27%。
     [2] 是 sina 官方算好的每日涨跌幅（含分红/拆细校正），最权威。
+    [4] = 涨跌额（绝对变动，单位点），直接作为 change_value（涨跌值）。
     """
     txt = fetch_text(SINA_INDEX_URL, referer="https://finance.sina.com.cn/",
                      encoding="gbk", use_proxy=None, retries=2)
@@ -161,7 +162,15 @@ def fetch_sina_us_index():
             chg = float(raw) if raw not in ("", "--") else None
         except ValueError:
             chg = None
-        res[sym] = (price, chg)
+        # [4] = 涨跌额（绝对变动，单位点）
+        change_value = None
+        if len(parts) > 4:
+            r4 = (parts[4] or "").strip()
+            try:
+                change_value = float(r4) if r4 not in ("", "--") else None
+            except (ValueError, TypeError):
+                change_value = None
+        res[sym] = (price, chg, change_value)
     return res
 
 
@@ -180,7 +189,7 @@ def fetch_cboe_vix():
     prev_close = float(prev[4])
     chg = (close / prev_close - 1) * 100 if prev_close else 0.0
     m, d, y = last[0].split("/")
-    return close, round(chg, 4), "%s-%s-%s" % (y, m, d)
+    return close, round(chg, 4), "%s-%s-%s" % (y, m, d), round(close - prev_close, 2)
 
 
 def fetch_cnbc_ust10y():
@@ -226,7 +235,10 @@ def fetch_em_global_index():
             price = float(d["f43"])
             raw = d.get("f169")
             chg = float(raw) if raw not in (None, "", "--") else None
-            res[symbol] = (EM_GLOBAL_INDEX[symbol][0], price, chg, "")
+            # f170 = 涨跌额（绝对变动，单位点），直接作为 change_value
+            raw_v = d.get("f170")
+            change_value = float(raw_v) if raw_v not in (None, "", "--") else None
+            res[symbol] = (EM_GLOBAL_INDEX[symbol][0], price, chg, change_value)
         except Exception as e:  # noqa: BLE001
             print("[signal] 东财 %s 失败: %s" % (secid, e))
             continue
@@ -279,7 +291,8 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
             _n, price, prev, ts = got
             # 涨跌幅按「现价 vs 昨收」真实计算（此前写死 0.00%，等于没有信息）
             chg = round((price / prev - 1) * 100, 4) if prev else None
-            rows.append((date, symbol, name, price, chg, 1, ts or now, now, None))
+            chg_val = round(price - prev, 2) if prev else None  # 涨跌值（点数差）
+            rows.append((date, symbol, name, price, chg, 1, ts or now, now, None, chg_val))
     except Exception as e:  # noqa: BLE001
         print("[signal] futures failed:", e)
     # 腾讯（非实时：纳指100现货/VIX/美债）
@@ -287,23 +300,24 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
         tencent = fetch_tencent_us()
         for tcode, (symbol, name, is_rt) in TENCENT_SYMBOLS.items():
             if tcode in tencent:
-                price, chg = tencent[tcode]
-                rows.append((date, symbol, name, price, chg, is_rt, now, now, None))
+                price, chg, prev = tencent[tcode]
+                chg_val = round(price - prev, 2) if prev else None
+                rows.append((date, symbol, name, price, chg, is_rt, now, now, None, chg_val))
     except Exception as e:  # noqa: BLE001
         print("[signal] tencent failed:", e)
     # 美债10年期收益率（实时，CNBC）
     try:
         ust, ust_bp, ust_pct, ust_ts = fetch_cnbc_ust10y()
         rows.append((date, "UST10Y", "美债10Y收益率", ust, ust_pct, 1,
-                     ust_ts or now, now, ust_bp))
+                     ust_ts or now, now, ust_bp, ust_bp))
     except Exception as e:  # noqa: BLE001
         print("[signal] cnbc ust10y failed:", e)
     # VIX（避险开关 + 面板展示）：CBOE 官方 CSV 优先，失败再退回腾讯（可能停在旧值）。
     # 美债10Y 是「原因」（贴现率上行压制估值），VIX 是「结果」（恐慌程度已到多少），
     # 两者维度不同、并列参与避险判断（见 strategy.risk_off_assess），缺一个都不完整。
     try:
-        vix_close, vix_chg, vix_date = fetch_cboe_vix()
-        rows.append((date, "VIX", "VIX波动率", vix_close, vix_chg, 0, vix_date, now, None))
+        vix_close, vix_chg, vix_date, vix_val = fetch_cboe_vix()
+        rows.append((date, "VIX", "VIX波动率", vix_close, vix_chg, 0, vix_date, now, None, vix_val))
     except Exception as e:  # noqa: BLE001
         print("[signal] cboe vix failed, fallback tencent:", e)
         try:
@@ -317,8 +331,8 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
     try:
         sina_idx = fetch_sina_us_index()
         if "gb_inx" in sina_idx:
-            price, chg = sina_idx["gb_inx"]
-            rows.append((date, "SPX", "标普500现货", price, chg, 0, now, now, None))
+            price, chg, chg_val = sina_idx["gb_inx"]
+            rows.append((date, "SPX", "标普500现货", price, chg, 0, now, now, None, chg_val))
     except Exception as e:  # noqa: BLE001
         print("[signal] sina index failed:", e)
     # 欧洲三大指数：优先东财真实指数（100.GDAXI/FCHI/FTSE），单个缺失时降级回 ETF 代理。
@@ -327,8 +341,8 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
     except Exception as e:  # noqa: BLE001
         print("[signal] 东财欧洲指数失败，降级 ETF 代理:", e)
         em_idx = {}
-    for symbol, (name, price, chg, _ts) in em_idx.items():
-        rows.append((date, symbol, name, price, chg, 0, now, now, None))
+    for symbol, (name, price, chg, chg_val) in em_idx.items():
+        rows.append((date, symbol, name, price, chg, 0, now, now, None, chg_val))
     # 真实指数未取到的（东财不可达 / 单指数缺失）→ A股ETF(DAX/CAC40) + 美股ETF(FTSE) 代理兜底
     proxy_missing = [s for s in ("DAX", "CAC40", "FTSE") if s not in em_idx]
     if proxy_missing:
@@ -338,17 +352,19 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
                 if symbol in a_etf:
                     _n, price, prev, ts = a_etf[symbol]
                     chg = round((price / prev - 1) * 100, 4) if prev else None
+                    chg_val = round(price - prev, 2) if prev else None
                     rows.append((date, symbol, SINA_A_ETF_NAME[symbol] + "（代理）",
-                                 price, chg, 1, ts or now, now, None))
+                                 price, chg, 1, ts or now, now, None, chg_val))
         except Exception as e2:  # noqa: BLE001
             print("[signal] sina a-etf fallback failed:", e2)
         if "FTSE" in proxy_missing:
             try:
                 t = fetch_tencent_us("usEWU")
                 if "usEWU" in t:
-                    price, chg = t["usEWU"]
+                    price, chg, prev = t["usEWU"]
+                    chg_val = round(price - prev, 2) if prev else None
                     rows.append((date, "FTSE", "英国富时100指数（代理）",
-                                 price, chg, 1, now, now, None))
+                                 price, chg, 1, now, now, None, chg_val))
             except Exception as e3:  # noqa: BLE001
                 print("[signal] tencent usEWU fallback failed:", e3)
     conn = db.get_conn(path)
@@ -358,7 +374,7 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
     for r in rows:
         db.upsert_row(conn, "qdii_us_signal",
                       ["date", "symbol", "name", "last_price", "change_pct",
-                       "is_realtime", "as_of", "fetched_at", "change_bp"],
+                       "is_realtime", "as_of", "fetched_at", "change_bp", "change_value"],
                       list(r), "date,symbol")
     conn.commit()
     conn.close()
@@ -391,7 +407,9 @@ if __name__ == "__main__":
     print("fetched %d us signals" % n)
     for r in get_latest_us_signal():
         bp = r.get("change_bp")
-        print("  %-8s %-14s price=%.3f chg=%.2f%%%s rt=%s as_of=%s" % (
+        val = r.get("change_value")
+        print("  %-8s %-14s price=%.3f chg=%.2f%%  value=%s%s rt=%s as_of=%s" % (
             r["symbol"], r["name"], r["last_price"], r["change_pct"],
+            ("%+.2f" % val) if val is not None else "—",
             (" (%+.1fbp)" % bp) if bp is not None else "",
             r["is_realtime"], r["as_of"]))

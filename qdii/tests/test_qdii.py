@@ -944,10 +944,12 @@ class EmGlobalIndexTest(unittest.TestCase):
     def test_parse_dax(self):
         res = self.fs.fetch_em_global_index()
         self.assertIn("DAX", res)
-        name, price, chg, _ts = res["DAX"]
+        name, price, chg, chg_val = res["DAX"]
         self.assertEqual(name, "德国DAX指数")
         self.assertAlmostEqual(price, 19234.56, places=2)
         self.assertAlmostEqual(chg, -0.30, places=2)
+        # f170 = 涨跌额（绝对变动），直接作为「涨跌值」
+        self.assertAlmostEqual(chg_val, -58.23, places=2)
 
     def test_all_three_present(self):
         # 三指数各自独立 try/except，逐个验证 secid 映射（mock 对三个 secid 返回同一份样本）
@@ -958,6 +960,62 @@ class EmGlobalIndexTest(unittest.TestCase):
         self.fs.fetch_text = lambda *a, **k: json.dumps({"rc": 0, "data": {}})
         with self.assertRaises(ValueError):
             self.fs.fetch_em_global_index()
+
+
+class ChangeValueTest(unittest.TestCase):
+    """change_value（涨跌值/绝对变动）全面铺开：美债=bp、指数/期货/VIX=点数差。"""
+
+    def test_sina_us_index_change_value(self):
+        import fetcher_signal as fs
+        # gb_inx 实测：最新价 7720.39 / [2]涨跌幅 -0.30 / [4]涨跌额 -23.59
+        sample = ('var hq_str_gb_inx="标普500指数,7720.3901,-0.30,2026-10-30 04:33:03,'
+                  '-23.5900,7699.6099,7732.2100,7690.9399,7844.5200,6316.9102,'
+                  '3300311487,2995724322,0,0.00,--,0.00,0.00,0.00,0.00,0,0,0.0000,'
+                  '0.00,0.0000,,Oct 29 04:32PM EDT,7743.9800,0,1,2026";')
+        orig = fs.fetch_text
+        fs.fetch_text = lambda *a, **k: sample
+        try:
+            price, chg, val = fs.fetch_sina_us_index()["gb_inx"]
+            self.assertAlmostEqual(price, 7720.39, places=2)
+            self.assertAlmostEqual(chg, -0.30, places=2)
+            self.assertAlmostEqual(val, -23.59, places=2)  # [4] 涨跌额
+        finally:
+            fs.fetch_text = orig
+
+    def test_cboe_vix_change_value(self):
+        import fetcher_signal as fs
+        # 末行=当日，倒数第二行=前一日；close 差即涨跌值
+        csv = ("DATE,OPEN,HIGH,LOW,CLOSE\n"
+               "10/29/2026,18.0,19.0,17.0,18.50\n"
+               "10/30/2026,18.5,19.5,18.0,19.20\n")
+        orig = fs.fetch_text
+        fs.fetch_text = lambda *a, **k: csv
+        try:
+            close, chg, date, val = fs.fetch_cboe_vix()
+            self.assertAlmostEqual(close, 19.20, places=2)
+            self.assertAlmostEqual(val, 19.20 - 18.50, places=2)
+        finally:
+            fs.fetch_text = orig
+
+    def test_change_value_persist(self):
+        import db, fetcher_signal as fs
+        # 用内存库验证 upsert 的 10 列对齐（避免 Windows 临时文件锁）
+        conn = db.get_conn(":memory:")
+        conn.execute(
+            "CREATE TABLE qdii_us_signal ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, symbol TEXT, name TEXT, "
+            "last_price REAL, change_pct REAL, is_realtime INTEGER, as_of TEXT, "
+            "fetched_at TEXT, change_bp REAL, change_value REAL, UNIQUE(date, symbol))")
+        db.upsert_row(conn, "qdii_us_signal",
+                      ["date", "symbol", "name", "last_price", "change_pct",
+                       "is_realtime", "as_of", "fetched_at", "change_bp", "change_value"],
+                      ["2026-10-30", "SPX", "标普500现货", 7720.39, -0.30,
+                       0, "", "x", "", -23.59], "date,symbol")
+        conn.commit()
+        row = conn.execute(
+            "SELECT change_value FROM qdii_us_signal WHERE symbol='SPX'").fetchone()
+        self.assertAlmostEqual(row["change_value"], -23.59, places=2)
+        conn.close()
 
 
 class BoardTrackingErrorTest(unittest.TestCase):

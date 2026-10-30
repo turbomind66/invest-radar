@@ -42,7 +42,7 @@ SCHEMA = [
         date TEXT, symbol TEXT, name TEXT,
         last_price REAL, change_pct REAL,
         is_realtime INTEGER, as_of TEXT, fetched_at TEXT,
-        change_bp REAL,
+        change_bp REAL, change_value REAL,
         UNIQUE(date, symbol)
     )""",
     """CREATE TABLE IF NOT EXISTS qdii_tracking_error (
@@ -92,6 +92,7 @@ def init_db(path: str = DB_PATH):
         ("qdii_premium", "bench_label", "TEXT"),
         ("qdii_premium", "bench_asof", "TEXT"),
         ("qdii_us_signal", "change_bp", "REAL"),
+        ("qdii_us_signal", "change_value", "REAL"),
     ):
         try:
             cur.execute("ALTER TABLE %s ADD COLUMN %s %s" % (_tbl, _col, _decl))

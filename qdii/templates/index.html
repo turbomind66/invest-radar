@@ -123,7 +123,7 @@
         <code>usEWU</code>（iShares MSCI 英国 ETF）代理 —— 代理项名称里标了「代理」，不冒充指数。</div>
       <div class="tscroll" style="max-height:330px;">
       <table id="signalTable"><thead><tr>
-        <th>标的</th><th>最新价</th><th>涨跌</th><th>实时?</th>
+        <th>标的</th><th>最新价</th><th>涨跌值</th><th>涨跌幅</th><th>实时?</th>
       </tr></thead><tbody></tbody></table>
       </div>
       <div class="note">现货昨收方向 = 本次申购将成交的净值方向（<b>跟跌加仓</b>的输入）；期货实时 = 今晚开盘前瞻。<br>
@@ -333,13 +333,15 @@ function renderSignal(rows, meta, groups){
       const price = isUst
         ? (r.last_price!=null? r.last_price.toFixed(3)+'%' : '—')
         : (r.last_price!=null? r.last_price.toFixed(2) : '—');
-      const chgHtml = isUst
-        ? '<span class="'+clsPct(r.change_bp)+'">'+
-          (r.change_bp!=null? (r.change_bp>0?'+':'')+r.change_bp.toFixed(1)+'bp' : '—')+'</span>'+
-          (r.change_pct!=null
-            ? ' <span class="'+clsPct(r.change_pct)+'" style="opacity:.7">('+fmtPct(r.change_pct)+')</span>'
-            : '')
-        : '<span class="'+clsPct(r.change_pct)+'">'+fmtPct(r.change_pct)+'</span>';
+      // 涨跌值（绝对变动）：美债用 bp，其余用指数/期货点数差
+      const valHtml = (function(){
+        if(r.change_value==null) return '—';
+        if(isUst) return '<span class="'+clsPct(r.change_pct)+'">'+(r.change_value>0?'+':'')+r.change_value.toFixed(1)+'bp</span>';
+        return '<span class="'+clsPct(r.change_pct)+'">'+(r.change_value>0?'+':'')+r.change_value.toFixed(2)+'</span>';
+      })();
+      // 涨跌幅（相对比例）
+      const pctHtml = '<span class="'+(r.change_pct!=null?clsPct(r.change_pct):'')+'">'+
+        (r.change_pct!=null? fmtPct(r.change_pct) : '—')+'</span>';
       // 避险状态标注：VIX 看绝对水平（预警区/已触发），美债看 bp 逼近程度
       let flag='';
       if(isVix && r.last_price!=null){
@@ -352,7 +354,8 @@ function renderSignal(rows, meta, groups){
       }
       tr.innerHTML='<td>'+r.name+'<br><small style="color:#94a3b8">'+sub+'</small></td>'+
         '<td>'+price+'</td>'+
-        '<td>'+chgHtml+'</td>'+
+        '<td>'+valHtml+'</td>'+
+        '<td>'+pctHtml+'</td>'+
         '<td>'+rt+(flag?' '+flag:'')+'</td>';
       tb.appendChild(tr);
     });
