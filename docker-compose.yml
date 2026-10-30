@@ -32,10 +32,10 @@ services:
       QDII_PREFIX: ${QDII_PREFIX:-/qdii}
       NT_PREFIX: ${NT_PREFIX:-/nt}
     ports:
-      # 只绑定宿主机回环：服务器上可 curl 自测，但**不会**对公网暴露。
-      # 公网访问一律走 NPM → 容器 IP:38881 → 443，防火墙/安全组无需放行新端口。
-      # 若确实要让公网直连（如暂时没配 NPM），改成 "0.0.0.0:${GATEWAY_HOST_PORT:-48881}:${GATEWAY_PORT:-38881}"。
-      - "127.0.0.1:${GATEWAY_HOST_PORT:-48881}:${GATEWAY_PORT:-38881}"
+      # 绑定 0.0.0.0：让 NPM（容器）经 Docker 网桥 172.17.0.1 也能访问 48881，
+      # 解决「NPM 反代 172.17.0.1:38881 连不上」导致的 502（gateway 原只绑 127.0.0.1）。
+      # 公网直连 48881 仍由防火墙（仅放行 22/80/443）挡住，实际流量只走 NPM→443 回源。
+      - "0.0.0.0:${GATEWAY_HOST_PORT:-48881}:${GATEWAY_PORT:-38881}"
     depends_on:
       - web
       - qdii-web
