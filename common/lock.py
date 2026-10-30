@@ -33,12 +33,22 @@ _STALE_SEC = int(os.environ.get("LOCK_STALE_SEC", "21600"))
 
 
 def _pid_alive(pid: int) -> bool:
-    """跨平台 PID 存活检测。检测不了时保守返回 True，宁可让陈旧锁走 mtime 兜底。"""
+    """跨平台 PID 存活检测。
+
+    ⚠️ 2026-10-30 修（Linux CI 首次跑到就暴露）：旧实现把 OSError 一把 catch
+    返回 True，而 Linux 上 os.kill(不存在的 PID, 0) 抛的是 ProcessLookupError
+    （OSError 的子类），被误判成"存活"，导致兜底分支永远收不回陈旧锁 →
+    `test_fallback_stale_pid_reclaimed` 在 ubuntu-latest 上 FAIL。
+    Windows 走 ctypes.OpenProcess 那条路径所以本地一直是绿的。
+    语义：
+      ProcessLookupError → 进程不存在 → False
+      PermissionError    → 进程存在但不属于当前用户 → 视为存活 → True
+      其它 OSError       → 保守视为存活，宁可让 mtime 陈旧判定兜底
+    """
     if pid <= 0:
         return False
-    try:
-        if os.name == "nt":
-            # Windows 无 os.kill 语义，用 OpenProcess 判断；无 psutil 时用 ctypes
+    if os.name == "nt":
+        try:
             import ctypes
             import ctypes.wintypes
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -54,14 +64,18 @@ def _pid_alive(pid: int) -> bool:
                 return True
             finally:
                 kernel32.CloseHandle(h)
-        # POSIX: signal 0 只做权限校验，不发信号
+        except Exception:
+            return False
+    # POSIX
+    try:
         os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError, PermissionError):
-        # PermissionError = 进程存在但不属于当前用户 → 视为存活
-        return True
-    except Exception:
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
 
 
 class FileLock:
