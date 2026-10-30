@@ -933,6 +933,25 @@ class SignalCoverageTest(unittest.TestCase):
             self.assertEqual(row[4], expect[row[0]],
                              "%s 的交易所代码应为 %s，实际 %s" % (row[0], expect[row[0]], row[4]))
 
+    def _signal_meta(self, signals):
+        """取 /api/qdii/signal 的 meta，屏蔽数据库读取。
+
+        route_api 会读 qdii_us_signal 表，而 CI 是干净环境（表尚未建），
+        故此处把 get_latest_us_signal 换成空结果，只验证 meta 构造逻辑。
+        """
+        import qdii_app
+        import fetcher_signal
+        orig_const = C.MARKET_SIGNALS
+        orig_get = fetcher_signal.get_latest_us_signal
+        try:
+            C.MARKET_SIGNALS = signals
+            fetcher_signal.get_latest_us_signal = lambda *a, **k: []
+            data = qdii_app.route_api("/api/qdii/signal")
+            return data.get("meta") or {}
+        finally:
+            C.MARKET_SIGNALS = orig_const
+            fetcher_signal.get_latest_us_signal = orig_get
+
     def test_signal_meta_tolerates_4tuple_constants(self):
         """常量仍是旧版 4 元组时，/api/qdii/signal 不能崩。
 
@@ -941,25 +960,16 @@ class SignalCoverageTest(unittest.TestCase):
         连接无响应断开，上层反代判为「子进程未就绪」，页面永远停在「预热中」。
         故此处必须兼容 4 元组（code 落空串，页面不显示徽标而已）。
         """
-        import qdii_app
         orig = C.MARKET_SIGNALS
-        try:
-            C.MARKET_SIGNALS = [(s[0], s[1], s[2], s[3]) for s in orig]
-            data = qdii_app.route_api("/api/qdii/signal")
-            self.assertIsNotNone(data, "旧版 4 元组常量不应导致接口失败")
-            meta = data.get("meta") or {}
-            self.assertEqual(len(meta), len(orig))
-            for sym, v in meta.items():
-                self.assertEqual(v.get("code", ""), "", "%s 的 code 应为空串" % sym)
-                self.assertTrue(v.get("name"), "%s 仍应带名称" % sym)
-        finally:
-            C.MARKET_SIGNALS = orig
+        meta = self._signal_meta([(s[0], s[1], s[2], s[3]) for s in orig])
+        self.assertEqual(len(meta), len(orig))
+        for sym, v in meta.items():
+            self.assertEqual(v.get("code", ""), "", "%s 的 code 应为空串" % sym)
+            self.assertTrue(v.get("name"), "%s 仍应带名称" % sym)
 
     def test_signal_meta_has_code_with_current_constants(self):
         """当前常量下 code 必须真实下发（不能被兼容逻辑写成空串）。"""
-        import qdii_app
-        data = qdii_app.route_api("/api/qdii/signal")
-        meta = data.get("meta") or {}
+        meta = self._signal_meta(C.MARKET_SIGNALS)
         self.assertTrue(meta)
         for sym, v in meta.items():
             self.assertTrue(v.get("code"), "%s 应带交易所代码" % sym)
