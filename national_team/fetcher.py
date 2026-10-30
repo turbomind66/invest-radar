@@ -529,8 +529,24 @@ def split_news_by_date(news: list) -> dict:
 
 
 def is_trading_day(d=None) -> bool:
-    d = d or datetime.date.today()
-    return d.weekday() < 5  # 周一~周五
+    """A 股交易日判定：走 common.market_calendar 的节假日表 + 周末。
+
+    ⚠️ 2026-10-30 修：旧实现只 `d.weekday() < 5`，法定节假日（元旦/春节/
+    清明/劳动/端午/中秋/国庆）里落在周一到周五的日子被当成交易日，
+    ensure_today / ensure_history / staticsite.sync_missing / scheduler_loop
+    都会在这些天跑一次抓取 → 上游给的是**节前最后一个交易日**的收盘快照，
+    被错标到节假日当天入库、写进 data.json、进而在趋势图上出现幽灵交易日；
+    06:00 那次尤其明显（会连着几天写同一天数据）。现在统一走日历。
+    """
+    try:
+        from common.market_calendar import is_a_share_trading_day
+    except ImportError:  # 兼容被直接 exec 时的 sys.path 状态
+        import sys as _sys, os as _os
+        _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        if _root not in _sys.path:
+            _sys.path.insert(0, _root)
+        from common.market_calendar import is_a_share_trading_day
+    return is_a_share_trading_day(d)
 
 
 def fetch_and_save(force: bool = False) -> dict:
@@ -544,7 +560,8 @@ def fetch_and_save(force: bool = False) -> dict:
     """
     today = datetime.date.today().strftime("%Y-%m-%d")
     if not is_trading_day():
-        return {"ok": False, "reason": "非交易日（周末），跳过抓取", "date": today}
+        return {"ok": False, "reason": "非交易日（周末或法定节假日），跳过抓取",
+                "date": today}
 
     etfs, em_ok = fetch_etfs()
     news = fetch_news()

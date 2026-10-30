@@ -130,9 +130,30 @@ def init_db(path: str = DB_PATH):
     return conn
 
 
+# 2026-10-30 加固：与 national_team/db.py 一致，
+# get_conn 只在同一 path 第一次调用时跑 schema 迁移，之后裸连；
+# 同时开 WAL + busy_timeout=30s，避免 web + cron + combo 子进程并发写
+# 撞出 `database is locked`。
+_INITIALIZED_PATHS = set()
+_BUSY_TIMEOUT_MS = int(os.environ.get("QDII_SQLITE_BUSY_MS", "30000"))
+
+
 def get_conn(path: str = DB_PATH):
-    conn = sqlite3.connect(path)
+    if path not in _INITIALIZED_PATHS:
+        try:
+            init_db(path).close()
+        except sqlite3.OperationalError:
+            # 老库缺表/权限问题：仍按裸连接工作，让调用方拿到明确 SQL 错误
+            pass
+        _INITIALIZED_PATHS.add(path)
+    conn = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_MS / 1000.0)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=%d" % _BUSY_TIMEOUT_MS)
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 

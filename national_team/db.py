@@ -17,6 +17,16 @@ TIER_FIELDS = ("huge_net", "big_net", "mid_net", "small_net")
 # 趋势图用 get_history_full() 的全量汇总展示完整区间，避免仓库体积随天数膨胀。
 EXPORT_WINDOW_DAYS = 90
 
+# ⚠️ 2026-10-30 修：init_db 只在每个 path 第一次连接时跑一次，
+# 之后 _conn() 直接走裸连接。旧实现在每次 _conn() 里都跑一遍 CREATE TABLE +
+# 4 次 ALTER TABLE + PRAGMA + intraday_tick 迁移检查，一次 /api/data 大概开
+# 15 个连接，等于每个 GET 都跑 15 次 DDL 写锁 —— 与 cron 容器同时写 SQLite 时
+# 5s 默认 busy timeout 很容易撞出 `database is locked` 直接把连接踢掉。
+_INITIALIZED_PATHS = set()
+
+# 连接忙等：读端等写端最多 30s（cron 抓 24 页最坏 ~40s 时不至于 500）
+_BUSY_TIMEOUT_MS = int(os.environ.get("NT_SQLITE_BUSY_MS", "30000"))
+
 
 def init_db(path: str = DB_PATH):
     conn = sqlite3.connect(path)
@@ -117,8 +127,29 @@ def _migrate_tick_table(cur):
 
 
 def _conn(path: str = DB_PATH):
-    init_db(path)
-    return sqlite3.connect(path)
+    """统一的连接入口：首次连接跑一次 schema 初始化，之后所有连接共享。
+
+    连接级参数：
+    - timeout=30：SQLite busy handler 默认 5s，与 cron 容器并发写会撞
+      `database is locked`；30s 覆盖最坏一次的写事务，读端也不会被踢。
+    - PRAGMA journal_mode=WAL：允许读写并发（web 展示读不阻塞 cron 抓取写）。
+      命名卷 overlayfs 上 WAL 也能正常工作；单文件容器可写层首次会退化成
+      journal mode delete，不影响功能。
+    - PRAGMA synchronous=NORMAL：WAL 下 NORMAL 已能保证进程崩溃不损坏库，
+      比默认 FULL 快 3-5 倍；对小规格 VPS 尤其重要。
+    """
+    if path not in _INITIALIZED_PATHS:
+        init_db(path)
+        _INITIALIZED_PATHS.add(path)
+    conn = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_MS / 1000.0)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=%d" % _BUSY_TIMEOUT_MS)
+    except sqlite3.OperationalError:
+        # 老 SQLite / 只读文件系统的 PRAGMA 失败：忽略、退回默认行为
+        pass
+    return conn
 
 
 def save_etf_daily(date: str, rows: list, path: str = DB_PATH):

@@ -72,6 +72,15 @@ def due(now, times):
     return (now.hour, now.minute) in set(times or [])
 
 
+_TZ_BJ = datetime.timezone(datetime.timedelta(hours=8))
+
+
+def _bj_now():
+    """当前北京时间（Actions runner 是 UTC / Windows 本地按系统时区，
+    都必须在调度前显式换算，否则 09:00 / 14:30 全部漂移）。"""
+    return datetime.datetime.now(datetime.timezone.utc).astimezone(_TZ_BJ)
+
+
 def run_limit():
     with L.FileLock(LOCK_PATH):
         n1 = fetcher_limit.fetch_all_limit_status()
@@ -125,7 +134,11 @@ def main():
     times_limit = parse_times(C.QDII_SCHED_LIMITTIMES)
     times_signal = parse_times(C.QDII_SCHED_SIGNALTIME)     # 美股日历
     times_premium = parse_times(C.QDII_SCHED_PREMIUMTIME)   # A 股日历
-    last_minute = set()
+    # 防重复触发的 key：(task_kind, date, (h, m)) —— 三元组，每天每个时点每个任务
+    # 只算一次。旧实现用 `last_minute` set 记录「已经过完的分钟」，且长度超过
+    # 3000 就 .clear() → clear 之后紧接着的下一个 20s tick 又能命中同一分钟，
+    # 于是每个约每 2 天会出现一次「同一时点跑两遍 limit/signal/premium」。
+    fired = set()
     if _env_bool("SCHED_RUN_ON_START"):
         try:
             run_on_start()
@@ -134,28 +147,36 @@ def main():
     print("[sched] started. limit=%s signal=%s premium=%s"
           % (times_limit, times_signal, times_premium))
     while True:
-        now = datetime.datetime.now()
-        key = (now.hour, now.minute)
-        if key not in last_minute:
-            last_minute.add(key)
-            # 各任务按自己的日历与时点触发，均经文件锁串行，互不抢写 SQLite
-            if due(now, times_limit) and cal.is_a_share_trading_day(now):
-                try:
-                    run_limit()
-                except Exception as e:  # noqa: BLE001
-                    print("[sched] limit error:", e)
-            if due(now, times_signal) and cal.is_us_trading_day(now):
-                try:
-                    run_signal()
-                except Exception as e:  # noqa: BLE001
-                    print("[sched] signal error:", e)
-            if due(now, times_premium) and cal.is_a_share_trading_day(now):
-                try:
-                    run_premium()
-                except Exception as e:  # noqa: BLE001
-                    print("[sched] premium error:", e)
-        if len(last_minute) > 3000:
-            last_minute.clear()
+        # 一律按北京时间判定；Actions runner / Windows 本地 / VPS 未设 TZ 时
+        # datetime.now() 会退回系统时区，旧实现因此在 UTC 机器上会把
+        # 09:00 判到 17:00、周末偏移 8 小时。
+        now = _bj_now()
+        today = now.strftime("%Y-%m-%d")
+        # 内存回收：只保留今天的 key，昨天的自动过期
+        fired = {k for k in fired if k[0] == today}
+        # A 股日历（limit + premium）：直接判北京日期
+        a_share_today = cal.is_a_share_trading_day(now)
+        # 美股日历（signal）：北京 14:30 = 美东 01:30-02:30，
+        # 抓的是**上一美股交易日**的收盘数据，判定要用 date-1
+        us_session_open = cal.is_us_trading_session_for_beijing_time(now)
+        for kind, times, calendar_ok in (
+            ("limit", times_limit, a_share_today),
+            ("signal", times_signal, us_session_open),
+            ("premium", times_premium, a_share_today),
+        ):
+            if not calendar_ok:
+                continue
+            if not due(now, times):
+                continue
+            key = (today, kind, (now.hour, now.minute))
+            if key in fired:
+                continue
+            fired.add(key)
+            fn = tasks[kind]
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001
+                print("[sched] %s error:" % kind, e)
         time.sleep(20)
 
 
