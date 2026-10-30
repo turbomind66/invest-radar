@@ -41,21 +41,32 @@ SINA_INDEX_URL = "https://hq.sinajs.cn/list=gb_inx,gb_ixic"
 # 综合指数含全部纳斯达克上市股票（约 3300 只），纳指100 只含 100 只非金融大盘股。
 # ⚠️ 腾讯 `usTNX`（美债10Y）已不再返回数据（2026-10-29 实测请求 3 个代码只回 2 条），
 #    美债改用 CNBC 实时报价，见 fetch_cnbc_ust10y()。
-# usEWU = iShares MSCI 英国 ETF —— 富时100 无公开行情源，用它做**代理**（页面必须标注）。
-TENCENT_URL = "https://qt.gtimg.cn/q=usIXIC,usEWU"
+# usEWU = iShares MSCI 英国 ETF —— 仅作富时100 的**降级代理**：
+# 富时100 现已优先走东财真实指数 100.FTSE（见 fetch_em_global_index），
+# 东财不可达才在 fetch_us_signal 里降级回 usEWU。故不进主 TENCENT_SYMBOLS（避免重复写 FTSE）。
+TENCENT_URL = "https://qt.gtimg.cn/q=usIXIC"
 TENCENT_SYMBOLS = {
     "usIXIC": ("IXIC", "纳指现货", 0),
-    "usEWU": ("FTSE_UK", "英国富时100（代理）", 1),
 }
-# 境内场内 ETF（实时）：欧洲/亚太里**取不到海外指数现货**的类别，用对应场内 ETF 实时价代理。
+# 境内场内 ETF（实时）：DAX / 法国CAC40 的**降级代理**——东财真实指数（100.GDAXI/FCHI）
+# 不可达时才退回这里。symbol 与东财真实指数保持一致（DAX/CAC40），仅名称加「（代理）」区分。
 # 新浪 A 股行情字段：parts[0]=名称 parts[2]=昨收 parts[3]=现价 parts[30]=日期 parts[31]=时间
 SINA_A_ETF = {
-    "sh513030": ("DAX_ETF", "德国DAX（513030）"),
-    "sh513080": ("CAC40_ETF", "法国CAC40（513080）"),
+    "sh513030": ("DAX", "德国DAX指数"),
+    "sh513080": ("CAC40", "法国CAC40指数"),
 }
 SINA_A_ETF_URL = "https://hq.sinajs.cn/list=" + ",".join(SINA_A_ETF)
 # symbol → 展示名（写库用）
 SINA_A_ETF_NAME = {v[0]: v[1] for v in SINA_A_ETF.values()}
+# 欧洲三大指数：东财 push2 真实指数（VPS 可通；沙箱被墙由 fetch_us_signal 降级回 ETF 代理）。
+# secid 沿用 tracking_error 模块已验证的东财全球指数代码（100.GDAXI 等）。
+EM_GLOBAL_INDEX = {
+    "DAX": ("德国DAX指数", "100.GDAXI"),
+    "CAC40": ("法国CAC40指数", "100.FCHI"),
+    "FTSE": ("英国富时100指数", "100.FTSE"),
+}
+EM_GLOBAL_URL = ("https://push2.eastmoney.com/api/qt/stock/get"
+                 "?secid={secid}&fields=f43,f57,f58,f169,f170&invt=2&fltt=2")
 # VIX：腾讯 usVIX 的数值自 2026-09-15 起就不再更新（实测长期停在 21.67），
 # 拿它当避险开关等于开关永远不动。改用 CBOE 官方日收盘 CSV（权威、日频、T+1）。
 CBOE_VIX_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
@@ -123,21 +134,33 @@ def fetch_tencent_us(codes=None):
 
 
 def fetch_sina_us_index():
-    """新浪美股指数（标普500 gb_inx / 纳指综合 gb_ixic），上一交易日收盘。"""
+    """新浪美股指数（标普500 gb_inx / 纳指综合 gb_ixic），上一交易日收盘。
+
+    字段（2026-10-30 实测 `var hq_str_gb_inx`）：
+        [0]名称 [1]最新价 [2]**涨跌幅%** [3]时间 [4]涨跌额
+        [5]最高 [6]最低 ... [26]昨收
+    ⚠️ 涨跌幅必须用 sina **直接给出**的 [2]，不要拿 [1]/[5] 重算——
+    [5] 是「最高价」不是昨收，用错会得到反向涨跌：
+    实测标普500 最新价 7720.39、[2]=-0.30（正确），错用 [5]=7699.61 算成 +0.27%。
+    [2] 是 sina 官方算好的每日涨跌幅（含分红/拆细校正），最权威。
+    """
     txt = fetch_text(SINA_INDEX_URL, referer="https://finance.sina.com.cn/",
                      encoding="gbk", use_proxy=None, retries=2)
     res = {}
     for m in re.finditer(r'var hq_str_(gb_\w+)="([^"]*)"', txt):
         sym, body = m.group(1), m.group(2)
         parts = body.split(",")
-        if len(parts) < 6:
+        if len(parts) < 3:
             continue
         try:
             price = float(parts[1])
-            prev = float(parts[5])
         except (ValueError, TypeError):
             continue
-        chg = (price / prev - 1) * 100 if prev else 0.0
+        raw = (parts[2] or "").strip()
+        try:
+            chg = float(raw) if raw not in ("", "--") else None
+        except ValueError:
+            chg = None
         res[sym] = (price, chg)
     return res
 
@@ -182,6 +205,34 @@ def fetch_cnbc_ust10y():
     chg_pct = round((last / prev - 1) * 100, 4) if prev else None
     as_of = (q.get("last_time") or "").replace("T", " ")[:19]
     return last, bp, chg_pct, ("美东 " + as_of if as_of else "")
+
+
+def fetch_em_global_index():
+    """东财 push2 真实欧洲三大指数（VPS 可通；沙箱被墙由上层降级回 ETF 代理）。
+
+    与 constants.MARKET_SIGNALS 的 DAX/CAC40/FTSE 一一对应，symbol 即 DAX/CAC40/FTSE。
+    字段（东财 push2，fltt=2 原始值）：f43=最新价 f57=代码 f58=名称 f169=涨跌幅% f170=涨跌额。
+    逐个 secid 独立 try/except：某指数失败只丢该条，不拖垮其余；全失败抛 ValueError 交上层降级。
+    """
+    res = {}
+    for symbol, (_name, secid) in EM_GLOBAL_INDEX.items():
+        try:
+            url = EM_GLOBAL_URL.format(secid=secid)
+            txt = fetch_text(url, use_proxy=None, retries=1, timeout=15)
+            obj = json.loads(txt)
+            d = obj.get("data") or {}
+            if not d or d.get("f43") in (None, "", "-"):
+                continue
+            price = float(d["f43"])
+            raw = d.get("f169")
+            chg = float(raw) if raw not in (None, "", "--") else None
+            res[symbol] = (EM_GLOBAL_INDEX[symbol][0], price, chg, "")
+        except Exception as e:  # noqa: BLE001
+            print("[signal] 东财 %s 失败: %s" % (secid, e))
+            continue
+    if not res:
+        raise ValueError("东财欧洲指数全部失败")
+    return res
 
 
 def fetch_sina_a_etf():
@@ -270,15 +321,36 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
             rows.append((date, "SPX", "标普500现货", price, chg, 0, now, now, None))
     except Exception as e:  # noqa: BLE001
         print("[signal] sina index failed:", e)
-    # 境内场内 ETF（实时）：DAX / 法国CAC40 / 纳斯达克科技的代理信号
+    # 欧洲三大指数：优先东财真实指数（100.GDAXI/FCHI/FTSE），单个缺失时降级回 ETF 代理。
     try:
-        a_etf = fetch_sina_a_etf()
-        for symbol, (_n, price, prev, ts) in a_etf.items():
-            chg = round((price / prev - 1) * 100, 4) if prev else None
-            rows.append((date, symbol, SINA_A_ETF_NAME[symbol], price, chg, 1,
-                         ts or now, now, None))
+        em_idx = fetch_em_global_index()
     except Exception as e:  # noqa: BLE001
-        print("[signal] sina a-etf failed:", e)
+        print("[signal] 东财欧洲指数失败，降级 ETF 代理:", e)
+        em_idx = {}
+    for symbol, (name, price, chg, _ts) in em_idx.items():
+        rows.append((date, symbol, name, price, chg, 0, now, now, None))
+    # 真实指数未取到的（东财不可达 / 单指数缺失）→ A股ETF(DAX/CAC40) + 美股ETF(FTSE) 代理兜底
+    proxy_missing = [s for s in ("DAX", "CAC40", "FTSE") if s not in em_idx]
+    if proxy_missing:
+        try:
+            a_etf = fetch_sina_a_etf()
+            for symbol in ("DAX", "CAC40"):
+                if symbol in a_etf:
+                    _n, price, prev, ts = a_etf[symbol]
+                    chg = round((price / prev - 1) * 100, 4) if prev else None
+                    rows.append((date, symbol, SINA_A_ETF_NAME[symbol] + "（代理）",
+                                 price, chg, 1, ts or now, now, None))
+        except Exception as e2:  # noqa: BLE001
+            print("[signal] sina a-etf fallback failed:", e2)
+        if "FTSE" in proxy_missing:
+            try:
+                t = fetch_tencent_us("usEWU")
+                if "usEWU" in t:
+                    price, chg = t["usEWU"]
+                    rows.append((date, "FTSE", "英国富时100指数（代理）",
+                                 price, chg, 1, now, now, None))
+            except Exception as e3:  # noqa: BLE001
+                print("[signal] tencent usEWU fallback failed:", e3)
     conn = db.get_conn(path)
     # 同日重跑先清当日旧行：symbol 口径变过（NDX → IXIC、usTNX → CNBC UST10Y），
     # 不清理会让面板同时出现新旧两条。
@@ -304,7 +376,7 @@ def get_latest_us_signal(path: str = C.QDII_DB_PATH):
     # 显式排序：按 constants.MARKET_SIGNALS 的顺序（美股 → 科技 → 亚太 → 欧洲 → 利率）。
     # 别依赖插入顺序——重跑/补数时顺序会变。
     order = ["IXIC", "NDX_FUT", "SPX", "SPX_FUT", "NK",
-             "DAX_ETF", "CAC40_ETF", "FTSE_UK", "UST10Y", "VIX"]
+             "DAX", "CAC40", "FTSE", "UST10Y", "VIX"]
     cases = " ".join("WHEN '%s' THEN %d" % (s, i + 1) for i, s in enumerate(order))
     rows = conn.execute(
         "SELECT * FROM qdii_us_signal WHERE date=? ORDER BY CASE symbol %s ELSE 99 END"

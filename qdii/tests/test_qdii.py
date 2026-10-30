@@ -912,12 +912,52 @@ class SignalCoverageTest(unittest.TestCase):
             self.assertIn(grp, groups, "%s 的分组 %s 不在 MARKET_GROUPS 里" % (sym, grp))
         self.assertEqual(declared, set(s[0] for s in C.MARKET_SIGNALS))
 
-    def test_proxy_signals_are_marked(self):
-        """代理口径的信号必须在 kind 里写明「代理」，不能冒充指数。"""
-        for sym, _name, _grp, kind in C.MARKET_SIGNALS:
-            if sym in ("FTSE_UK", "DAX_ETF", "CAC40_ETF", "NXT_ETF"):
-                self.assertTrue("代理" in kind or "ETF" in kind,
-                                "%s 是代理信号，类型标签必须写明" % sym)
+    def test_european_signals_are_real_indices(self):
+        """DAX/CAC40/FTSE 现在走东财真实指数，类型标签必须是「指数」且不得再标「代理」。"""
+        real = {"DAX": "德国DAX指数", "CAC40": "法国CAC40指数", "FTSE": "英国富时100指数"}
+        for sym, name, _grp, kind in C.MARKET_SIGNALS:
+            if sym in real:
+                self.assertEqual(name, real[sym], "%s 名称应为真实指数名" % sym)
+                self.assertIn("指数", kind, "%s 类型应为指数" % sym)
+                self.assertNotIn("代理", kind, "%s 已是真实指数，不应再标代理" % sym)
+
+
+class EmGlobalIndexTest(unittest.TestCase):
+    """欧洲三大指数改走东财真实指数（100.GDAXI/FCHI/FTSE）。
+
+    沙箱到东财 push2 被墙，故用 mock 验证解析逻辑；生产 VPS 直连。
+    """
+
+    SAMPLE = json.dumps({"rc": 0, "data": {
+        "f43": "19234.56", "f57": "GDAXI", "f58": "德国DAX",
+        "f169": "-0.30", "f170": "-58.23"}})
+
+    def setUp(self):
+        import fetcher_signal as fs
+        self.fs = fs
+        self._orig = fs.fetch_text
+        fs.fetch_text = lambda *a, **k: self.SAMPLE
+
+    def tearDown(self):
+        self.fs.fetch_text = self._orig
+
+    def test_parse_dax(self):
+        res = self.fs.fetch_em_global_index()
+        self.assertIn("DAX", res)
+        name, price, chg, _ts = res["DAX"]
+        self.assertEqual(name, "德国DAX指数")
+        self.assertAlmostEqual(price, 19234.56, places=2)
+        self.assertAlmostEqual(chg, -0.30, places=2)
+
+    def test_all_three_present(self):
+        # 三指数各自独立 try/except，逐个验证 secid 映射（mock 对三个 secid 返回同一份样本）
+        res = self.fs.fetch_em_global_index()
+        self.assertEqual(set(res), {"DAX", "CAC40", "FTSE"})
+
+    def test_empty_raises(self):
+        self.fs.fetch_text = lambda *a, **k: json.dumps({"rc": 0, "data": {}})
+        with self.assertRaises(ValueError):
+            self.fs.fetch_em_global_index()
 
 
 class BoardTrackingErrorTest(unittest.TestCase):

@@ -335,7 +335,10 @@ function renderSignal(rows, meta, groups){
         : (r.last_price!=null? r.last_price.toFixed(2) : '—');
       const chgHtml = isUst
         ? '<span class="'+clsPct(r.change_bp)+'">'+
-          (r.change_bp!=null? (r.change_bp>0?'+':'')+r.change_bp.toFixed(1)+'bp' : '—')+'</span>'
+          (r.change_bp!=null? (r.change_bp>0?'+':'')+r.change_bp.toFixed(1)+'bp' : '—')+'</span>'+
+          (r.change_pct!=null
+            ? ' <span class="'+clsPct(r.change_pct)+'" style="opacity:.7">('+fmtPct(r.change_pct)+')</span>'
+            : '')
         : '<span class="'+clsPct(r.change_pct)+'">'+fmtPct(r.change_pct)+'</span>';
       // 避险状态标注：VIX 看绝对水平（预警区/已触发），美债看 bp 逼近程度
       let flag='';
