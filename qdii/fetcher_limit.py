@@ -12,9 +12,15 @@ import datetime
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
-for p in (BASE, ROOT):
+# BASE（本模块目录）必须排在 ROOT（部署根）之前 —— 否则部署根下存在同名
+# 模块时（沙箱里确有旧副本），`import constants/db` 会加载到那一份，
+# 表现为「部署了新代码、线上却跑着旧行为」。
+for p in (ROOT, BASE):
     if p not in sys.path:
         sys.path.insert(0, p)
+if sys.path and sys.path[0] != BASE:
+    sys.path.remove(BASE)
+    sys.path.insert(0, BASE)
 
 from common.http import fetch_text
 import db

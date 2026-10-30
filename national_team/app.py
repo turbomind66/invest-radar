@@ -12,12 +12,25 @@ import sys
 import time
 import urllib.parse
 
-import db
-import fetcher
-import intraday
-
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
+# 把【本模块所在目录】放在 sys.path 最前，保证 `import db/fetcher/intraday`
+# 命中的是本目录下的那一份，而不是部署根目录下的同名副本。
+#
+# 顺序很重要：ROOT（部署根）必须放在 BASE **之后**插入 —— 若 ROOT 先插到 index 0，
+# 则 ROOT 排在 BASE 前面，部署根目录存在同名模块时（沙箱里确实有一份旧副本），
+# import 会加载到那一份，表现为「部署了新代码、线上却跑着旧行为」。
+for _p in (ROOT, BASE):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+if sys.path and sys.path[0] != BASE:
+    sys.path.remove(BASE)
+    sys.path.insert(0, BASE)
+
+import db  # noqa: E402
+import fetcher  # noqa: E402
+import intraday  # noqa: E402
+
 INDEX = os.path.join(BASE, "templates", "index.html")
 PORT = int(os.environ.get("PORT", "5000"))
 # 站点路径前缀：域名反代把本面板挂在子路径（如 /nt）时，若 Nginx/NPM 保留前缀不剥，

@@ -14,9 +14,20 @@ import threading
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
-for p in (BASE, ROOT):
+# 把【本模块所在目录】放在 sys.path 最前，保证 `import constants/db/...`
+# 命中的是本目录下的那一份，而不是部署根目录下的同名副本。
+#
+# 顺序很重要：ROOT（部署根）必须放在 BASE **之后**插入 ——
+# 若 ROOT 先插到 index 0，则 ROOT 会排在 BASE 前面，
+# 于是在部署根目录存在同名模块时（沙箱里确实有一份旧副本），
+# `import constants` 会加载到那一份，表现为「部署了新代码、线上却跑着旧行为」。
+for p in (ROOT, BASE):
     if p not in sys.path:
         sys.path.insert(0, p)
+# 再次确保 BASE 在最前（上面两次 insert 后 BASE 应已是 index 0，此处兜底）
+if sys.path and sys.path[0] != BASE:
+    sys.path.remove(BASE)
+    sys.path.insert(0, BASE)
 
 import db
 import constants as C
@@ -48,7 +59,11 @@ def route_api(path, query=None):
     query = query or {}
     if path == "/api/qdii/status":
         return {"status": "ok", "db": C.QDII_DB_PATH,
-                "pool_size": len(C.FUND_POOL), "now": _now()}
+                "pool_size": len(C.FUND_POOL), "now": _now(),
+                # 代码版本指纹：排查「部署后线上跑的还是旧代码」时一眼可辨。
+                # sig = MARKET_SIGNALS 首行长度（加了交易所代码字段后为 5）。
+                "sig": len(C.MARKET_SIGNALS[0]) if C.MARKET_SIGNALS else 0,
+                "codes": [s[4] for s in C.MARKET_SIGNALS] if C.MARKET_SIGNALS and len(C.MARKET_SIGNALS[0]) > 4 else []}
     if path == "/api/qdii/funds":
         return {"funds": db.get_fund_pool()}
     if path == "/api/qdii/limit":

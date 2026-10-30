@@ -19,10 +19,23 @@ import datetime
 import time
 import json
 import os
+import sys
 
-import db
-import intraday
-import fetcher
+_BASE = os.path.dirname(os.path.abspath(__file__))
+# 把【本模块所在目录】放在 sys.path 最前，保证 `import db/intraday/fetcher`
+# 命中的是本目录下的那一份，而不是部署根目录下的同名副本。
+# 顺序很重要：ROOT（部署根）必须放在 BASE **之后**插入，否则 import 会命中
+# 部署根下的旧副本，表现为「部署了新代码、线上却跑着旧行为」。
+for _p in (os.path.dirname(_BASE), _BASE):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+if sys.path and sys.path[0] != _BASE:
+    sys.path.remove(_BASE)
+    sys.path.insert(0, _BASE)
+
+import db  # noqa: E402
+import intraday  # noqa: E402
+import fetcher  # noqa: E402
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 # 项目根：national_team 的父目录（容器里即 /app，本地即仓库根）。

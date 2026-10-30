@@ -1144,5 +1144,49 @@ class BoardTrackingErrorTest(unittest.TestCase):
         self.assertIn("te", board.FUND_SORT_KEYS)
 
 
+class SysPathOrderTest(unittest.TestCase):
+    """import 路径顺序：BASE（模块目录）必须排在 ROOT（部署根）之前。
+
+    背景（2026-10-30 实际故障）：沙箱部署根目录下存在另一份同名模块副本
+    （首次部署 qdii/ 目录时留下的平铺副本），而 qdii 各模块原先写的是
+    `for p in (BASE, ROOT): sys.path.insert(0, p)` —— 两次 insert(0) 后
+    ROOT 反而排到了 BASE **前面**，于是 `import constants` 加载到根目录的旧副本，
+    表现为「部署了新代码，线上却跑着旧行为」（信号面板无交易所代码、
+    日经225 显示成期货），且文件确实存在、内容却是旧的，极难排查。
+
+    各模块须满足：sys.path[0] == BASE（模块自身目录）。
+    """
+
+    MODULES = ["qdii_app", "fetcher_fee", "fetcher_limit", "fetcher_pool",
+               "fetcher_premium", "fetcher_signal", "qdii_scheduler",
+               "staticsite", "strategy", "tracking_error"]
+
+    def test_modules_put_base_before_root(self):
+        for name in self.MODULES:
+            path = os.path.join(QDIR, name + ".py")
+            with open(path, encoding="utf-8") as f:
+                src = f.read()
+            self.assertIn("for p in (ROOT, BASE):", src,
+                          "%s.py 未按 (ROOT, BASE) 顺序插入路径" % name)
+            self.assertNotIn("for p in (BASE, ROOT):", src,
+                             "%s.py 仍以 BASE 优先插入，ROOT 会排到前面" % name)
+
+    def test_base_ends_up_at_syspath_head(self):
+        """真正跑一遍路径处理逻辑，确认 BASE 落在 sys.path[0]。"""
+        import sys
+        path = os.path.join(QDIR, "qdii_app.py")
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+        block = src[src.index("BASE = os.path.dirname"):src.index("import db")]
+        saved = list(sys.path)
+        try:
+            ns = {"os": os, "sys": sys, "__file__": path}
+            exec(block, ns)
+            self.assertEqual(ns["sys"].path[0], ns["BASE"],
+                             "路径处理后 BASE 应在 sys.path[0]")
+        finally:
+            sys.path[:] = saved
+
+
 if __name__ == "__main__":
     unittest.main()

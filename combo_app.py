@@ -74,6 +74,22 @@ def spawn(label, script_rel, env_extra, port_key, port_val):
     env.update(env_extra)
     env[port_key] = str(port_val)
     script = os.path.join(BASE, script_rel)
+    # **关键**：清掉可能干扰 import 解析的环境变量。
+    #
+    # 两个子系统都 import 顶层同名模块（db/constants/...）。
+    # 沙箱里 sys.path 会被平台插入额外路径（实测子进程 sys.path 为
+    # ['/', '/workspace', '/workspace/qdii', ...]）—— '/workspace' 排在
+    # '/workspace/qdii' 之前，而部署根目录下可能存在另一份（旧的）同名副本，
+    # 于是 import 命中旧副本，表现为「部署了新代码、线上却跑着旧行为」。
+    #
+    # 真正的修正在各子系统模块内部（qdii/*.py 把 BASE 排在 ROOT 之前），
+    # 这里只负责清理环境变量，避免平台注入的 PYTHONSAFEPATH（会移除脚本目录）
+    # 与用户 site-packages 干扰 import。
+    sub_dir = os.path.dirname(script)
+    env.pop("PYTHONSAFEPATH", None)
+    env.pop("PYTHONHOME", None)
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PYTHONPATH"] = sub_dir
     proc = subprocess.Popen(
         [sys.executable, script],
         env=env,
