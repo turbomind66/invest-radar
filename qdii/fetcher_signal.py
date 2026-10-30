@@ -31,6 +31,11 @@ from common.http import fetch_text
 import db
 import constants as C
 
+try:
+    from common.market_session import market_status as _market_status, known_symbols
+except Exception:  # noqa: BLE001  # 极端部署形态下 common 不在 path 上，降级为不标状态
+    _market_status, known_symbols = None, (lambda: set())
+
 # 新浪期货代码 -> (symbol, name)
 # hf_NQ 的官方名称是「纳斯达克指数期货」，标的即 CME 纳指100期货（全球唯一的纳指期货品种），
 # 页面按用户口径统一叫「纳指期货」。
@@ -445,9 +450,35 @@ def fetch_sina_a_etf():
     return res
 
 
+def _apply_market_session(row, now_dt):
+    """给信号行补 `market_status`，并把 `is_realtime` 换成**按时段实时计算**的值。
+
+    ⚠️ 2026-10-30 修：is_realtime 此前是硬编码的（期货/美债写 1、现货写 0），
+    于是日经225（北京 14:30 已收盘）和欧洲三大（北京 16:00–00:30 正在交易）
+    都被标成「昨收·非实时」，与事实相反。现在按抓取时刻所在的市场时段判定：
+      日经225 北京 08:00–14:30  → 晚上看是「已收盘 14:30」（**今天**的收盘价）
+      DAX/CAC/FTSE 北京 15/16:00–00:30 → 晚上看是「实时」
+      纳指/标普现货、VIX 北京 21:30–04:00 → 白天晚上看才是真正的上一交易日收盘
+    不认识的 symbol（含场内 ETF 代理行）保留原 is_realtime，状态留空由前端兜底。
+    """
+    (dt, symbol, name, price, chg, is_rt, as_of, fetched_at, bp, chg_val) = row
+    status = ""
+    if _market_status is not None and symbol in known_symbols() and "（代理）" not in (name or ""):
+        try:
+            st = _market_status(symbol, now_dt)
+            is_rt = st["is_realtime"]
+            status = st["market_status"]
+        except Exception:  # noqa: BLE001
+            pass
+    elif "（代理）" in (name or ""):
+        status = "境内ETF·代理"
+    return (dt, symbol, name, price, chg, is_rt, as_of, fetched_at, bp, chg_val, status)
+
+
 def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
     date = date or datetime.date.today().isoformat()
-    now = datetime.datetime.now().isoformat(timespec="seconds")
+    now_dt = datetime.datetime.now()
+    now = now_dt.isoformat(timespec="seconds")
     # 确保旧库补齐新增列（change_value / change_bp）：本函数是唯一不依赖
     # app/scheduler 启动时 init_db 的入口，缺列会直接 INSERT 失败。
     try:
@@ -585,14 +616,43 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
             except Exception as e3:  # noqa: BLE001
                 print("[signal] tencent usEWU fallback failed:", e3)
     conn = db.get_conn(path)
+    # 清当日旧行前先留一份备份：同日重跑时某一路上游抽风（如 CNBC 偶发 SSL EOF），
+    # 本轮就拿不到那个 symbol，直接 DELETE 会把当天已归档的值抹掉 → 面板缺一行、
+    # 避险判断少一项。下面只回填「仍属于当前信号口径」的 symbol，
+    # 口径变更下线的旧 symbol（NDX → IXIC、usTNX → UST10Y）不会被复活。
+    keep = {}
+    try:
+        for r in conn.execute("SELECT * FROM qdii_us_signal WHERE date=?", (date,)):
+            keep[r["symbol"]] = dict(r)
+    except Exception:  # noqa: BLE001
+        keep = {}
     # 同日重跑先清当日旧行：symbol 口径变过（NDX → IXIC、usTNX → CNBC UST10Y），
     # 不清理会让面板同时出现新旧两条。
     conn.execute("DELETE FROM qdii_us_signal WHERE date=?", (date,))
+    written = set()
     for r in rows:
+        rr = _apply_market_session(r, now_dt)
+        written.add(r[1])
         db.upsert_row(conn, "qdii_us_signal",
                       ["date", "symbol", "name", "last_price", "change_pct",
-                       "is_realtime", "as_of", "fetched_at", "change_bp", "change_value"],
-                      list(r), "date,symbol")
+                       "is_realtime", "as_of", "fetched_at", "change_bp", "change_value",
+                       "market_status"],
+                      list(rr), "date,symbol")
+    for sym, old in keep.items():
+        if sym in written:
+            continue
+        if not any(s[0] == sym for s in C.MARKET_SIGNALS):
+            continue  # 已下线的旧口径 symbol，不复活
+        db.upsert_row(conn, "qdii_us_signal",
+                      ["date", "symbol", "name", "last_price", "change_pct",
+                       "is_realtime", "as_of", "fetched_at", "change_bp", "change_value",
+                       "market_status"],
+                      [old.get("date"), old.get("symbol"), old.get("name"),
+                       old.get("last_price"), old.get("change_pct"),
+                       old.get("is_realtime"), old.get("as_of"), old.get("fetched_at"),
+                       old.get("change_bp"), old.get("change_value"),
+                       old.get("market_status")], "date,symbol")
+        print("[signal] %s 本轮抓取失败，保留当日已归档值" % sym)
     conn.commit()
     conn.close()
     db.set_meta("last_signal_fetch", now, path)

@@ -179,8 +179,69 @@ def _get_sina(url: str, timeout: int = 15, max_try: int = 3):
     raise last
 
 
-def fetch_em_main_net() -> dict:
-    """从东方财富取观察池各ETF的资金流四档净额（国家队代理核心指标）。
+def _em_ulist_main_net() -> dict:
+    """东财 ulist：按 secid **定点**取观察池 14 只 ETF 的资金流四档 —— **主源**。
+
+    ⚠️ 2026-10-30 修：旧主源是 clist 在 ETF 板块（`fs=b:MK0021`，2500+ 只）里
+    翻 25 页捞这 14 只，任一页被断链就累计失败、满 3 页直接 break —— 实测 push2
+    出口不稳时覆盖率掉到 **0/14**，main_net 全 NULL，页面判定「当日尚未生成」
+    回退到前一交易日（丁总反馈「晚上 6 点多还是昨天的数据」）。
+    ulist 支持一次传全部 secid，**1 个请求拿全 14 只**，与翻页数无关，稳得多。
+    """
+    secids = ",".join(_secid_of(c) for c, _, _ in WATCHLIST)
+    url = ("https://push2.eastmoney.com/api/qt/ulist/get?pn=1&pz=%d&po=1&np=1"
+           "&fltt=2&invt=2&ut=b2884a393a59ad64002292a3e90d46a5"
+           "&fields=f12,f62,f66,f72,f78,f84&secids=%s" % (len(WATCHLIST), secids))
+    d = json.loads(_get(url))
+    out = {}
+    for it in ((d.get("data") or {}).get("diff") or []):
+        c = it.get("f12")
+        if not c:
+            continue
+        out[c] = {
+            "main_net": _num(it.get("f62")),
+            "huge_net": _num(it.get("f66")),
+            "big_net": _num(it.get("f72")),
+            "mid_net": _num(it.get("f78")),
+            "small_net": _num(it.get("f84")),
+        }
+    if not out:
+        raise ValueError("东财 ulist 未返回任何资金流")
+    return out
+
+
+def _em_fflow_daykline_main_net(date: str) -> dict:
+    """东财 push2his 资金流日线 —— **备源**。
+
+    与 `backfill_date` 走的是同一条出口（push2his），实测在 push2 整段断链的
+    网络里依然可达；且它按 secid 单只查询，不受板块翻页影响。
+    fflow daykline 字段序：f51日期 f52主力净 f53小单净 f54中单净 f55大单净 f56超大单净。
+    """
+    out = {}
+    for c, _nm, _cat in WATCHLIST:
+        url = (
+            "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?lmt=5"
+            "&klt=101&secid=%s&fields1=f1,f2,f3,f7"
+            "&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
+            "&ut=b2884a393a59ad64002292a3e90d46a5" % _secid_of(c)
+        )
+        try:
+            d = json.loads(_get(url, max_try=2))
+        except Exception:  # noqa: BLE001
+            continue
+        for line in ((d.get("data") or {}).get("klines") or []):
+            p = line.split(",")
+            if p[0] != date:
+                continue
+            out[c] = {"main_net": _num(p[1]), "small_net": _num(p[2]),
+                      "mid_net": _num(p[3]), "big_net": _num(p[4]),
+                      "huge_net": _num(p[5])}
+            break
+    return out
+
+
+def _em_clist_main_net() -> dict:
+    """东财 clist 板块翻页 —— **最后补漏**（前两源都没凑齐时才走）。
 
     返回 {code: {main_net, huge_net, big_net, mid_net, small_net}}，单位元。
     东财口径：主力净 = 超大单净 + 大单净（f62 = f66 + f72，已勾稽验证）。
@@ -226,6 +287,40 @@ def fetch_em_main_net() -> dict:
         if len(found) == len(WATCHLIST):
             break
         time.sleep(0.25)
+    return found
+
+
+def fetch_em_main_net() -> dict:
+    """取观察池各 ETF 的资金流四档净额 —— **三源按优先级合并**。
+
+    顺序：① ulist 定点（1 请求拿全 14 只，主源）
+          → ② push2his fflow daykline（备源，push2 断链时仍可达）
+          → ③ clist 板块翻页（最后补漏）
+
+    ⚠️ 2026-10-30 修：此前只有 clist 翻页一条路，push2 出口不稳时覆盖率
+    直接归零 → main_net 全 NULL → 页面回退到前一交易日。现在任一源可用即可。
+
+    返回 {code: {main_net, huge_net, big_net, mid_net, small_net}}，单位元。
+    `last_coverage` 记录最终覆盖只数，供 fetch_and_save 选择写入策略。
+    """
+    found = {}
+    try:
+        found = _em_ulist_main_net()
+    except Exception as e:  # noqa: BLE001
+        print("[em] ulist 资金流失败：%s" % e)
+    if len(found) < len(WATCHLIST):
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        for c, v in _em_fflow_daykline_main_net(today).items():
+            found.setdefault(c, v)
+        if len(found) < len(WATCHLIST):
+            try:
+                for c, v in _em_clist_main_net().items():
+                    found.setdefault(c, v)
+            except Exception as e:  # noqa: BLE001
+                print("[em] clist 资金流补漏失败：%s" % e)
+        if len(found) < len(WATCHLIST):
+            miss = [c for c, _n, _t in WATCHLIST if c not in found]
+            print("[em] 资金流仅覆盖 %d/%d，缺失 %s" % (len(found), len(WATCHLIST), miss))
     # 让调用方能感知「本次只拿到部分」，从而选择安全的写入策略（COALESCE 而非 DELETE）
     fetch_em_main_net.last_coverage = len(found)
     return found

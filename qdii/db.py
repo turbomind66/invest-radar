@@ -71,6 +71,9 @@ SCHEMA = [
         last_price REAL, change_pct REAL,
         is_realtime INTEGER, as_of TEXT, fetched_at TEXT,
         change_bp REAL, change_value REAL,
+        -- 交易时段状态文案（"实时" / "已收盘 14:30" / "休市 · 上一交易日收盘"），
+        -- 由 common.market_session 按抓取时刻实时计算，取代 is_realtime 的硬编码语义
+        market_status TEXT,
         UNIQUE(date, symbol)
     )""",
     """CREATE TABLE IF NOT EXISTS qdii_tracking_error (
@@ -121,6 +124,7 @@ def init_db(path: str = DB_PATH):
         ("qdii_premium", "bench_asof", "TEXT"),
         ("qdii_us_signal", "change_bp", "REAL"),
         ("qdii_us_signal", "change_value", "REAL"),
+        ("qdii_us_signal", "market_status", "TEXT"),
     ):
         try:
             cur.execute("ALTER TABLE %s ADD COLUMN %s %s" % (_tbl, _col, _decl))

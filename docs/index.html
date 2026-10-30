@@ -134,7 +134,7 @@
     .fresh .hint{display:none}.fresh .t{font-size:14.5px}.fresh .t b{font-size:15px}
   }
 </style>
-<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-30 16:32:59", "worker_url": "", "peer_url": "qdii/"};</script>
+<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-10-30 19:28:00", "worker_url": "", "peer_url": "qdii/"};</script>
 <script>/* common/static_refresh.js — 静态托管站共享刷新逻辑（国家队 / QDII 复用）
  *
  * 由 national_team/app.py 与 qdii 的 render_index / staticsite 在「构建或响应时」
@@ -1057,12 +1057,26 @@ function renderTick(d){
   if(sub) sub.textContent = `逐笔大单识别 · ${tk.big_count} 笔大单 · ${wins.length} 个大单时段 · ${ev.length} 个集中事件`;
   if(cards){
     const th = tk.thresholds || {};
+    // 买卖方向来自东财逐笔明细的「成交性质」列；历史上取错过列（把笔数当方向），
+    // 修正时把那批历史行统一置为「方向未知(0)」—— 金额仍有效，但不计入买卖合计。
+    // 若当日大单全是这种中性行，买卖合计会双双为 0，此时显示「—」而不是 0.00 亿，
+    // 免得被读成「今天既没大买也没大卖」。
+    const neu = tk.neutral_amount || 0;
+    const noDir = (tk.buy_amount || 0) === 0 && (tk.sell_amount || 0) === 0 && neu > 0;
+    const thTxt = `单笔≥${fmt((th.big||0)/1e4,0)}万`;
+    const amtTxt = a => (noDir ? "—" : fmt((a||0)/1e8)+" 亿");
     const cardsData = [
       {k:"集中扫货事件", v:String(tk.buy_events), sub:"大单净买主导", cls:"red"},
       {k:"集中抛压事件", v:String(tk.sell_events), sub:"大单净卖主导", cls:"green"},
-      {k:"大买单合计", v:fmt(tk.buy_amount/1e8)+" 亿", sub:`单笔≥${fmt((th.big||0)/1e4,0)}万`, cls:"red"},
-      {k:"大卖单合计", v:fmt(tk.sell_amount/1e8)+" 亿", sub:`单笔≥${fmt((th.big||0)/1e4,0)}万`, cls:"green"},
+      {k:"大买单合计", v:amtTxt(tk.buy_amount),
+       sub:(noDir?`方向未知 ${fmt(neu/1e8)} 亿`:thTxt), cls:"red"},
+      {k:"大卖单合计", v:amtTxt(tk.sell_amount),
+       sub:(noDir?`方向未知 ${fmt(neu/1e8)} 亿`:thTxt), cls:"green"},
     ];
+    if(neu > 0){
+      cardsData.push({k:"方向未知大单", v:fmt(neu/1e8)+" 亿",
+                      sub:"金额有效·不计入买卖合计", cls:"amber"});
+    }
     cards.innerHTML = cardsData.map(c=>`
       <div class="card"><div class="k">${c.k}</div>
       <div class="v ${c.cls}">${c.v}</div><div class="sub">${c.sub}</div></div>`).join("");
@@ -1100,7 +1114,7 @@ function renderTick(d){
       + `且<b>净买 ≥ ${fmt((th.min_win_amt||0)/1e4,0)}</b> 万元、价格上行 → 记「集中扫货」(疑似主动托盘)；反之记「集中抛压」。`
       + `<br>表格逐行展示<b>所有含大单的时段</b>，「方向」列标「集中扫货/抛压」表示已达标，标「未达阈值」表示有大单但未构成集中。`
       + `数据源为东财逐笔成交滚动明细，<b>盘后仅尾盘快照</b>，盘中多次采样可累积全天大单分布；若方案A 同窗口有护盘信号，则升级为「逐笔印证」。`
-      + (neu>0 ? `<br><span style="color:#94a3b8">注：另有 ${fmt(neu/1e8)} 亿大单方向未知（历史归档口径修正前抓取），未计入买入/卖出合计。</span>` : "");
+      + (neu>0 ? `<br><span style="color:#94a3b8">注：另有 ${fmt(neu/1e8)} 亿大单<b>方向未知</b> —— 这批是「买卖方向」字段口径修正<b>之前</b>抓下的归档（旧代码误把成交笔数当成买卖方向），金额有效但方向不可信，已统一置为中性、不计入买卖合计；下一交易日起新抓的大单会正常区分主动买 / 主动卖。</span>` : "");
   }
 }
 

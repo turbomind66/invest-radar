@@ -116,16 +116,19 @@
   <div class="grid2">
     <div class="card">
       <h2>② 全球市场信号 <span class="tag" id="signalGroups"></span></h2>
-      <div class="warn" style="margin-bottom:8px;">⚠️ <b>海外指数现货、VIX</b> 为「上一交易日·非实时」——美股交易时段对应北京时间约 21:30–次日 04:00(夏)/05:00(冬)，
-        北京时间 14:30 抓取时美股处于休市时段（美东约 01:30–02:30），取到的就是上一交易日收盘值；
+      <div class="warn" style="margin-bottom:8px;">⚠️ <b>各市场交易时段不同，「状态」列按<b>北京时间</b>实时判定</b>（<code>common/market_session</code>）：
+        <b>日经225</b> 东京 09:00–15:30 = 北京 <b>08:00–14:30</b>，下午 14:30 后看到的就是<b>当天收盘价</b>（比 A 股早 1 小时收）；
+        <b>DAX / CAC40 / FTSE</b> 北京约 15:00–16:00 至次日 00:30，晚间时段为<b>实时</b>；
+        <b>纳指/标普现货、VIX</b> 美东 09:30–16:00 = 北京 21:30–次日 04:00(夏)/05:00(冬)，
+        北京 21:30 之前显示的才是<b>上一交易日收盘</b>；
         <b>期货</b>（CME Globex 近24h）、<b>美债10Y</b>（CNBC 实时报价）、<b>境内场内 ETF</b> 为<b>实时</b>。
-        <br>欧洲/亚太指数（DAX/CAC40/FTSE/日经225）经 <b>新浪全球指数</b>抓取（同样为上一当地交易日收盘、非实时）；
+        <br>欧洲/亚太指数（DAX/CAC40/FTSE/日经225）经 <b>新浪全球指数</b>抓取；
         新浪 <code>znb_</code> 为主源（与项目既有的标普500 同出口，部署环境稳定可达），
         <b>东财 push2</b>、<b>CNBC</b> 为备源（三源交叉校验：FTSE 两源数值完全一致）；
         仅当三者均不可达时，才降级回<b>境内对应场内 ETF</b>（DAX/CAC40）或美股 <code>usEWU</code>（富时100）代理 —— 代理项名称标「代理」，不冒充指数。</div>
       <div class="tscroll" style="max-height:330px;">
       <table id="signalTable"><thead><tr>
-        <th>标的</th><th>最新价</th><th>涨跌值</th><th>涨跌幅</th><th>实时?</th>
+        <th>标的</th><th>最新价</th><th>涨跌值</th><th>涨跌幅</th><th>状态</th>
       </tr></thead><tbody></tbody></table>
       </div>
       <div class="note">现货昨收方向 = 本次申购将成交的净值方向（<b>跟跌加仓</b>的输入）；期货实时 = 今晚开盘前瞻。<br>
@@ -324,7 +327,13 @@ function renderSignal(rows, meta, groups){
     b.list.forEach(r=>{
       const isUst=(r.symbol==='UST10Y'), isVix=(r.symbol==='VIX');
       const tr=document.createElement('tr');
-      const rt=r.is_realtime? '<span class="pill p-green">实时</span>' : '<span class="pill" style="background:#f1f5f9;color:#475569">昨收·非实时</span>';
+      // 交易时段状态由后端按「抓取时刻 + 该市场真实时段」算好下发
+      //（日经 14:30 已收盘 / 欧洲晚间实时 / 美股现货才是上一交易日收盘），
+      // 不再用 is_realtime 硬编码出「昨收·非实时」这种与事实相反的标签。
+      const st = r.market_status || (r.is_realtime ? '实时' : '已收盘');
+      const rt = st.indexOf('实时') >= 0
+        ? '<span class="pill p-green">'+esc(st)+'</span>'
+        : '<span class="pill" style="background:#f1f5f9;color:#475569">'+esc(st)+'</span>';
       // 类型标签（指数/期货/场内ETF/美股ETF·代理…）由后端下发
       const m=meta[r.symbol]||{};
       const code = m.code || "";
