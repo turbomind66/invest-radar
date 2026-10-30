@@ -232,14 +232,16 @@ if port_in_use "${GATEWAY_HOST_PORT}"; then
     check_port_conflict "${GATEWAY_HOST_PORT}"
 fi
 
-# ---- 2.5 小内存机器提示 ----
-# Compose 五容器的内存上限合计 832MB（96+256+192+128+160），≤1GB 物理内存的机器上
-# 叠加系统与其它服务必然 OOM，表现就是「部署时 SSH 掉线、过一会自愈」。
+# ---- 2.5 小内存机器提示（仅提示，不阻断）----
+# Compose 五容器的 --memory 上限合计 832MB，但那只是天花板、不是预留：
+# 实测常驻合计约 20MB，1GB 机器跑 Compose 完全没问题（v2.6.4 曾据此误判"必然 OOM"）。
+# 真正可能让机器短暂无响应的是 docker build 瞬时峰值 + 抓取任务与其它吃 CPU 服务叠加，
+# 而部署本身已自动转后台，SSH 断连也不会中断。这里只在极小内存时给一句可选建议。
 if [ "${MODE}" = "compose" ] && [ -r /proc/meminfo ]; then
     _mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || true)"
-    if [ -n "${_mem_kb}" ] && [ "${_mem_kb}" -lt 1200000 ] 2>/dev/null; then
-        warn "本机物理内存约 $(( _mem_kb / 1024 ))MB：Compose 五容器内存上限合计 832MB，极易 OOM 导致 SSH 掉线"
-        warn "建议改用单容器模式：./deploy.sh --run"
+    if [ -n "${_mem_kb}" ] && [ "${_mem_kb}" -lt 900000 ] 2>/dev/null; then
+        warn "本机物理内存约 $(( _mem_kb / 1024 ))MB（偏小）。Compose 五容器实测常驻仅约 20MB，可以正常跑；"
+        warn "若希望进一步省内存，可选单容器模式：./deploy.sh --run"
     fi
 fi
 

@@ -124,14 +124,20 @@ python qdii/qdii_app.py
 
 把看板搬自己的 Debian / Ubuntu 服务器上：数据自主可控、不受 GitHub Actions 停用影响，盘中采样想加几个点就加几个点。**2 核 2G 这类小规格也能跑**（已给容器设资源上限，与其它服务共存无压力）。
 
-> ⚠️ **内存 ≤ 1GB 的机器请用方式二（`./deploy.sh --run` 单容器），不要跑 Compose 五容器。**
-> 五个容器的内存上限合计是 **832MB**（96+256+192+128+160），1GB 机器上再加系统与其它服务必然超额：
-> 表现为构建镜像或定时抓取时 **SSH 断连、服务器短暂无响应**（OOM），抓取跑完又自行恢复，极易被误判成"部署把服务器搞挂了"。
-> 单容器模式上限 **384MB**、实测常驻仅 60–70MB，同样的功能。已跑过 Compose 的切换方式（数据卷保留、历史不丢）：
+> 💡 **小内存机器（1GB）用哪种？两种都能跑，实测 Compose 五容器一共只占约 20MB。**
+> 五个容器的 `--memory` 上限合计 832MB（96+256+192+128+160），但**上限只是天花板、不是预留**——
+> 实测常驻：gateway 4.5MB / ntt-web 5.6MB / ntt-cron 1.9MB / qdii-web 4.4MB / qdii-cron 3.7MB，合计约 20MB。
+> 所以 1GB 机器跑 Compose **没有问题**，它就是推荐方式（v2.6.4 曾按"上限合计"推断"必然 OOM"，结论过强，此处更正）。
+> 部署/重建时若出现过 **SSH 短时断连、随后自愈**，更常见的原因是 `docker build` 瞬时峰值 + 抓取任务
+> 与机器上其它吃 CPU 的服务叠加（实测某台 1 核机器上另一个容器长期占 66% CPU），而非容器形态本身；
+> 部署现已自动转后台（`nohup`），断线也不会中断。
+> 若确实想把占用再减半、或只想要"一个容器完事"，可用方式二单容器（`--run`，上限 384MB、常驻 60–70MB）：
 > ```bash
-> docker compose down      # 不带 -v，ntt-data 数据卷保留
+> docker compose down      # 不带 -v，ntt-data 数据卷保留，历史数据不丢
 > ./deploy.sh --run
 > ```
+> ⚠️ **两种形态不要同时跑**：它们抢同一个 48881 端口，Compose 的 `ntt-gateway` 会卡在 `Created` 起不来。
+> v2.6.7 起脚本会自动清掉另一种形态的残留容器，不用手动处理。
 
 ### 方式一：Docker Compose（推荐，五个容器 · 对外只有一个端口）
 
@@ -157,7 +163,7 @@ cp .env.example .env     # 端口已固定，一般不用改
 > 服务器还没装 Docker？`./deploy.sh --install-docker` 会自动安装（含 compose 插件）。
 > 当前用户不在 docker 组时用 `sudo ./deploy.sh`。
 
-### 方式二：纯 docker run（单容器，web + 调度合一 · ≤1GB 内存机器推荐）
+### 方式二：纯 docker run（单容器，web + 调度合一 · 想再省一半内存时用）
 
 ```bash
 docker build -t invest-radar:latest .
@@ -530,7 +536,7 @@ docker compose up -d --build   # 一次性起 5 个服务
 
 完整版本说明见 [Releases](https://github.com/turbomind66/invest-radar/releases)。
 
-- **v2.6.7** — 修 `deploy.sh` **单容器 / Compose 两种形态混跑**（表现为 `Bind for 0.0.0.0:48881 failed: port is already allocated`、`ntt-gateway` 卡在 `Created`）：两种形态共用同一个对外端口与数据卷，同时存在时会互相抢端口 —— 单容器 `ntt` 占着 48881 时再跑 Compose，`ntt-gateway` 起不来只停在 `Created`，而 `ntt-web`/`ntt-cron` 却起来了，于是 `docker ps` 里两套并存、页面仍由旧容器应答（版本号/代码看起来"没更新"），且在 ≤1GB 内存的机器上两套一起跑必然 OOM 掉线。现在部署前**自动清掉另一种形态的残留容器**（只删容器，不动数据卷 `ntt-data`，历史数据不受影响）：`--run` 模式先移除 `ntt-gateway`/`ntt-web`/`ntt-cron`/`qdii-web`/`qdii-cron`；Compose 模式先移除单容器 `ntt`。另加**小内存提示**：Compose 模式下检测到物理内存 < 约 1.2GB 会警告"五容器内存上限合计 832MB 极易 OOM"并建议改用 `--run`。未改动端口、启动入口、配置文件与定时抓取职责；单一形态下行为与以前完全一致。
+- **v2.6.7** — 修 `deploy.sh` **单容器 / Compose 两种形态混跑**（表现为 `Bind for 0.0.0.0:48881 failed: port is already allocated`、`ntt-gateway` 卡在 `Created`）：两种形态共用同一个对外端口与数据卷，同时存在时会互相抢端口 —— 单容器 `ntt` 占着 48881 时再跑 Compose，`ntt-gateway` 绑定失败（日志末尾 `Bind for 0.0.0.0:48881 failed: port is already allocated`）只停在 `Created`，而 `ntt-web`/`ntt-cron` 不占端口照样起来，于是 `docker ps` 里两套并存、无人转发，**页面仍由旧容器应答**（`app_version` 看起来"一直没更新"）。现在部署前**自动清掉另一种形态的残留容器**（只删容器，不动数据卷 `ntt-data`，历史数据不受影响）：`--run` 模式先移除 `ntt-gateway`/`ntt-web`/`ntt-cron`/`qdii-web`/`qdii-cron`；Compose 模式先移除单容器 `ntt`。**另更正 v2.6.4 的一处过强结论**：五容器 `--memory` 上限合计 832MB 只是天花板、不是预留，实测常驻合计约 20MB（gateway 4.5 / ntt-web 5.6 / ntt-cron 1.9 / qdii-web 4.4 / qdii-cron 3.7 MB），**1GB 内存机器跑 Compose 完全没问题**，部署时偶发的 SSH 短时断连更可能是 `docker build` 峰值与其它吃 CPU 服务叠加所致；README 相应段落已改写，脚本的小内存提示也改为"可正常跑、可选 `--run` 省内存"，不再误导。未改动端口、启动入口、配置文件与定时抓取职责；单一形态下行为与以前完全一致。
 - **v2.6.6** — 修 `deploy.sh` **升级时静默退出**（严重，直接影响"再跑一次即升级"这个核心用法）：脚本开了 `set -e`，而 `check_port_conflict()` 里 `other_list="$(... | grep -Ev ...)"` 在**占用端口的容器全是本项目自己人**时 `grep -Ev` 匹配不到任何行 → 返回 1 → 命令替换的退出码让整条赋值语句失败 → **脚本当场静默退出**：屏幕上只看到「代码已是最新」就没了下文，无报错、不构建、不启动容器，极易被误判成"网络慢/卡住了"。触发条件是**端口已被本项目容器占用**，也就是升级场景；首次部署端口为空反而不触发，所以一直没暴露。同类隐患一并修：`GATEWAY_HOST_PORT="$(grep -m1 '^GATEWAY_HOST_PORT=' .env | ...)"` 在 `.env` 缺该行时同样会静默退出（下一行本来就有 48881 兜底，作者本意即允许缺失）。两处 `grep` 命令替换均补 `|| true`。已本地复现验证：修复前退出码 1 且无任何输出，修复后正常继续。改动仅限脚本健壮性，未触碰端口、入口、配置文件与定时抓取职责。
 
 - **v2.6.5** — `deploy.sh` 防 SSH 断连 + 部署过程可见性：① **SSH 断连不再中断部署**：小内存 VPS 上构建/抓取会把负载打满导致 SSH 掉线，而 SSH 一断会话前台进程被 SIGHUP 杀掉，部署跑一半就停 —— 表现为「git 已拉到最新、镜像却没重建、线上还是旧代码」，极难排查。现在交互式终端下脚本会**自动把自身转入后台**（`nohup` 免疫 SIGHUP，日志写 `/tmp/invest-radar-deploy.log`），前台继续 `tail -f` 跟随输出：**进度照旧实时可见、Ctrl+C 只停跟随不中断部署、断线重连后 `tail -f` 那个日志即可接着看**；非交互场景（cron / 脚本调用 / 输出已重定向）**不做转换，行为与以前完全一致**。② **部署过程更可见**：自检等待改为每秒刷新的进度行（`等待服务就绪 12s / 90s ...`）；部署完成后新增「容器状态」（Compose 模式列出五个本项目容器、单容器模式列出 `ntt`）与「启动日志尾部」（`docker logs --tail 12`），一眼看出容器到底起来没有。③ `--run` 在用法与注释里标注为 **≤1GB 内存机器推荐**。改动仅限脚本自身的输出与健壮性，**未触碰端口、入口、配置文件与定时抓取职责**；三种既有部署方式行为不变。测试：国家队 123、QDII 113、Node 106 + 13 全绿（后台化/日志跟随/退出码传递已在本地实测：成功 0、失败 42 均正确返回）。
