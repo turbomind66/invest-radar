@@ -4,7 +4,7 @@
 # 用法：
 #   ./deploy.sh                    # 一键：拉取最新代码 + Docker Compose 部署（默认，推荐）
 #   ./deploy.sh --no-pull          # 跳过 git 拉取，用当前本地代码直接部署
-#   ./deploy.sh --run              # 纯 docker run 单容器部署（web + 调度合一）
+#   ./deploy.sh --run              # 纯 docker run 单容器部署（≤1GB 内存机器请用这个）
 #   ./deploy.sh --port 48881       # 指定对外端口（默认 48881 -> 容器 38881）
 #   ./deploy.sh --install-docker   # 未装 Docker 时自动安装
 #   ./deploy.sh --help
@@ -33,7 +33,7 @@ usage() {
 用法：
   ./deploy.sh                    # 一键：拉取最新代码 + Docker Compose 部署（默认，推荐）
   ./deploy.sh --no-pull          # 跳过 git 拉取，用当前本地代码直接部署
-  ./deploy.sh --run              # 纯 docker run 单容器部署（web + 调度合一）
+  ./deploy.sh --run              # 纯 docker run 单容器部署（≤1GB 内存机器请用这个）
   ./deploy.sh --port 48881       # 指定对外端口（默认 48881 -> 容器 38881）
   ./deploy.sh --install-docker   # 未装 Docker 时自动安装
   ./deploy.sh --help             # 显示本帮助
@@ -67,6 +67,37 @@ while [ $# -gt 0 ]; do
 done
 
 port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1; }
+
+# ---- 0. 防 SSH 断连：交互式运行时自动转后台，前台继续实时跟随日志 ----
+# 小内存 VPS 上构建镜像 / 容器启动抓取时可能把负载打满导致 SSH 掉线，
+# 而 SSH 一断，会话前台进程会被 SIGHUP 杀掉 —— 部署跑到一半就停了，
+# 表现为「git 已拉到最新，但镜像没重建、线上跑的还是旧代码」，极难排查。
+#
+# 这里在**交互式终端**下把自己转到后台（nohup 免疫 SIGHUP），再用 tail -f 跟随输出：
+#   · 进度照旧实时可见（跟以前直接跑一样）
+#   · SSH 断连也不会中断，重连后 `tail -f` 那个日志就能接着看
+#   · Ctrl+C 只停止跟随，不会中断部署
+# 非交互场景（cron / 脚本调用 / 输出已重定向）不做转换，行为与以前完全一致。
+DEPLOY_LOG="${DEPLOY_LOG:-/tmp/invest-radar-deploy.log}"
+if [ "${NT_DEPLOY_CHILD:-}" != "1" ] && [ -t 1 ]; then
+    _self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    NT_DEPLOY_CHILD=1 nohup bash "${_self}" "$@" >"${DEPLOY_LOG}" 2>&1 &
+    _child=$!
+    info "已转入后台运行（PID ${_child}）—— SSH 断连也不会中断部署"
+    info "日志：${DEPLOY_LOG}（断线重连后 tail -f 它就能接着看）"
+    info "下面是实时进度，Ctrl+C 只停止跟随、不会中断部署"
+    echo ""
+    sleep 1
+    tail -f --pid="${_child}" "${DEPLOY_LOG}" 2>/dev/null || true
+    wait "${_child}"; _rc=$?
+    echo ""
+    if [ "${_rc}" = "0" ]; then
+        info "部署脚本执行完毕（退出码 0）"
+    else
+        warn "部署脚本失败（退出码 ${_rc}），完整日志：${DEPLOY_LOG}"
+    fi
+    exit "${_rc}"
+fi
 
 # 端口占用检测：区分两种情况
 #   a) 被**本项目自己的容器**占用 → 升级重建场景，compose 会自动接管，属正常，不是冲突
@@ -231,8 +262,10 @@ for i in $(seq 1 30); do
         READY=1
         break
     fi
+    printf '\033[1;36m[deploy]\033[0m 等待服务就绪 %2ds / 90s ...\r' "$((i * 3))"
     sleep 3
 done
+printf '\033[1;36m[deploy]\033[0m %-46s\n' "自检完成"
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "${IP}" ] || IP="<服务器IP>"
@@ -246,6 +279,21 @@ else
     warn "服务已启动但 90 秒内未通过自检（首次启动会先抓取数据，可能较慢）。"
     warn "请稍后查看日志：docker logs ${WEB_NAME}"
 fi
+
+# ---- 5. 容器状态 + 启动日志：一眼看到「容器到底起来没有」----
+echo ""
+info "容器状态："
+if [ "${MODE}" = "compose" ]; then
+    _shown="$(docker ps -a --format '  {{.Names}} : {{.Status}}' \
+              | grep -E '^[[:space:]]*(ntt-gateway|ntt-web|ntt-cron|qdii-web|qdii-cron)[[:space:]]:' || true)"
+    [ -n "${_shown}" ] && printf '%s\n' "${_shown}" || warn "  未找到本项目容器"
+else
+    docker ps -a --filter "name=^${WEB_NAME}$" --format '  {{.Names}} : {{.Status}}' || true
+fi
+
+echo ""
+info "启动日志尾部（docker logs --tail 12 ${WEB_NAME}）："
+docker logs --tail 12 "${WEB_NAME}" 2>&1 | sed 's/^/  /' || true
 
 cat <<EOF
 
