@@ -5,12 +5,24 @@
 
 用法：
     python tests/gen_static_expected.py      # JSON 打到 stdout
+
+⚠️ Windows 部署形态下必须显式把 stdout 切成 UTF-8：Python 3 在管道里
+默认沿用控制台 GBK，中文（signal 标签、类别名等）会被编码成 GBK 字节，
+Node 端 `spawnSync(..., encoding: 'utf8')` 按 UTF-8 解码会得到乱码，
+test_static.js 的字符串比对因此整批失败。Linux / macOS 默认 UTF-8，无影响。
 """
+import io
 import json
 import os
 import shutil
 import sys
 import tempfile
+
+# 强制 stdout 走 UTF-8，Windows/Linux 表现一致；Python 3.7+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):  # pragma: no cover - 老版本兜底
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

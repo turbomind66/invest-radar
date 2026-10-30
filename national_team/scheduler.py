@@ -7,8 +7,10 @@
   - full：跑一次完整同步导出（staticsite.py），等价于 GitHub Actions 的 17:00 / 06:00
   - tick：盘中轻量采样（staticsite.py --mode=tick），只抓当日分时 + 逐笔大单
 
-并发保护：full 与 tick 都会写同一个 SQLite，用跨进程文件锁互斥；
-Windows 无 fcntl 时自动降级为「不锁」，保证本地也能跑（本地无并发场景）。
+并发保护：full 与 tick 都会写同一个 SQLite，统一走 common.lock.FileLock
+（Linux/macOS fcntl、Windows msvcrt、其余 O_EXCL+PID 兜底）互斥；
+2026-10-30 之前这里是本地简化实现，Windows 上「没 fcntl ⇒ 不加锁」，
+两个进程可以同时进入任务并抢写 SQLite，现在改回跨平台强互斥。
 """
 import datetime
 import os
@@ -18,16 +20,22 @@ import threading
 import time
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(BASE)
+# BASE 排在 ROOT 之前，避免部署根目录下的同名旧副本被优先 import（v2.6.1 踩过）
+for _p in (ROOT, BASE):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+if sys.path and sys.path[0] != BASE:
+    sys.path.remove(BASE)
+    sys.path.insert(0, BASE)
+
 STATICSITE = os.path.join(BASE, "staticsite.py")
 
 # 默认时间点（Asia/Shanghai）。可用环境变量覆盖，见 .env.example。
 DEFAULT_FULL = "06:00,17:10"                 # 完整同步（收盘后 + 次日清晨重刷）
 DEFAULT_TICK = "09:30,10:00,10:30,11:00,11:30,13:00,13:30,14:00,14:30,14:50"  # 盘中逐笔大单采样（交易时段，约每30分钟一次，保留尾盘14:50）
 
-try:  # pragma: no cover - 平台相关
-    import fcntl
-except Exception:  # Windows 等无 fcntl 的平台
-    fcntl = None
+from common.lock import FileLock  # noqa: E402
 
 
 def _env_bool(key, default="0"):
@@ -58,43 +66,6 @@ def due(now, times):
     return (now.hour, now.minute) in set(times or [])
 
 
-class FileLock(object):
-    """跨进程互斥锁（非阻塞）。拿不到锁说明已有同步任务在跑，本次跳过。"""
-
-    def __init__(self, path):
-        self.path = path
-        self.fd = None
-
-    def acquire(self):
-        if fcntl is None:
-            return True  # 降级：无 fcntl 时不加锁，保证本地/非 Linux 也能运行
-        try:
-            d = os.path.dirname(self.path)
-            if d and not os.path.isdir(d):
-                os.makedirs(d, exist_ok=True)
-            self.fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o644)
-            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
-        except OSError:
-            try:
-                if self.fd is not None:
-                    os.close(self.fd)
-            except OSError:
-                pass
-            self.fd = None
-            return False
-
-    def release(self):
-        if self.fd is None:
-            return
-        try:
-            fcntl.flock(self.fd, fcntl.LOCK_UN)
-            os.close(self.fd)
-        except OSError:
-            pass
-        self.fd = None
-
-
 def _log(msg):
     print("[%s] %s" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg),
           flush=True)
@@ -112,9 +83,15 @@ def run_task(mode, lock_path=None, timeout=None):
     _log("开始 %s：%s" % (mode, " ".join(args)))
     t0 = time.time()
     try:
-        subprocess.run(args, cwd=BASE, timeout=timeout)
-        _log("完成 %s，耗时 %.1fs" % (mode, time.time() - t0))
-        return True
+        # 2026-10-30 修：旧实现丢弃 subprocess.run 的 returncode，
+        # staticsite 崩溃/非零退出仍会被记成「完成」，日志看不出失败。
+        proc = subprocess.run(args, cwd=BASE, timeout=timeout)
+        cost = time.time() - t0
+        if proc.returncode == 0:
+            _log("完成 %s，耗时 %.1fs" % (mode, cost))
+            return True
+        _log("失败 %s：staticsite 退出码 %s，耗时 %.1fs" % (mode, proc.returncode, cost))
+        return False
     except subprocess.TimeoutExpired:
         _log("超时 %s：超过 %ss，已终止本次任务" % (mode, timeout))
         return False

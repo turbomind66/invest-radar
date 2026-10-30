@@ -1,52 +1,214 @@
 """common/lock.py — 跨进程文件锁，用于调度任务互斥（invest-radar 各模块各自独立锁路径）。
 
-- Linux/macOS：fcntl.flock（强互斥，推荐部署平台）。
-- Windows：降级为「锁文件 + PID 标记」，非强互斥但足以防止同机重复调度。
+- Linux/macOS：`fcntl.flock` 强互斥（推荐部署平台）。
+- Windows：`msvcrt.locking` 强互斥（LK_NBLCK，非阻塞）。两个 API 都靠 OS
+  释放句柄，进程崩溃时锁自动解除。
+- 兜底路径（既无 fcntl 也无 msvcrt，极少见）：`O_CREAT|O_EXCL` 独占创建 +
+  PID 存活/年龄检测，防止前一次崩溃把后续所有调度永久挡在门外。
+
+⚠️ 2026-10-30 修复：旧 Windows 分支用 `os.path.exists → return False`，
+既没有 TOCTOU 保护（两个进程可同时通过 exists() 检查），也没有陈旧锁回收
+（进程崩溃留下的锁文件会挡住之后每一次调度，直到用户手动删除文件）。
+现在 msvcrt 走真正的 OS 级互斥，兜底分支也带 PID 探活与超时清理。
 """
 import os
+import errno
+import time
+
+# fcntl / msvcrt 各自可用性
+try:
+    import fcntl  # type: ignore
+except ImportError:  # pragma: no cover - 平台相关
+    fcntl = None
+
+try:
+    import msvcrt  # type: ignore
+except ImportError:
+    msvcrt = None
+
+# 兜底锁的“陈旧判定”阈值（秒）：进程被 kill 后 PID 探活也可能失败（Windows
+# PID 会被系统回收后重用），所以额外用文件 mtime 判定。设 6 小时覆盖最慢的
+# 全量同步任务（SCHED_TIMEOUT 默认 1800s）。
+_STALE_SEC = int(os.environ.get("LOCK_STALE_SEC", "21600"))
+
+
+def _pid_alive(pid: int) -> bool:
+    """跨平台 PID 存活检测。检测不了时保守返回 True，宁可让陈旧锁走 mtime 兜底。"""
+    if pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            # Windows 无 os.kill 语义，用 OpenProcess 判断；无 psutil 时用 ctypes
+            import ctypes
+            import ctypes.wintypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            kernel32 = ctypes.windll.kernel32
+            h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not h:
+                return False
+            try:
+                code = ctypes.wintypes.DWORD()
+                if kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+                    return code.value == STILL_ACTIVE
+                return True
+            finally:
+                kernel32.CloseHandle(h)
+        # POSIX: signal 0 只做权限校验，不发信号
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError, PermissionError):
+        # PermissionError = 进程存在但不属于当前用户 → 视为存活
+        return True
+    except Exception:
+        return False
 
 
 class FileLock:
+    """非阻塞跨进程文件锁。acquire() 返回 bool；上下文管理器拿不到锁会抛。
+
+    使用同一份 lock 文件多次跨进程访问：flock/msvcrt 是内核级独占，进程退出
+    时自动释放；不会像 O_EXCL 那样留下需要人工清理的锁文件。
+    """
+
     def __init__(self, path):
         self.path = path
         self._fh = None
+        self._backend = None  # "fcntl" | "msvcrt" | "fallback"
 
     def acquire(self):
         parent = os.path.dirname(self.path) or "."
-        os.makedirs(parent, exist_ok=True)
         try:
-            import fcntl
-            self._fh = open(self.path, "w")
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
-        except ImportError:
-            # Windows：若锁文件已存在视为被占用
-            if os.path.exists(self.path):
-                return False
-            self._fh = open(self.path, "w")
-            self._fh.write(str(os.getpid()))
-            self._fh.flush()
-            return True
-        except (OSError, IOError):
-            if self._fh:
-                self._fh.close()
-                self._fh = None
-            return False
-
-    def release(self):
-        if self._fh:
-            try:
-                import fcntl
-                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
-            except Exception:
-                pass
-            self._fh.close()
-            self._fh = None
-        try:
-            if os.path.exists(self.path):
-                os.remove(self.path)
+            os.makedirs(parent, exist_ok=True)
         except OSError:
             pass
+
+        if fcntl is not None:
+            return self._acquire_fcntl()
+        if msvcrt is not None:
+            return self._acquire_msvcrt()
+        return self._acquire_fallback()
+
+    # ---- Linux / macOS ----
+    def _acquire_fcntl(self):
+        try:
+            self._fh = open(self.path, "a+b")
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # 写 PID 便于人工排查（不参与互斥判定）
+            self._write_marker()
+            self._backend = "fcntl"
+            return True
+        except (OSError, IOError):
+            self._close_fh()
+            return False
+
+    # ---- Windows 主路径：msvcrt 区域锁 ----
+    def _acquire_msvcrt(self):
+        try:
+            # 用 r+b / a+b 打开，避免 O_TRUNC 洗掉别的进程已经写好的 PID 标记
+            self._fh = open(self.path, "a+b")
+            # msvcrt.locking 需要至少锁 1 字节；从文件头开始，非阻塞
+            self._fh.seek(0)
+            msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+            self._write_marker()
+            self._backend = "msvcrt"
+            return True
+        except OSError:
+            # LK_NBLCK 拿不到锁 → OSError；关闭句柄（同时释放锁）
+            self._close_fh()
+            return False
+
+    # ---- 兜底：既没 fcntl 也没 msvcrt（如 Cygwin / WASM / 未装扩展） ----
+    def _acquire_fallback(self):
+        """O_CREAT|O_EXCL 独占创建 + PID 探活 + 年龄判定。"""
+        try:
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except OSError as e:
+            if e.errno not in (errno.EEXIST, errno.EACCES):
+                raise
+            if not self._is_stale():
+                return False
+            # 陈旧锁：PID 已死或超过 _STALE_SEC → 强制回收
+            try:
+                os.remove(self.path)
+            except OSError:
+                return False
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except OSError:
+                return False
+        fh = os.fdopen(fd, "wb")
+        fh.write(("%d %d" % (os.getpid(), int(time.time()))).encode("ascii"))
+        fh.flush()
+        fh.close()
+        # 兜底模式只保留 path，release 时删文件
+        self._fh = None
+        self._backend = "fallback"
+        return True
+
+    def _is_stale(self):
+        try:
+            with open(self.path, "rb") as f:
+                raw = f.read().decode("ascii", "replace").strip()
+        except OSError:
+            return True
+        parts = raw.split()
+        if parts:
+            try:
+                pid = int(parts[0])
+                if pid != os.getpid() and not _pid_alive(pid):
+                    return True
+            except ValueError:
+                pass
+        try:
+            age = time.time() - os.path.getmtime(self.path)
+            return age > _STALE_SEC
+        except OSError:
+            return True
+
+    def _write_marker(self):
+        """尽力写 PID+时间到文件头，供人工排查。失败不影响互斥语义。"""
+        if not self._fh:
+            return
+        try:
+            self._fh.seek(0)
+            self._fh.truncate(0)
+            self._fh.write(("%d %d" % (os.getpid(), int(time.time()))).encode("ascii"))
+            self._fh.flush()
+        except OSError:
+            pass
+
+    def _close_fh(self):
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
+
+    def release(self):
+        if self._backend == "msvcrt" and self._fh is not None:
+            try:
+                self._fh.seek(0)
+                # msvcrt 只暴露 locking()，解锁靠 mode=msvcrt.LK_UNLCK；
+                # 旧写法 msvcrt.unlocking 不存在，AttributeError 会让 release
+                # 抛异常并泄漏句柄（Windows 兜底场景踩到过）
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+            except (OSError, AttributeError):
+                pass
+        elif self._backend == "fcntl" and self._fh is not None:
+            try:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
+        self._close_fh()
+        if self._backend == "fallback":
+            try:
+                if os.path.exists(self.path):
+                    os.remove(self.path)
+            except OSError:
+                pass
+        self._backend = None
 
     def __enter__(self):
         if not self.acquire():
