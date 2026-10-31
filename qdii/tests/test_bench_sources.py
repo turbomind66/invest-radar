@@ -155,6 +155,35 @@ class TestMirrorPool(unittest.TestCase):
         self.assertEqual(set(attempted), {"push2his.eastmoney.com"},
                          "未开启 rotate_hosts 时不应换主机")
 
+    def test_rotation_starts_from_caller_host(self):
+        """调用方显式指定某台镜像时，第 0 次尝试必须仍打这台，不得被改回主域名。
+
+        主域名（pool[0]）是最常被限流的一台；若首次就把它换回去，等于先白失败一次。
+        """
+        attempted = []
+        orig = urllib.request.build_opener
+        try:
+            def _spy(*handlers, **kw):
+                opener = orig(*handlers, **kw)
+
+                def _open(req, *a, **k):
+                    attempted.append(req.full_url.split("/")[2])
+                    raise OSError("simulated RemoteDisconnected")
+
+                opener.open = _open
+                return opener
+
+            urllib.request.build_opener = _spy
+            with self.assertRaises(Exception):
+                http.fetch_text("https://23.push2his.eastmoney.com/api/qt/x",
+                                retries=2, rotate_hosts=True)
+        finally:
+            urllib.request.build_opener = orig
+
+        self.assertEqual(attempted[0], "23.push2his.eastmoney.com",
+                         "首次应保留调用方指定的主机，实际：%s" % attempted)
+        self.assertEqual(len(set(attempted)), 3, "后续仍须逐次换机：%s" % attempted)
+
 
 if __name__ == "__main__":
     unittest.main()

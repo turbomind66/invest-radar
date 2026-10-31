@@ -774,6 +774,8 @@ function renderFresh(d){
     if(sy && sy !== "—"){
       syncEl.textContent = "同步：" + sy.slice(sy.indexOf(" ") + 1);
       syncEl.title = sy;
+      // 先复位再判定：一次失败留下的 bad 若不清除，后续同步成功仍会一直是红色告警
+      syncEl.classList.remove("bad");
       if(sy.indexOf("⚠") >= 0) syncEl.classList.add("bad");
     } else {
       syncEl.textContent = "";

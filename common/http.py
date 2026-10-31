@@ -158,11 +158,18 @@ def fetch_text(url, referer=None, encoding="utf-8", timeout=15,
     if headers:
         req_headers.update(headers)
     pool = _mirror_pool(host) if rotate_hosts else None
+    # 轮换顺序：原始主机已在池内时从它开始轮，而不是强行回到 pool[0]。
+    # 否则调用方显式指定镜像时，第 0 次尝试会被改回主域名——而主域名恰恰是
+    # 最容易被限流的那台，等于先白白失败一次。
+    order = None
+    if pool:
+        start = pool.index(host) if host in pool else 0
+        order = pool[start:] + pool[:start]
     last = None
     for attempt in range(retries + 1):
         target = url
-        if pool:
-            target = url.replace(host, pool[attempt % len(pool)], 1)
+        if order:
+            target = url.replace(host, order[attempt % len(order)], 1)
         try:
             opener = urllib.request.build_opener(_proxy_handler(use_proxy))
             req = urllib.request.Request(target, headers=req_headers)

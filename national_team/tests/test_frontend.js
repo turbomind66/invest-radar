@@ -56,6 +56,20 @@ const RAW = [
   { code: '588000', name: '华夏科创50ETF', cat: '科创50', price: 1.100, chg: -3.10, amount: 3.000e9, main_net: -14.73e8, huge_net: -23.06e8, big_net: 8.33e8, mid_net: 11.57e8, small_net: 2.08e8, chg_shares: 29.37, net_sub: 40.82 },
 ];
 const ALL_DATES = ['2026-10-26', '2026-10-27', '2026-10-28'];
+
+// 「数据更新时间」必须相对当前时间生成，不能写死日期。
+// 写死会让「新鲜数据不告警」在几天后随时间漂移而被判陈旧 → 断言失败、CI 恒红
+// （2026-10-31 复现：fixture 写死 2026-10-28 09:55，距运行已超 3 天阈值）。
+// 这里固定为「距今 1 小时」，保证任何时刻运行都属于新鲜数据。
+const p2 = (n) => String(n).padStart(2, '0');
+const bjStr = (ms) => {
+  const d = new Date(ms + 8 * 3600 * 1000);
+  return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())} `
+       + `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())}`;
+};
+const FETCH_STR = bjStr(Date.now() - 60 * 60 * 1000);   // 如 2026-10-31 21:05:00
+const FETCH_MIN = FETCH_STR.slice(0, 16);               // 页面显示到分钟
+
 const FULL_TOTAL_YI = +(RAW.reduce((a, e) => a + e.main_net, 0) / 1e8).toFixed(2);  // -22.78
 
 function buildData(url) {
@@ -96,7 +110,7 @@ function buildData(url) {
   });
 
   return {
-    latest_date: date, dates: ALL_DATES, last_fetch: '2026-10-28 09:55:00',
+    latest_date: date, dates: ALL_DATES, last_fetch: FETCH_STR,
     last_sync: '2026-10-28 20:58 回补/重刷 114 天（1596 行）, 实时校准 2026-10-28（14 只）',
     intraday: {
       date: '2026-10-28', has_data: true, fund_count: 2,
@@ -228,18 +242,24 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
 
   render(buildData(''));
   await tick(80);
-  chk(els['fresh-time'].textContent === '2026-10-28 09:55', '时间戳显示到分钟（实际 ' + els['fresh-time'].textContent + '）');
+  chk(els['fresh-time'].textContent === FETCH_MIN, '时间戳显示到分钟（实际 ' + els['fresh-time'].textContent + '）');
   chk(/前|刚刚/.test(els['fresh-rel'].textContent), '相对时间徽标有内容（实际 ' + els['fresh-rel'].textContent + '）');
   chk(els['fresh-data'].textContent.includes('2026-10-27'), '时间戳条同时标明数据日期');
   chk(els['fresh-data'].textContent.includes('未生成'), '自动回退时给出原因');
   chk(!els['fresh'].classList.contains('warn'), '新鲜数据不告警');
 
-  // 数据陈旧 → 琥珀告警
-  render(Object.assign(buildData(''), { last_fetch: '2026-10-01 16:20:00' }));
+  // 数据陈旧 → 琥珀告警（阈值 3 天；这里同样用相对时间，避免随时间漂移）
+  const STALE_STR = bjStr(Date.now() - 4 * 86400000);
+  render(Object.assign(buildData(''), { last_fetch: STALE_STR }));
   await tick(80);
   chk(els['fresh'].classList.contains('warn'), '超过 3 天未更新 → 告警态');
   chk(els['fresh-hint'].textContent.includes('未更新'), '告警时提示文案切换');
-  chk(els['fresh-time'].textContent === '2026-10-01 16:20', '陈旧数据仍显示真实更新时间');
+  chk(els['fresh-time'].textContent === STALE_STR.slice(0, 16), '陈旧数据仍显示真实更新时间');
+
+  // 阈值边界：2.9 天仍在新鲜窗口内，不得误告警
+  render(Object.assign(buildData(''), { last_fetch: bjStr(Date.now() - 2.9 * 86400000) }));
+  await tick(80);
+  chk(!els['fresh'].classList.contains('warn'), '2.9 天未更新仍在窗口内（不误告警）');
 
   // 更新时间未知
   render(Object.assign(buildData(''), { last_fetch: '—' }));
@@ -397,8 +417,19 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   await tick(120);
   const badEl = els['fresh-sync'];
   chk(String(badEl.textContent).indexOf('⚠') >= 0, '同步失败在时间戳条上显式提示');
-  chk((badEl.classList && badEl.classList.contains && badEl.classList.contains('bad')) || true,
-      '同步失败使用告警样式');
+  chk(!!badEl.classList && badEl.classList.contains('bad'), '同步失败使用告警样式');
+
+  // 回归：失败态之后若拿到同步成功的那份数据，红色告警必须被清掉。
+  // renderFresh 早前只在 last_sync 为空时复位 bad，成功路径不复位 → 徽标永久粘红。
+  render({ ...base, last_sync: '2026-10-28 06:10 无变更' });
+  await tick(120);
+  chk(String(els['fresh-sync'].textContent).indexOf('⚠') < 0, '恢复成功后同步文案不再带失败标记');
+  chk(!els['fresh-sync'].classList.contains('bad'), '恢复成功后告警样式被清除（状态不粘滞）');
+
+  // last_sync 缺失 / 占位 → 同步徽标清空
+  render({ ...base, last_sync: '—' });
+  await tick(120);
+  chk(els['fresh-sync'].textContent === '', 'last_sync 为占位符时同步徽标清空');
 
   console.log('\n[14] 疑似护盘/压盘模块（分时放量识别）');
   render(buildData(''));
