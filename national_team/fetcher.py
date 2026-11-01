@@ -6,6 +6,7 @@ import ssl
 import time
 import datetime
 import re
+import os
 
 import db
 
@@ -55,6 +56,17 @@ FIELDS = "f12,f14,f2,f3,f4,f6,f62"
 #   2) 同花顺 7×24 快讯           —— 实时全量流，靠标题关键词过滤
 #   3) 新浪财经滚动 pageid=153     —— 全量流，靠标题关键词过滤
 NEWS_EM_KEYWORDS = ["国家队", "中央汇金", "证金公司", "汇金公司"]
+
+# 新闻兜底源（2026-11-01 新增）：公开站 data.json（GitHub Pages）。
+# 当本机三源（东财/同花顺/新浪）全部抓空时，从公开快照借一份相同的新闻。
+# 典型场景：VPS 机房 IP 被东方财富新闻搜索接口风控 → 东财搜索返回非 JSON
+# （JSONDecodeError）→ 本地新闻恒为 0；而公开快照由能正常访问东财的 runner
+# 抓取，等于借它的结果，让 GitHub Pages / VPS / WorkBuddy 应用新闻一致。
+# 可用环境变量 NT_NEWS_FALLBACK_URL 覆盖（如自托管镜像站）。
+NT_NEWS_FALLBACK_URL = os.environ.get(
+    "NT_NEWS_FALLBACK_URL",
+    "https://turbomind66.github.io/invest-radar/data.json",
+)
 
 # 相关性分层：score 越大越靠前（同分按时间倒序）
 SCORE_STRONG = 2    # 标题含主体词
@@ -587,6 +599,16 @@ def fetch_news() -> list:
             continue
     fetch_news.last_report = report
 
+    # 兜底：三源全空时从公开快照借一份（如 VPS 机房 IP 被东财新闻接口风控，
+    # 三源恒空 → 面板整块空白）。公开快照由能正常访问东财的 runner 抓取，
+    # 借它的结果即可让所有部署形态新闻一致。仅三源全空才触发，正常环境不额外请求。
+    if not scored:
+        for it in _fetch_remote_news():
+            scored.append(it)
+        if scored:
+            report.append(("公开快照", len(scored), len(scored), None))
+            fetch_news.last_report = report
+
     # 去重（同一标题多源命中只留一条，保留分高者）
     best = {}
     for it in scored:
@@ -613,6 +635,49 @@ def fetch_news() -> list:
     for it in out:
         it.pop("_score", None)
     return out
+
+
+def _fetch_remote_news() -> list:
+    """从公开快照（默认 GitHub Pages data.json）兜底取新闻。
+
+    仅当本机三源全部抓空时由 fetch_news 调用。返回与本地新闻同构、带 _score
+    的列表，可直接并入 scored（后续走同一套去重/同题合并/截断逻辑）。
+    任意网络异常都静默返回空，绝不阻断主流程。
+    """
+    url = NT_NEWS_FALLBACK_URL
+    if not url:
+        return []
+    try:
+        txt = _get(url)
+        d = json.loads(txt)
+    except Exception as e:
+        print("[news-fallback] 拉取公开快照失败: %s" % type(e).__name__)
+        return []
+    items = []
+
+    def _add(title, t, u):
+        title = (title or "").strip()
+        if not title:
+            return
+        items.append({"title": title, "time": t or "", "url": u or "",
+                      "src": "公开快照", "_score": SCORE_STRONG})
+
+    for date, lst in (d.get("news") or {}).items():
+        for it in lst or []:
+            _add(it.get("title"), it.get("time") or (date + " 00:00"), it.get("url"))
+    fb = d.get("news_fallback") or {}
+    for it in fb.get("items") or []:
+        _add(it.get("title"), it.get("time") or (fb.get("date", "") + " 00:00"),
+             it.get("url"))
+    # 按标题去重（跨日期同题）
+    seen = set()
+    uniq = []
+    for it in items:
+        if it["title"] in seen:
+            continue
+        seen.add(it["title"])
+        uniq.append(it)
+    return uniq
 
 
 def split_news_by_date(news: list) -> dict:
