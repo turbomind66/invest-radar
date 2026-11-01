@@ -79,8 +79,15 @@ def import_from_days_file(days_file: str = DAYS_FILE, path: str = db.DB_PATH) ->
 
     因此先读上一版 docs/data.json 把历史灌回库里，避免每天只剩当天数据。
     返回恢复的日期数。
+
+    ⚠️ 2026-11-01 改：库非空不再整体跳过——ETF 明细仍仅库空时整批恢复
+    （避免覆盖线上已回补的更完整数据），但只要库里「没有新闻」就一定会从
+    种子补齐（按标题去重合并），解决「镜像内置 data.json 较旧 / 首启恢复被
+    跳过 → 库里零新闻 → 面板整块空白」。
     """
-    if db.get_dates(path):
+    # 库里既有 ETF 明细又有新闻 → 无需恢复，直接跳过（保留原快速短路，
+    # 避免每次同步都读种子文件）。只要二者缺一，就进入下面的按需补齐。
+    if db.get_dates(path) and db.get_news_dates(path):
         return 0
     if not os.path.exists(days_file):
         return 0
@@ -90,20 +97,28 @@ def import_from_days_file(days_file: str = DAYS_FILE, path: str = db.DB_PATH) ->
     except Exception:
         return 0
     n = 0
-    for d, rows in (raw.get("days") or {}).items():
-        if rows:
-            db.save_etf_daily(d, rows, path)
-            n += 1
-    for d, rows in (raw.get("shares") or {}).items():
-        if rows:
-            db.save_share_rows(d, rows, path)
-    for d, items in (raw.get("news") or {}).items():
-        if items:
-            db.save_news(d, items, path)
-    # 方案C：逐笔大单原始行——盘中多次采样靠它跨次累积，干净环境才不会丢
-    for d, rows in (raw.get("tick_rows") or {}).items():
-        if rows:
-            intraday.restore_tick_rows(d, rows, path)
+    # ETF 明细 + 份额：仅在库为空时整批恢复（避免覆盖线上已回补的更完整数据）
+    if not db.get_dates(path):
+        for d, rows in (raw.get("days") or {}).items():
+            if rows:
+                db.save_etf_daily(d, rows, path)
+                n += 1
+        for d, rows in (raw.get("shares") or {}).items():
+            if rows:
+                db.save_share_rows(d, rows, path)
+    # 新闻：库里压根没有新闻时，无论 ETF 是否已有，都从种子补齐。
+    # 解决「镜像内置 data.json 较旧 / 首启恢复被跳过 → 库里零新闻 → 面板整块空白」。
+    # 用 merge_news 增量合并（按标题去重），对已抓到的新闻无副作用。
+    if not db.get_news_dates(path):
+        for d, items in (raw.get("news") or {}).items():
+            if items:
+                db.merge_news(d, items, path)
+    # 方案C：逐笔大单原始行——盘中多次采样靠它跨次累积，库里没有时才恢复，
+    # 避免用陈旧种子覆盖盘中累积的实时大单。
+    if not db.get_tick_dates(path):
+        for d, rows in (raw.get("tick_rows") or {}).items():
+            if rows:
+                intraday.restore_tick_rows(d, rows, path)
     if raw.get("last_fetch"):
         db.set_meta("last_fetch", raw["last_fetch"], path)
     return n
@@ -380,8 +395,8 @@ def main():
     ap.add_argument("--date", help="额外补抓指定交易日 YYYY-MM-DD")
     ap.add_argument("--days", type=int, default=20, help="回补窗口（自然日）")
     ap.add_argument("--out", default=DOCS_DIR, help="输出目录")
-    ap.add_argument("--mode", default="full", choices=["full", "tick"],
-                    help="full=完整同步导出；tick=盘中轻量采样（只抓分时+逐笔大单，不跑全量回补）")
+    ap.add_argument("--mode", default="full", choices=["full", "tick", "news"],
+                    help="full=完整同步导出；tick=盘中轻量采样；news=仅抓新闻并重导出（周末/非交易日也跑）")
     args = ap.parse_args()
 
     db.init_db()
@@ -410,6 +425,41 @@ def main():
             except Exception as e:
                 print("[tick] 逐笔采样失败：%s" % e)
         res = export(out_dir=args.out)
+        print("[export] %s" % json.dumps(res, ensure_ascii=False))
+        return
+
+    if args.mode == "news":
+        # 轻量新闻同步：只抓新闻 + 重新导出，不跑 ETF 回补 / 分时 / 份额。
+        # 用于周末/非交易日——新闻不受交易日限制，让新闻面板不为空。
+        done, notes = [], []
+        try:
+            nnews = fetcher.fetch_news()
+            for d, items in fetcher.split_news_by_date(nnews).items():
+                db.merge_news(d, items)
+            db.set_meta("news_ok", "1" if nnews else "0")
+            # 逐源明细：一眼区分「上游挂了」还是「当天确实无相关新闻」
+            rep = getattr(fetcher.fetch_news, "last_report", None) or []
+            agg = {}
+            for s, r, h, e in rep:
+                a = agg.setdefault(s, [0, 0, None])
+                a[0] += r
+                a[1] += h
+                if e and a[2] is None:
+                    a[2] = e
+            brief = "；".join(
+                "%s 命中%d/原始%d%s" % (s, a[1], a[0], (" 失败:" + a[2]) if a[2] else "")
+                for s, a in agg.items())
+            done.append("新闻 %d 条（%s）" % (len(nnews), brief or "无源"))
+        except Exception as e:
+            notes.append("新闻抓取失败(%s)" % type(e).__name__)
+        if done:
+            db.set_meta("last_fetch", bj_now().strftime("%Y-%m-%d %H:%M:%S"))
+        status = "；".join(done) if done else "无变更"
+        if notes:
+            status += "　⚠ " + "；".join(notes)
+        db.set_meta("last_sync", "%s %s" % (bj_now().strftime("%Y-%m-%d %H:%M"), status))
+        res = export(out_dir=args.out)
+        print("[news] %s" % status)
         print("[export] %s" % json.dumps(res, ensure_ascii=False))
         return
 

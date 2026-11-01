@@ -662,14 +662,32 @@ def fetch_and_save(force: bool = False) -> dict:
       `save_etf_daily`（先 DELETE 当日旧行再 INSERT）；
     - 部分覆盖 / 主力接口挂了 → 改走 `upsert_etf_rows`（COALESCE，
       空值不覆盖旧值），避免抓 1 页失败就把已归档的四档数据洗成 NULL。
+
+    新闻解耦（2026-11-01）：新闻不受「交易日」门槛限制——周末/节假日照样抓
+    （政策、公司公告常在非交易日发布）。只有 ETF 行情/主力净额在非交易日才跳过；
+    新闻按自身发布日期归档（见 split_news_by_date），增量合并不覆盖。
     """
     today = datetime.date.today().strftime("%Y-%m-%d")
-    if not is_trading_day():
-        return {"ok": False, "reason": "非交易日（周末或法定节假日），跳过抓取",
-                "date": today}
+    trading = is_trading_day()
+
+    # 新闻：无论是否交易日都抓（周末也有国家队/汇金相关新闻），先入库
+    news = fetch_news()
+    for d, items in split_news_by_date(news).items():
+        db.merge_news(d, items)
+    db.set_meta("news_ok", "1" if news else "0")
+
+    if not trading:
+        # 非交易日：无行情可抓，仅保留新闻抓取结果，并刷新 last_fetch 让时间戳前进
+        db.set_meta("last_fetch", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        db.set_meta("last_date", today)
+        return {
+            "ok": False,
+            "reason": "非交易日（周末或法定节假日），仅抓取新闻，跳过行情",
+            "date": today,
+            "news_count": len(news),
+        }
 
     etfs, em_ok = fetch_etfs()
-    news = fetch_news()
     total_main_net = sum((e["main_net"] or 0) for e in etfs)
     total_amount = sum(e["amount"] for e in etfs)
 
@@ -684,12 +702,8 @@ def fetch_and_save(force: bool = False) -> dict:
                   % (coverage, len(WATCHLIST), n))
         else:
             print("[fetch] 东财资金流不可达，价格入库走 upsert 以保留 main_net 旧值 (%d 行)" % n)
-    # 新闻按自身发布日期归档（见 split_news_by_date 说明），增量合并不覆盖
-    for d, items in split_news_by_date(news).items():
-        db.merge_news(d, items)
     db.set_meta("last_fetch", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     db.set_meta("last_date", today)
-    db.set_meta("news_ok", "1" if news else "0")
     db.set_meta("mainnet_ok", "1" if em_ok else "0")
 
     return {

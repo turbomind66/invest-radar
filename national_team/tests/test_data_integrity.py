@@ -9,6 +9,7 @@
 4. QDII VIX 腾讯兜底源必须给出与 CBOE 主源一致的 10 列 tuple。
 """
 import datetime
+import json
 import os
 import shutil
 import sys
@@ -136,6 +137,58 @@ class FetcherPartialCoverage(unittest.TestCase):
         finally:
             (fetcher.fetch_etfs, fetcher.fetch_news,
              fetcher.is_trading_day, nt_db.DB_PATH) = old
+
+    def test_non_trading_day_still_fetches_news(self):
+        """非交易日（周末/节假日）fetch_and_save 不得整体跳过——仍要抓新闻。"""
+        import fetcher
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        fake_news = [{"time": today + " 09:00", "title": "汇金增持ETF",
+                      "url": "http://x", "src": "东方财富"}]
+
+        old = (fetcher.fetch_news, fetcher.is_trading_day,
+               fetcher.fetch_etfs, fetcher.db, nt_db.DB_PATH)
+        fetcher.fetch_news = lambda *a, **k: fake_news
+        fetcher.is_trading_day = lambda d=None: False
+        fetcher.fetch_etfs = lambda *a, **k: ([], False)  # 不应被调用
+        try:
+            fetcher.db = _patch_db_path(nt_db, self.db_path)
+            res = fetcher.fetch_and_save()
+            self.assertFalse(res["ok"], "非交易日 ok 应为 False")
+            self.assertIn("仅抓取新闻", res["reason"])
+            self.assertEqual(res["news_count"], 1)
+            # 新闻应已按发布日期归档入库
+            self.assertEqual(nt_db.get_news_dates(path=self.db_path), [today])
+            self.assertEqual(
+                nt_db.get_news_by_date(today, path=self.db_path)[0]["title"],
+                "汇金增持ETF")
+            # 非交易日不应抓 ETF 行情（库里不应出现 today 的 ETF 行）
+            self.assertNotIn(today, nt_db.get_dates(path=self.db_path))
+        finally:
+            (fetcher.fetch_news, fetcher.is_trading_day,
+             fetcher.fetch_etfs, fetcher.db, nt_db.DB_PATH) = old
+
+    def test_import_fills_news_gap_when_db_has_no_news(self):
+        """库里已有 ETF 数据但零新闻时，import_from_days_file 仍应从种子补齐新闻
+        （解决镜像较旧 / 首启恢复被跳过 → 库里零新闻 → 面板整块空白）。"""
+        import staticsite
+        news = {"2026-10-30": [{"time": "2026-10-30 09:00", "title": "X",
+                                "url": "u", "src": "s"}]}
+        seed = {"days": {}, "news": news, "shares": {}, "tick_rows": {}}
+        tmpf = os.path.join(self.tmp, "seed.json")
+        with open(tmpf, "w", encoding="utf-8") as f:
+            json.dump(seed, f)
+        # 预置库：已有一天的 ETF 数据（模拟「首启恢复被跳过」的情况）
+        nt_db.init_db(self.db_path)
+        nt_db.save_etf_daily("2026-10-30", [
+            {"code": "510300", "name": "华泰柏瑞沪深300ETF", "cat": "沪深300",
+             "price": 3.0, "chg": 0.5, "amount": 1.0e9, "main_net": 1.0e8,
+             "huge_net": None, "big_net": None, "mid_net": None, "small_net": None}
+        ], path=self.db_path)
+        self.assertEqual(nt_db.get_news_dates(path=self.db_path), [],
+                         "预置：库里应零新闻")
+        staticsite.import_from_days_file(days_file=tmpf, path=self.db_path)
+        # ETF 不应被重复恢复（库非空），但新闻应补齐
+        self.assertIn("2026-10-30", nt_db.get_news_dates(path=self.db_path))
 
 
 def _patch_db_path(module, path):

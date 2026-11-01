@@ -6,6 +6,8 @@
 职责：
   - full：跑一次完整同步导出（staticsite.py），等价于 GitHub Actions 的 17:00 / 06:00
   - tick：盘中轻量采样（staticsite.py --mode=tick），只抓当日分时 + 逐笔大单
+  - news：轻量新闻抓取（staticsite.py --mode=news），只抓新闻 + 重导出；
+          周末/非交易日由 full 任务改派此任务（新闻不受交易日限制，让面板不为空）
 
 并发保护：full 与 tick 都会写同一个 SQLite，统一走 common.lock.FileLock
 （Linux/macOS fcntl、Windows msvcrt、其余 O_EXCL+PID 兜底）互斥；
@@ -76,6 +78,8 @@ def run_task(mode, lock_path=None, timeout=None):
     args = [sys.executable, "-u", STATICSITE]
     if mode == "tick":
         args += ["--mode=tick"]
+    elif mode == "news":
+        args += ["--mode=news"]
     lock = FileLock(lock_path or os.path.join(BASE, ".sync.lock"))
     if not lock.acquire():
         _log("跳过 %s：已有同步任务在运行（文件锁占用）" % mode)
@@ -144,7 +148,14 @@ def main():
             if not due(now, [(h, m)]):
                 continue
             if mode == "full" and weekday_only and now.weekday() >= 5:
-                continue  # 周末不跑全量（tick 内部自判交易日）
+                # 周末：跳过全量回补（无意义），改跑轻量新闻抓取——
+                # 新闻不受交易日限制，避免整个周末新闻面板空白。
+                key = "%s %02d:%02d news" % (today, h, m)
+                if key in done:
+                    continue
+                done.add(key)
+                run_task("news", lock_path, timeout)
+                continue
             key = "%s %02d:%02d %s" % (today, h, m, mode)
             if key in done:
                 continue
