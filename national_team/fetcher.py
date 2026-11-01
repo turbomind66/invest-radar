@@ -710,6 +710,11 @@ def _fetch_remote_news() -> list:
     return uniq
 
 
+# 公开快照 data.json 单次运行内缓存：121 天回补若每天各拉一次 1MB 快照太浪费，
+# 同一 url 只解析一次，复用 days 全文。
+_FUND_FLOW_CACHE = {}
+
+
 def _fetch_remote_fund_flow(date: str) -> dict:
     """从公开快照（默认 GitHub Pages data.json）取 days[date] 的四档净额。
 
@@ -721,12 +726,15 @@ def _fetch_remote_fund_flow(date: str) -> dict:
     url = NT_FUND_FALLBACK_URL
     if not url:
         return {}
-    try:
-        txt = _get(url)
-        d = json.loads(txt)
-    except Exception as e:
-        print("[fund-fallback] 拉取公开快照失败: %s" % type(e).__name__)
-        return {}
+    d = _FUND_FLOW_CACHE.get(url)
+    if d is None:
+        try:
+            txt = _get(url)
+            d = json.loads(txt)
+            _FUND_FLOW_CACHE[url] = d
+        except Exception as e:
+            print("[fund-fallback] 拉取公开快照失败: %s" % type(e).__name__)
+            return {}
     out = {}
     for row in (d.get("days") or {}).get(date) or []:
         code = row.get("code")
@@ -972,12 +980,20 @@ def backfill_date(date: str) -> dict:
         if mn is not None:
             ok_main += 1
         time.sleep(0.08)
+    # 资金流兜底（2026-11-01）：回补路径同样会因 VPS 境外 IP 被东财 push2his 限流
+    # 而拿不到部分 ETF 的四档净额（mn=None）→ 借公开快照 days[date] 补齐，使历史行
+    # 也能对齐（否则重跑回补仍留 13 只 NULL、净买入合计失真）。仅补缺、绝不复写本地
+    # 真实值；正常环境（14/14）不触发、无额外请求（快照已缓存）。
+    fund_fallback = _apply_fund_flow_fallback(date, rows)
+    if fund_fallback:
+        print("[fund-fallback][backfill] %s 从公开快照补齐 %d 只" % (date, fund_fallback))
     db.save_etf_daily(date, rows)
     # 历史新闻无法精确还原，但**不能清空**该日期已有的新闻
     # （回补行情时会把同日期已抓到的新闻抹掉）。
     if not db.get_news_by_date(date):
         db.save_news(date, [])  # 该日期确实没有新闻记录时留空
-    return {"date": date, "etf_count": len(rows), "mainnet_ok": ok_main, "missing": missing}
+    return {"date": date, "etf_count": len(rows), "mainnet_ok": ok_main,
+            "fund_fallback": fund_fallback, "missing": missing}
 
 
 def backfill_range(dates, path: str = db.DB_PATH) -> dict:
@@ -1025,6 +1041,12 @@ def backfill_range(dates, path: str = db.DB_PATH) -> dict:
             })
         time.sleep(0.1)
     for ds, rows in per_day.items():
+        # 资金流兜底（2026-11-01）：与 backfill_date 同源——VPS 境外 IP 被 push2his
+        # 限流时 mn=None，借公开快照 days[ds] 补齐后再 upsert（COALESCE 让非 NULL
+        # 快照值覆盖本地 NULL），使重跑回补也能修复历史行的资金流。
+        fb = _apply_fund_flow_fallback(ds, rows)
+        if fb:
+            print("[fund-fallback][backfill] %s 从公开快照补齐 %d 只" % (ds, fb))
         db.upsert_etf_rows(ds, rows, path)
     return {"days": len(per_day), "rows": sum(len(v) for v in per_day.values()),
             "no_kline": sorted(no_kline), "no_flow": sorted(no_flow)}

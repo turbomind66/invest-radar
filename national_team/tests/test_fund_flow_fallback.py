@@ -24,6 +24,11 @@ import fetcher  # noqa: E402
 TODAY = "2026-10-30"
 
 
+def _clear_cache():
+    # _FUND_FLOW_CACHE 是模块级缓存，单次运行内复用快照；测试间需清空避免串味
+    fetcher._FUND_FLOW_CACHE.clear()
+
+
 def _payload():
     """公开快照 data.json 的最小子集（只放与兜底相关的字段）。"""
     # 观察池 14 只，这里给 14 只都带真实四档（模拟 runner 正常抓取的结果）
@@ -67,6 +72,9 @@ def _make_etfs(missing_all_but=None):
 
 
 class TestFetchRemoteFundFlow(unittest.TestCase):
+    def setUp(self):
+        _clear_cache()
+
     def test_parse_days(self):
         with patch.object(fetcher, "_get", return_value=json.dumps(_payload())):
             out = fetcher._fetch_remote_fund_flow(TODAY)
@@ -86,6 +94,9 @@ class TestFetchRemoteFundFlow(unittest.TestCase):
 
 
 class TestApplyFundFlowFallback(unittest.TestCase):
+    def setUp(self):
+        _clear_cache()
+
     def test_fills_missing_only(self):
         # 本地 0 只真实值（全 None），快照 13 只有值、1 只 None
         etfs = _make_etfs(missing_all_but=None)
@@ -138,6 +149,48 @@ class TestApplyFundFlowFallback(unittest.TestCase):
         with patch.object(fetcher, "NT_FUND_FALLBACK_URL", ""):
             n = fetcher._apply_fund_flow_fallback(TODAY, etfs)
         self.assertEqual(n, 0)
+
+
+class TestBackfillFundFlowFallback(unittest.TestCase):
+    """回补路径（backfill_date）同样要借快照补齐历史行资金流（VPS 重跑回补用）。"""
+
+    def setUp(self):
+        _clear_cache()
+
+    def test_backfill_date_borrows_missing_flow(self):
+        codes = [c for c, _n, _t in fetcher.WATCHLIST]
+        captured = {}
+
+        def fake_hist(url, retries=3):
+            # 注意：东财 klines 是「逗号分隔字符串」列表，不是嵌套 list。
+            # fflow（资金流）URL 含 "fflow"：故意不带 TODAY → 本地 mn 全为 None
+            #   （模拟 VPS 被 push2his 限流）；kline（行情）URL 给 TODAY 行，使 kn 非空。
+            if "fflow" in url:
+                return json.dumps({"data": {"klines": [",".join(
+                    ["2026-10-29", "1", "2", "3", "4", "5"])]}})
+            klines = [",".join([TODAY, "1.0", "2.50", "2.60", "2.40", "1e7",
+                                "1e8", "x", "-3.0", "x", "x"])]
+            return json.dumps({"data": {"klines": klines}})
+
+        def fake_ff(date):
+            # 公开快照：TODAY 14 只都带真实四档
+            return {code: {"main_net": 1e9, "huge_net": 5e8, "big_net": 3e8,
+                           "mid_net": 1e8, "small_net": -1e8} for code in codes}
+
+        def fake_save(date, rows, path=None):
+            captured["rows"] = rows
+
+        with patch.object(fetcher, "_hist_get", side_effect=fake_hist), \
+             patch.object(fetcher, "_fetch_remote_fund_flow", side_effect=fake_ff), \
+             patch.object(fetcher.db, "get_news_by_date", return_value=[]), \
+             patch.object(fetcher.db, "save_news", return_value=None), \
+             patch.object(fetcher.db, "save_etf_daily", side_effect=fake_save):
+            res = fetcher.backfill_date(TODAY)
+
+        self.assertEqual(res["fund_fallback"], len(codes))
+        self.assertEqual(len(captured["rows"]), len(codes))
+        self.assertTrue(all(r["main_net"] is not None for r in captured["rows"]),
+                        "历史回补后 main_net 不应再留 NULL")
 
 
 if __name__ == "__main__":
