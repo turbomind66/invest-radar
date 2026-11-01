@@ -35,7 +35,7 @@ INDEX = os.path.join(BASE, "templates", "index.html")
 PORT = int(os.environ.get("PORT") or "5000")
 # 版本指纹：与 qdii 侧的 sig/codes 同用途，部署后 /api/status 里能一眼辨新旧代码。
 # 手动同步更新，或用 git rev-parse 生成一次写死。
-APP_VERSION = "v2.6.12-nt"
+APP_VERSION = "v2.7.0-nt"
 # 站点路径前缀：域名反代把本面板挂在子路径（如 /nt）时，若 Nginx/NPM 保留前缀不剥，
 # 就在这里声明（BASE_PATH=/nt），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
 BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")
@@ -405,6 +405,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "last_fetch": db.get_meta("last_fetch", "—"),
                 "last_date": db.get_meta("last_date", "—"),
                 "news_ok": db.get_meta("news_ok", "1"),
+                # 资金流兜底：最近一次抓取是否借公开快照补齐（VPS 被东财限流时可见）
+                "mainnet_fallback": db.get_meta("mainnet_fallback", "0"),
                 # 版本指纹：与 qdii 侧一致，部署后一眼可辨线上跑的是新/旧代码
                 # （见 v2.6.1 修「部署后线上跑旧代码」根因）
                 "app_version": APP_VERSION,

@@ -68,6 +68,19 @@ NT_NEWS_FALLBACK_URL = os.environ.get(
     "https://turbomind66.github.io/invest-radar/data.json",
 )
 
+# 资金流兜底源（2026-11-01 新增）：与新闻兜底同源（同一份 data.json）。
+# 当本机资金流覆盖率不足（境外 IP 被东财 push2/push2his 限流，部分 ETF 拿不到）
+# 时，从公开快照 days[date] 借**同一天**的四档净额补齐缺失的 code。
+# 典型场景：VPS 机房 IP 被东方财富资金流接口限流 → 14 只里只拿到 1 只（中证A500）
+# → 净买入合计被严重低估（VPS 0.24 亿 vs 真实 −41.47 亿）。
+# 公开快照由能正常访问东财的 runner 抓取，借它的结果让 GitHub Pages / VPS /
+# WorkBuddy 应用三端资金流一致。默认与新闻兜底同源（NT_NEWS_FALLBACK_URL 若被
+# 改成自托管镜像也一并生效）；可用环境变量 NT_FUND_FALLBACK_URL 单独覆盖。
+NT_FUND_FALLBACK_URL = os.environ.get(
+    "NT_FUND_FALLBACK_URL",
+    NT_NEWS_FALLBACK_URL,
+)
+
 # 相关性分层：score 越大越靠前（同分按时间倒序）
 SCORE_STRONG = 2    # 标题含主体词
 SCORE_WEAK = 1      # 标题含弱词 + 语境
@@ -680,6 +693,69 @@ def _fetch_remote_news() -> list:
     return uniq
 
 
+def _fetch_remote_fund_flow(date: str) -> dict:
+    """从公开快照（默认 GitHub Pages data.json）取 days[date] 的四档净额。
+
+    仅当本地资金流覆盖率不足（如 VPS 境外 IP 被东财 push2 限流，部分 ETF 拿不到）
+    时由 _apply_fund_flow_fallback 调用。返回 {code: {main_net,huge_net,big_net,
+    mid_net,small_net}}（单位元，字段可能为 None）。任意网络异常静默返回 {}，
+    绝不阻断主流程。
+    """
+    url = NT_FUND_FALLBACK_URL
+    if not url:
+        return {}
+    try:
+        txt = _get(url)
+        d = json.loads(txt)
+    except Exception as e:
+        print("[fund-fallback] 拉取公开快照失败: %s" % type(e).__name__)
+        return {}
+    out = {}
+    for row in (d.get("days") or {}).get(date) or []:
+        code = row.get("code")
+        if not code:
+            continue
+        out[code] = {
+            "main_net": row.get("main_net"),
+            "huge_net": row.get("huge_net"),
+            "big_net": row.get("big_net"),
+            "mid_net": row.get("mid_net"),
+            "small_net": row.get("small_net"),
+        }
+    return out
+
+
+def _apply_fund_flow_fallback(date: str, etfs: list) -> int:
+    """把公开快照 days[date] 的四档净额借来补齐 etfs 里 main_net 为 None 的 code。
+
+    原则（与新闻兜底同源，但语义略不同）：
+      - 仅补缺：本地已取到真实值（main_net 非 None）的 code **绝不复写**，
+        本地真实数据是权威，快照只补缺失项；
+      - 仅同日期：只借 days[date]（与正在归档的日期严格一致），**绝不借别的日期**
+        （避免把昨日净买入错标成今日）；
+      - 快照里也是空（main_net 为 None）的 code 不借，避免用 NULL 覆盖本地 NULL。
+    返回实际补齐的只数；任意异常已由 _fetch_remote_fund_flow 静默吞掉。
+    """
+    snap = _fetch_remote_fund_flow(date)
+    if not snap:
+        return 0
+    by_code = {e["code"]: e for e in etfs}
+    filled = 0
+    for code, row in snap.items():
+        e = by_code.get(code)
+        if not e or e.get("main_net") is not None:
+            continue  # 本地已有真实值，跳过
+        if row.get("main_net") is None:
+            continue  # 快照里也是空，没的借
+        e["main_net"] = row["main_net"]
+        e["huge_net"] = row.get("huge_net")
+        e["big_net"] = row.get("big_net")
+        e["mid_net"] = row.get("mid_net")
+        e["small_net"] = row.get("small_net")
+        filled += 1
+    return filled
+
+
 def split_news_by_date(news: list) -> dict:
     """按新闻自身发布日期分组：{'2026-10-30': [row, ...], ...}。
 
@@ -753,30 +829,50 @@ def fetch_and_save(force: bool = False) -> dict:
         }
 
     etfs, em_ok = fetch_etfs()
+
+    # 资金流兜底（2026-11-01）：本地覆盖率不足时（境外 IP 被东财 push2 限流，
+    # 部分 ETF 拿不到 → 净买入合计失真），从公开快照 data.json 借同一天的四档净额
+    # 补齐。仅补缺、绝不复写本地真实值；正常环境（14/14）不触发、无额外请求。
+    missing_codes = [e["code"] for e in etfs if e.get("main_net") is None]
+    fund_fallback = 0
+    if missing_codes:
+        fund_fallback = _apply_fund_flow_fallback(today, etfs)
+        if fund_fallback:
+            print("[fund-fallback] 本地资金流覆盖 %d/%d，从公开快照补齐 %d 只"
+                  % (len(WATCHLIST) - len(missing_codes), len(WATCHLIST), fund_fallback))
+
     total_main_net = sum((e["main_net"] or 0) for e in etfs)
     total_amount = sum(e["amount"] for e in etfs)
 
     coverage = getattr(fetch_em_main_net, "last_coverage", 0)
-    full_snapshot = em_ok and coverage >= len(WATCHLIST)
+    # 有效覆盖率：本地 + 兜底后实际有 main_net 的只数，决定写入策略与状态展示。
+    # 用有效覆盖率替代本地覆盖率，使「本地被限流 + 兜底补齐」后能走覆盖式写入、
+    # 让净买入合计回归真实（否则 13 只仍为 NULL、合计被低估）。
+    effective_coverage = sum(1 for e in etfs if e.get("main_net") is not None)
+    full_snapshot = em_ok and effective_coverage >= len(WATCHLIST)
     if full_snapshot:
         db.save_etf_daily(today, etfs)
     else:
         n = db.upsert_etf_rows(today, etfs)
+        fb_note = ("，公开快照补齐 %d 只" % fund_fallback) if fund_fallback else ""
         if em_ok:
-            print("[fetch] 东财资金流仅覆盖 %d/%d，改用 COALESCE 保留旧值 (%d 行)"
-                  % (coverage, len(WATCHLIST), n))
+            print("[fetch] 东财资金流仅覆盖 %d/%d%s，改用 COALESCE 保留旧值 (%d 行)"
+                  % (coverage, len(WATCHLIST), fb_note, n))
         else:
-            print("[fetch] 东财资金流不可达，价格入库走 upsert 以保留 main_net 旧值 (%d 行)" % n)
+            print("[fetch] 东财资金流不可达%s，价格入库走 upsert 以保留 main_net 旧值 (%d 行)"
+                  % (fb_note, n))
     db.set_meta("last_fetch", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     db.set_meta("last_date", today)
     db.set_meta("mainnet_ok", "1" if em_ok else "0")
+    db.set_meta("mainnet_fallback", "1" if fund_fallback else "0")
 
     return {
         "ok": True,
         "date": today,
         "etf_count": len(etfs),
         "mainnet_ok": em_ok,
-        "coverage": coverage,
+        "coverage": effective_coverage,
+        "fund_fallback": fund_fallback,
         "total_main_net_yi": round(total_main_net / 1e8, 2),
         "total_amount_yi": round(total_amount / 1e8, 2),
         "news_count": len(news),
