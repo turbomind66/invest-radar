@@ -568,6 +568,40 @@ def _news_score(title: str) -> int:
     return 0
 
 
+def _finalize_news(scored: list) -> list:
+    """去重（同一标题多源命中只留一条，保留分高者）+ 同题异写合并 + 截断到 12。
+
+    供 fetch_news 在「本地优先」与「借快照差量」两种口径下复用，避免逻辑分叉。
+    注意：本函数**不**弹出 _score——fetch_news 可能在借差量后二次调用，
+    若此处弹出会导致本地 items 在第二次排序时分数归零、被快照条目挤掉。
+    _score 由 fetch_news 在最终返回前统一弹出。
+    """
+    best = {}
+    for it in scored:
+        key = it["title"][:40]
+        sc = it.get("_score", 0)
+        if key not in best or sc > best[key].get("_score", 0):
+            best[key] = it
+    cand = sorted(best.values(),
+                  key=lambda x: (x.get("_score", 0), str(x.get("time") or "")),
+                  reverse=True)
+    # 同题异写去重：同一事件（打假/仿冒/声明类）只保留最新的一条，
+    # 否则「中央汇金打假」的 7 种写法会刷屏挤掉时效新闻
+    seen_events = set()
+    out = []
+    for it in cand:
+        ev = next((g for g, toks in NEWS_EVENT_GROUPS
+                   if any(t in it["title"] for t in toks)), None)
+        if ev:
+            if ev in seen_events:
+                continue
+            seen_events.add(ev)
+        out.append(it)
+        if len(out) >= 12:
+            break
+    return out
+
+
 def fetch_news() -> list:
     """多源尽力抓取与国家队相关的财经新闻，失败则降级返回空。
 
@@ -612,42 +646,25 @@ def fetch_news() -> list:
             continue
     fetch_news.last_report = report
 
-    # 兜底：三源全空时从公开快照借一份（如 VPS 机房 IP 被东财新闻接口风控，
-    # 三源恒空 → 面板整块空白）。公开快照由能正常访问东财的 runner 抓取，
-    # 借它的结果即可让所有部署形态新闻一致。仅三源全空才触发，正常环境不额外请求。
-    if not scored:
-        for it in _fetch_remote_news():
-            scored.append(it)
-        if scored:
-            report.append(("公开快照", len(scored), len(scored), None))
+    # 兜底（v2.7.1）：本地最终条数 < 快照条数时，借差量补齐，让所有部署形态新闻一致。
+    # 旧口径「三源全空才借」会让 VPS 因新浪恒命中 1 条而永远借不到东财被拦掉的其余条数；
+    # 新口径改为「本地条数 < 快照条数」即借差量（按标题去重并入），正常环境本地≥快照不额外请求。
+    # 微优化：本地已填满 12（快照上限）则不可能缺，直接跳过兜底请求。
+    local_out = _finalize_news(scored)
+    snapshot = []
+    if len(local_out) < 12:
+        snapshot = _fetch_remote_news()
+        if snapshot and len(local_out) < len(snapshot):
+            local_titles = {it["title"] for it in scored}
+            for it in snapshot:
+                if it["title"] not in local_titles:
+                    scored.append(it)
+            report.append(("公开快照", len(snapshot), len(snapshot), None))
             fetch_news.last_report = report
-
-    # 去重（同一标题多源命中只留一条，保留分高者）
-    best = {}
-    for it in scored:
-        key = it["title"][:40]
-        if key not in best or it["_score"] > best[key]["_score"]:
-            best[key] = it
-    cand = sorted(best.values(),
-                  key=lambda x: (x["_score"], str(x.get("time") or "")),
-                  reverse=True)
-    # 同题异写去重：同一事件（打假/仿冒/声明类）只保留最新的一条，
-    # 否则「中央汇金打假」的 7 种写法会刷屏挤掉时效新闻
-    seen_events = set()
-    out = []
-    for it in cand:
-        ev = next((g for g, toks in NEWS_EVENT_GROUPS
-                   if any(t in it["title"] for t in toks)), None)
-        if ev:
-            if ev in seen_events:
-                continue
-            seen_events.add(ev)
-        out.append(it)
-        if len(out) >= 12:
-            break
-    for it in out:
+            local_out = _finalize_news(scored)
+    for it in local_out:
         it.pop("_score", None)
-    return out
+    return local_out
 
 
 def _fetch_remote_news() -> list:
