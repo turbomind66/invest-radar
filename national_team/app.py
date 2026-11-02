@@ -35,7 +35,7 @@ INDEX = os.path.join(BASE, "templates", "index.html")
 PORT = int(os.environ.get("PORT") or "5000")
 # 版本指纹：与 qdii 侧的 sig/codes 同用途，部署后 /api/status 里能一眼辨新旧代码。
 # 手动同步更新，或用 git rev-parse 生成一次写死。
-APP_VERSION = "v2.8.0-nt"
+APP_VERSION = "v2.8.1-nt"
 # 站点路径前缀：域名反代把本面板挂在子路径（如 /nt）时，若 Nginx/NPM 保留前缀不剥，
 # 就在这里声明（BASE_PATH=/nt），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
 BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")
@@ -411,6 +411,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 # （见 v2.6.1 修「部署后线上跑旧代码」根因）
                 "app_version": APP_VERSION,
             }, ensure_ascii=False).encode("utf-8"), head_only=head_only)
+            return
+        if path == "/echarts.min.js":
+            # 本地化 ECharts：同源提供，避免 WorkBuddy 预览沙箱按 CSP 拦截
+            # 跨域 CDN 脚本导致图表整片空白；GitHub Pages 子路径下相对引用也
+            # 需同目录有该文件（staticsite 已拷到 docs/）。
+            try:
+                with open(os.path.join(ROOT, "common", "echarts.min.js"), "rb") as f:
+                    _data = f.read()
+                self._send(200, _data, "application/javascript; charset=utf-8",
+                           head_only=head_only)
+            except Exception:
+                self._send(404, b"not found", head_only=head_only)
             return
         self._send(404, b"not found", head_only=head_only)
 

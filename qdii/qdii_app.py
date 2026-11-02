@@ -49,7 +49,7 @@ INDEX = os.path.join(TEMPLATES, "index.html")
 # ValueError 让子进程起不来（combo_app 那边就表现为「预热中」永不结束）。
 PORT = int(os.environ.get("QDII_PORT") or "5001")
 # 版本指纹：/api/qdii/status 里带回，配合 sig/codes 让部署后一眼辨新/旧代码。
-APP_VERSION = "v2.8.0-qdii"
+APP_VERSION = "v2.8.1-qdii"
 # 站点路径前缀：域名反代把本面板挂在子路径（如 /qdii）时，若 Nginx/NPM 保留前缀不剥，
 # 就在这里声明（BASE_PATH=/qdii），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
 BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")
@@ -282,6 +282,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _do_GET(self):
         path = strip_base(self.path.split("?")[0])
+        if path == "/echarts.min.js":
+            # 本地化 ECharts：同源提供，避免 WorkBuddy 预览沙箱按 CSP 拦截
+            # 跨域 CDN 脚本导致图表整片空白；GitHub Pages 子路径下相对引用也
+            # 需同目录有该文件（staticsite 已拷到 docs/qdii/）。
+            try:
+                with open(os.path.join(ROOT, "common", "echarts.min.js"), "rb") as f:
+                    _data = f.read()
+                self._send(_data, "application/javascript; charset=utf-8")
+            except Exception:
+                self._send(b"not found", "text/plain; charset=utf-8", 404)
+            return
         # 解析查询串（表头排序用）：sort/psort=列键，dir/pdir=asc|desc
         query = {}
         if "?" in self.path:

@@ -182,6 +182,19 @@ def export(out_dir: str = OUT_DIR, template: str = TEMPLATE,
     _atomic_write(json_path, body)
     _atomic_write(html_path, render_index(payload, template).encode("utf-8"))
 
+    # 本地化 ECharts：从 common/ 拷贝到 out_dir（docs/qdii/），避免静态站
+    # 依赖外部 CDN（WorkBuddy / GitHub Pages 预览沙箱按 CSP 拦截跨域脚本，
+    # 相对引用也要求同目录存在该文件）。
+    echarts_src = os.path.join(ROOT, "common", "echarts.min.js")
+    if os.path.exists(echarts_src):
+        try:
+            with open(echarts_src, "rb") as f:
+                _atomic_write(os.path.join(out_dir, "echarts.min.js"), f.read())
+        except Exception as e:
+            print("[qdii-static] ⚠ 拷贝 echarts.min.js 失败（图表可能空白）：%s" % e)
+    else:
+        print("[qdii-static] ⚠ 未找到 common/echarts.min.js（图表可能空白）")
+
     return {
         "funds": len((payload.get("funds") or {}).get("funds") or []),
         "decision": len((payload.get("decision") or {}).get("rows") or []),

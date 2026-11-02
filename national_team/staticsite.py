@@ -377,6 +377,19 @@ def export(out_dir: str = DOCS_DIR, template: str = TEMPLATE,
         render_index(payload, template).encode("utf-8"),
     )
 
+    # 本地化 ECharts：从 common/ 拷贝到 out_dir，避免静态站依赖外部 CDN
+    # （WorkBuddy 静态托管 / GitHub Pages 预览沙箱会按 CSP 拦截跨域脚本，
+    #  导致图表整片空白；相对引用也要求同目录存在该文件）。
+    echarts_src = os.path.join(ROOT, "common", "echarts.min.js")
+    if os.path.exists(echarts_src):
+        try:
+            with open(echarts_src, "rb") as f:
+                _atomic_write(os.path.join(out_dir, "echarts.min.js"), f.read())
+        except Exception as e:
+            print("[export] ⚠ 拷贝 echarts.min.js 失败（图表可能空白）：%s" % e)
+    else:
+        print("[export] ⚠ 未找到 common/echarts.min.js（图表可能空白）")
+
     # 让 Pages 跳过 Jekyll 处理，避免任何下划线文件被吞（零字节，无需原子）
     open(os.path.join(out_dir, ".nojekyll"), "w").close()
 
