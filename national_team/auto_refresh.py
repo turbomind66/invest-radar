@@ -88,7 +88,27 @@ _WORK_LOCK = threading.RLock()
 
 
 def _log(msg):
-    print("[auto-refresh] %s" % msg, flush=True)
+    # 写 **stderr** 而不是 stdout：combo_app 的 /__diag 只捕获子进程的 stderr，
+    # 写 stdout 的话线上完全看不到自动补数/刷新的进度，出问题无从查起。
+    print("[auto-refresh] %s" % msg, file=sys.stderr, flush=True)
+
+
+# 运行时状态：供 /api/status 暴露「单应用自动补数是否在跑、跑到哪一步了」。
+# 只在内存里，不落库（多进程/多容器部署时各算各的）。
+STATE = {
+    "enabled": False,
+    "started_at": "",
+    "phase": "",          # bootstrap / idle
+    "last_seed": "",      # 最近一次种子恢复摘要
+    "last_sync": "",      # 最近一次当日全量摘要
+    "last_sample": "",    # 最近一次盘中采样摘要
+    "last_error": "",     # 最近一次失败摘要（成功即清空）
+}
+
+
+def _state(**kw):
+    STATE.update(kw)
+    return STATE
 
 
 def _log_exc(what, e):
@@ -99,6 +119,10 @@ def _log_exc(what, e):
         tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         for line in tb.strip().splitlines():
             _log("  | %s" % line)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _state(last_error="%s: %s" % (what, e))
     except Exception:  # noqa: BLE001
         pass
 
@@ -126,11 +150,13 @@ def _restore_seed():
     try:
         import staticsite
         res = staticsite.restore_missing_from_days_file()
+        summary = "明细 %d 天 / 份额 %d 天 / 新闻 %d 天 / 逐笔 %d 天" % (
+            res["days"], res["shares"], res["news"], res["ticks"])
         if any(res.values()):
-            _log("种子恢复：明细 %d 天 / 份额 %d 天 / 新闻 %d 天 / 逐笔 %d 天"
-                 % (res["days"], res["shares"], res["news"], res["ticks"]))
+            _log("种子恢复：%s" % summary)
         else:
             _log("种子恢复：库内已完整，无需补齐")
+        _state(last_seed=summary, last_error="")
         return res
     except Exception as e:  # noqa: BLE001
         _log_exc("种子恢复", e)
@@ -234,6 +260,7 @@ def bootstrap():
     """
     _log("开始首启补数 …")
     _ensure_shanghai_tz()
+    _state(phase="bootstrap", started_at=bj_now().strftime("%Y-%m-%d %H:%M:%S"))
     t0 = time.time()
     with _WORK_LOCK:
         _restore_seed()
@@ -244,6 +271,7 @@ def bootstrap():
         _archive_intraday(today)
         _archive_tick(today)
     _log("首启补数完成，耗时 %.1fs" % (time.time() - t0))
+    _state(phase="idle")
 
 
 def _full_sync(day: str):
@@ -252,6 +280,7 @@ def _full_sync(day: str):
         _fetch_today()
         _archive_intraday(day)
         _archive_tick(day)
+    _state(last_sync="%s 当日全量" % day, last_error="")
 
 
 def _intraday_sample(day: str):
@@ -259,6 +288,7 @@ def _intraday_sample(day: str):
     with _WORK_LOCK:
         _archive_intraday(day)
         _archive_tick(day)
+    _state(last_sample="%s 盘中采样" % day, last_error="")
 
 
 def loop():
@@ -308,11 +338,13 @@ def start():
     """启动首启补数 + 周期刷新（各一个后台线程）。"""
     import threading
 
+    _state(enabled=True, started_at=bj_now().strftime("%Y-%m-%d %H:%M:%S"))
+
     def _boot():
         try:
             bootstrap()
         except Exception as e:  # noqa: BLE001
-            _log("首启补数异常（已忽略）：%s: %s" % (type(e).__name__, e))
+            _log_exc("首启补数异常（已忽略）", e)
 
     t = threading.Thread(target=_boot, daemon=True)
     t.start()

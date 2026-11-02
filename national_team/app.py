@@ -48,6 +48,21 @@ def strip_base(path):
     return path
 
 
+def _auto_refresh_state():
+    """单应用形态（WorkBuddy）自动补数的运行状态；未启用返回 None。
+
+    函数内 import（不做模块级导入）→ 保持 app.py 的 import 行为与原样，
+    不影响 Windows 本地 / Linux 本地 / Linux VPS 三种原部署方式。
+    """
+    try:
+        import auto_refresh
+        if not auto_refresh.enabled():
+            return None
+        return dict(auto_refresh.STATE)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _summarize(rows):
     """对一批ETF行做汇总：净买入合计/成交额/主力数据完整度/分类小计/四档净额。"""
     total_main = sum((e["main_net"] or 0) for e in rows)
@@ -401,7 +416,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             }, ensure_ascii=False).encode("utf-8"), head_only=head_only)
             return
         if path == "/api/status":
-            self._send(200, json.dumps({
+            payload = {
                 "last_fetch": db.get_meta("last_fetch", "—"),
                 "last_date": db.get_meta("last_date", "—"),
                 "news_ok": db.get_meta("news_ok", "1"),
@@ -410,7 +425,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 # 版本指纹：与 qdii 侧一致，部署后一眼可辨线上跑的是新/旧代码
                 # （见 v2.6.1 修「部署后线上跑旧代码」根因）
                 "app_version": APP_VERSION,
-            }, ensure_ascii=False).encode("utf-8"), head_only=head_only)
+            }
+            # 单应用形态（WorkBuddy）的自动补数状态：没启用就是 None，
+            # 启用后能看到「首启恢复补了多少、当前在哪个阶段、最近一次错误」。
+            ar = _auto_refresh_state()
+            if ar:
+                payload["auto_refresh"] = ar
+            self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                       head_only=head_only)
             return
         if path == "/echarts.min.js":
             # 本地化 ECharts：同源提供，避免 WorkBuddy 预览沙箱按 CSP 拦截
