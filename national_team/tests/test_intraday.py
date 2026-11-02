@@ -405,5 +405,68 @@ class TestTickDetect(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class TestTickLatestDateFallback(unittest.TestCase):
+    """回归（2026-11-02）：当日无逐笔数据时，视图要给出「往前最近有数据的日子」。
+
+    背景：逐笔明细来自东财滚动窗口（pos=-1，无日期参数），错过当天即永久缺失、
+    无法回补。丁总看到面板显示「暂无逐笔大单数据」以为功能坏了，实际是当天盘中
+    没采样。因此 build_view 的 tick 段必须带 latest_date / latest_count，
+    供前端引导跳转到最近一次有数据的日子。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="ntt_tick_latest_")
+        self.path = os.path.join(self.tmp, "test.db")
+        db.init_db(self.path)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_latest_date_points_to_previous_day_with_data(self):
+        # 前一日有 2 笔大单，当日为空
+        _tick(self.path, "2026-10-30", "510300", "沪深300ETF", "沪深300", [
+            ("14:55:10", 4.110, 5000, 1, 5000 * 4.110 * 100),
+            ("14:56:20", 4.120, 8000, 2, 8000 * 4.120 * 100),
+        ])
+        tk = intraday.build_view("2026-11-02", path=self.path)["tick"]
+        self.assertFalse(tk["has_data"])
+        self.assertEqual(tk["latest_date"], "2026-10-30")
+        self.assertEqual(tk["latest_count"], 2)
+
+    def test_latest_date_never_looks_into_future(self):
+        """看历史某天时，提示只能往前找，不能指向未来日期（否则会误导）。"""
+        _tick(self.path, "2026-10-30", "510300", "沪深300ETF", "沪深300", [
+            ("10:00:00", 4.110, 5000, 1, 5000 * 4.110 * 100),
+        ])
+        # 2026-10-28 之前没有任何逐笔 → 不应回退到 10-30
+        tk = intraday.build_view("2026-10-28", path=self.path)["tick"]
+        self.assertFalse(tk["has_data"])
+        self.assertIsNone(tk["latest_date"])
+        self.assertEqual(tk["latest_count"], 0)
+
+    def test_latest_date_none_when_no_history_at_all(self):
+        tk = intraday.build_view("2026-11-02", path=self.path)["tick"]
+        self.assertIsNone(tk["latest_date"])
+        self.assertEqual(tk["latest_count"], 0)
+
+    def test_latest_date_matches_self_when_current_day_has_data(self):
+        """当日有数据时 latest_date 即当日（前端只在 has_data=false 分支使用）。"""
+        _tick(self.path, "2026-11-02", "510300", "沪深300ETF", "沪深300", [
+            ("09:31:00", 1.00, 10000, 1, 100e4),
+        ])
+        tk = intraday.build_view("2026-11-02", path=self.path)["tick"]
+        self.assertTrue(tk["has_data"])
+        self.assertEqual(tk["latest_date"], "2026-11-02")
+        self.assertEqual(tk["latest_count"], 1)
+
+    def test_latest_date_survives_db_error(self):
+        """DB 查询异常时静默降级为 None，绝不抛异常阻断视图构建。"""
+        import unittest.mock as mock
+        with mock.patch.object(db, "get_tick_dates", side_effect=RuntimeError("boom")):
+            tk = intraday.build_view("2026-11-02", path=self.path)["tick"]
+        self.assertIsNone(tk["latest_date"])
+        self.assertEqual(tk["latest_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

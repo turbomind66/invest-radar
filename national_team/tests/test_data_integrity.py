@@ -81,9 +81,15 @@ class FetcherPartialCoverage(unittest.TestCase):
         old_fetch_news = fetcher.fetch_news
         old_is_trading = fetcher.is_trading_day
         old_db_path = nt_db.DB_PATH
+        # 隔离网络（2026-11-02）：本用例要验证「只覆盖 1 只 → 必须走 COALESCE upsert」。
+        # 但 _apply_fund_flow_fallback 会去拉公开 data.json 补缺失的 13 只，一旦真联网
+        # 成功，前提就不成立、coverage 变成 14 → 在有网环境必然失败（纯离线环境看不出来）。
+        # 这里把远端取数桩成空，保证用例只测写入策略本身。
+        old_remote_fund = fetcher._fetch_remote_fund_flow
         fetcher.fetch_etfs = fake_fetch_etfs
         fetcher.fetch_news = lambda *a, **k: []
         fetcher.is_trading_day = lambda d=None: True
+        fetcher._fetch_remote_fund_flow = lambda d: {}
         try:
             # 让 fetcher 内部 `db.xxx` 全部指向临时库
             fetcher.db = _patch_db_path(nt_db, self.db_path)
@@ -101,6 +107,7 @@ class FetcherPartialCoverage(unittest.TestCase):
             fetcher.fetch_etfs = old_fetch_etfs
             fetcher.fetch_news = old_fetch_news
             fetcher.is_trading_day = old_is_trading
+            fetcher._fetch_remote_fund_flow = old_remote_fund
             nt_db.DB_PATH = old_db_path
 
     def test_full_coverage_uses_save_etf_daily(self):

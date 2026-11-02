@@ -643,6 +643,28 @@ def detect_tick(date: str, path: str = db.DB_PATH):
     return events
 
 
+def _latest_tick_before(date: str, path: str = db.DB_PATH):
+    """返回 <= date 的最近一个「有逐笔大单」的日期及其笔数；没有则 (None, 0)。
+
+    逐笔明细来自东财滚动窗口（`pos=-1` 无日期参数），只能采到"调用那一刻"的成交，
+    错过当天就永久缺失、无法像资金流那样回补历史。因此某日为空时，唯一能给用户的
+    有用信息就是"往前最近哪一天有数据"，由前端引导跳转，避免"暂无"被读成故障。
+    任何异常静默降级为 (None, 0)，绝不阻断主流程。
+    """
+    try:
+        days = [d for d in db.get_tick_dates(path=path) if d <= date]
+    except Exception:
+        return None, 0
+    if not days:
+        return None, 0
+    latest = days[-1]
+    try:
+        n = len(db.get_tick_by_date(latest, path=path))
+    except Exception:
+        n = 0
+    return latest, n
+
+
 def build_view(date: str, path: str = db.DB_PATH):
     """组装前端视图数据：分时序列 + 逐条信号 + 事件聚合 + 摘要。"""
     data = db.get_intraday_by_date(date, path=path)
@@ -676,9 +698,15 @@ def build_view(date: str, path: str = db.DB_PATH):
     tick_sell_amt = sum(r.get("amount") or 0 for r in tick_rows if r.get("direction") == 2)
     tick_neutral_amt = sum(r.get("amount") or 0 for r in tick_rows
                             if r.get("direction") not in (1, 2))
+    # 当日无大单时给出「往前最近一个有数据的日子」，供前端引导跳转。
+    # 逐笔明细来自东财滚动窗口（无日期参数），错过当天即永久缺失、无法回补；
+    # 若不提示，面板只显示"暂无"，用户会误判成功能故障（2026-11-02 踩过）。
+    tick_latest_date, tick_latest_count = _latest_tick_before(date, path)
     tick_summary = {
         "has_data": bool(tick_rows),
         "big_count": len(tick_rows),
+        "latest_date": tick_latest_date,
+        "latest_count": tick_latest_count,
         "events": tick_events,
         # 所有含大单的窗口（含未达集中阈值的），供表格逐行展示 ——
         # 否则无集中事件时表格整表空白，看不到已抓到的大单分布。
