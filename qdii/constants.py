@@ -313,6 +313,23 @@ CATEGORY_SIGNAL = {
 }
 # 各大类的自有信号（第一个即主信号）；不在表里的大类才会去借美股风向
 CATEGORY_OWN_SIGNAL = {k: v[0] for k, v in CATEGORY_SIGNAL.items()}
+
+# ---- 决策依据（当日口径）----
+# 目标：15:00 前下单时，用「能代表今晚成交净值方向」的价格，而不是永远用
+# 上一交易日收盘。否则周一早上会拿上周五的跌幅去加仓（周五的跌已经进了
+# 周五净值，周一申购吃不到），既滞后又反向。
+#   spot   = 现货行（昨收 / 盘中 / 当日收盘，取决于该市场此刻是否在交易）
+#   future = 期货行（美股未开盘时作为「今晚方向」的前瞻；无期货的类别留 None）
+# 判定顺序见 strategy.decision_input()：
+#   现货正在交易 → 用现货实时；否则有期货 → 用期货实时；再否则 → 用现货昨收。
+DECISION_BASIS = {
+    "纳斯达克100": {"spot": "IXIC", "future": "NDX_FUT", "label": "纳指"},
+    "标普500": {"spot": "SPX", "future": "SPX_FUT", "label": "标普500"},
+    "日经225": {"spot": "NK", "future": None, "label": "日经225"},
+    "德国DAX": {"spot": "DAX", "future": None, "label": "德国DAX"},
+    "法国CAC40": {"spot": "CAC40", "future": None, "label": "法国CAC40"},
+    "英国富时100": {"spot": "FTSE", "future": None, "label": "英国富时100"},
+}
 # 大类顺序（柱状图与表格按此排）
 CATEGORY_ORDER = ["纳斯达克100", "标普500", "日经225", "德国DAX",
                   "法国CAC40", "英国富时100"]
@@ -341,6 +358,9 @@ STRATEGY_PARAMS = {
     "risk_off_ust_warn_bp": 15.0,  # +15~+30bp：逼近阈值，只提示
     "multiple_cap": 3.0,          # 倍数上限
     "multiple_floor": 0.0,        # 倍数下限
+    # 美股未开盘时，用纳指/标普期货实时涨跌作为「今晚方向」的决策输入。
+    # False = 退回旧口径（永远用现货上一交易日收盘）。
+    "future_proxy": True,
     # 模式：signal=固定周期+信号增强（骨架） / auto=全自动 / manual=仅提示人工
     "mode": "signal",
 }

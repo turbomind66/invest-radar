@@ -33,6 +33,7 @@ import fetcher_limit
 import fetcher_signal
 import fetcher_premium
 import tracking_error
+import common.market_session as ms
 
 
 def risk_off_assess(vix=None, ust_bp=None, vix_chg=None, params=None):
@@ -180,6 +181,78 @@ def pick_signal(cat, us_map):
     return None, None, None
 
 
+def decision_input(cat, us_map, now=None):
+    """决定「今天这一笔」的跟跌加仓该看哪个价格（**当日口径**）。
+
+    为什么不能用固定的「现货昨收」：QDII 场外 15:00 前下单按 T 日净值成交，
+    真正决定净值的是今晚/今天的海外收盘，不是上一交易日。旧口径在周一早上
+    会用上周五的跌幅加仓（周五的跌已经进了周五净值，周一申购吃不到），
+    既滞后又方向错。
+
+    优先级：
+      1) 该市场现货此刻正在交易 → 用现货实时（日经盘中 / 欧股盘内 / 美股盘内）；
+      2) 现货未开盘、但有期货 → 用期货实时（美股 21:30 前最接近今晚方向的前瞻）；
+      3) 都没有 → 现货上一交易日收盘（欧股 15:00 前属于这种，明确标注）。
+
+    返回 dict(symbol,label,chg,kind,as_of,today_close) 或 None。
+    """
+    cfg = C.DECISION_BASIS.get(cat) or {}
+    spot_sym, fut_sym = cfg.get("spot"), cfg.get("future")
+    if not spot_sym:
+        return None
+    now = now or ms.bj_now()
+    spot = us_map.get(spot_sym) or {}
+    fut = (us_map.get(fut_sym) or {}) if fut_sym else {}
+
+    def _live(sym, row):
+        try:
+            return bool(ms.market_status(sym, now).get("is_realtime"))
+        except Exception:  # noqa: BLE001
+            return bool(row.get("is_realtime"))
+
+    def _status(sym):
+        try:
+            return ms.market_status(sym, now).get("market_status") or ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    # 1) 现货在交易
+    if spot.get("change_pct") is not None and _live(spot_sym, spot):
+        st = _status(spot_sym)
+        return dict(symbol=spot_sym, label=spot.get("name") or cfg.get("label") or cat,
+                    chg=float(spot["change_pct"]), kind="spot_live",
+                    as_of=spot.get("as_of"),
+                    # 日经 14:30 收盘后看到的就是「今日收盘」，不是昨收
+                    today_close=bool(spot_sym == "NK" and st.startswith("已收盘")))
+    # 2) 期货前瞻（美股未开盘）
+    if (C.STRATEGY_PARAMS.get("future_proxy", True)
+            and fut.get("change_pct") is not None and _live(fut_sym, fut)):
+        return dict(symbol=fut_sym, label=fut.get("name") or (cat + "期货"),
+                    chg=float(fut["change_pct"]), kind="future_proxy",
+                    as_of=fut.get("as_of"), today_close=False)
+    # 3) 现货昨收（兜底）
+    if spot.get("change_pct") is not None:
+        st = _status(spot_sym)
+        return dict(symbol=spot_sym, label=spot.get("name") or cfg.get("label") or cat,
+                    chg=float(spot["change_pct"]), kind="spot_prev",
+                    as_of=spot.get("as_of"),
+                    today_close=bool(spot_sym == "NK" and st.startswith("已收盘")))
+    return None
+
+
+def _basis_prefix(basis):
+    """把决策依据翻成一句人话 -> (前缀, 句尾补充)。"""
+    lab = (basis["label"] or "").replace("指数", "")
+    kind = basis["kind"]
+    if kind == "future_proxy":
+        return lab + "实时", "；按今晚开盘前瞻计（非昨收）"
+    if kind == "spot_live":
+        return lab + "今日实时", ""
+    if basis.get("today_close"):
+        return lab + "今日收盘", ""
+    return lab + "昨收", "；该市场今日尚未开盘，暂按昨收"
+
+
 def category_stats(pool, limit_map):
     """按大类统计申购状态。"""
     stats = {}
@@ -226,21 +299,20 @@ def recommend_category(cat, stats, us_map, valuation_pct=None):
     P = C.STRATEGY_PARAMS
     st = _status_text(stats)
     if stats["total"] and stats["suspend"] == stats["total"]:
-        return dict(multiple=0.0, status_text=st,
+        return dict(multiple=0.0, status_text=st, basis=None,
                     reasons=["该大类 %d 只全部暂停申购，本期无法买入" % stats["total"]])
 
     reasons = []
     multiple = 1.0
+    basis = None
 
-    # 1) 方向：跟跌加仓（用该大类自己的指数；日经/DAX 无本地信号则借鉴美股）
-    sym, sname, chg = pick_signal(cat, us_map)
-    if chg is None:
+    # 1) 方向：跟跌加仓 —— 用「当日口径」的价格（见 decision_input）
+    basis = decision_input(cat, us_map)
+    if basis is None:
         reasons.append("暂无对应指数信号，按基准倍数")
     else:
-        label = sname or cat
-        # 日经 / 德国DAX 没有本地信号，借美股风向时写明，避免误以为有本地数据
-        if C.CATEGORY_OWN_SIGNAL.get(cat) != sym:
-            label += "（无本地指数信号，参考美股风向）"
+        chg = basis["chg"]
+        prefix, tail = _basis_prefix(basis)
         if chg < 0:
             added = 0.0
             hit = None
@@ -250,12 +322,13 @@ def recommend_category(cat, stats, us_map, valuation_pct=None):
                     hit = thr
             if added > 0:
                 multiple += added
-                reasons.append("%s昨收跌 %.2f%%（触发跌%.0f%%档），跟跌加仓 +%.1f 倍"
-                               % (label, abs(chg), -hit, added))
+                reasons.append("%s跌 %.2f%%（触发跌%.0f%%档），跟跌加仓 +%.1f 倍%s"
+                               % (prefix, abs(chg), -hit, added, tail))
             else:
-                reasons.append("%s昨收跌 %.2f%%，跌幅未到加仓档，维持基准" % (label, abs(chg)))
+                reasons.append("%s跌 %.2f%%，跌幅未到加仓档，维持基准%s"
+                               % (prefix, abs(chg), tail))
         else:
-            reasons.append("%s昨收涨 %.2f%%，非加仓区间" % (label, chg))
+            reasons.append("%s涨 %.2f%%，非加仓区间%s" % (prefix, chg, tail))
 
     # 2) 估值：只有标普/纳指有维护值
     if valuation_pct is not None:
@@ -300,7 +373,8 @@ def recommend_category(cat, stats, us_map, valuation_pct=None):
                        % (stats["open"], stats["suspend"]))
 
     multiple = max(P["multiple_floor"], min(P["multiple_cap"], multiple))
-    return dict(multiple=round(multiple, 2), status_text=st, reasons=reasons)
+    return dict(multiple=round(multiple, 2), status_text=st, reasons=reasons,
+                basis=basis)
 
 
 def build_category_decisions(date: str = None, path: str = C.QDII_DB_PATH):
@@ -319,6 +393,7 @@ def build_category_decisions(date: str = None, path: str = C.QDII_DB_PATH):
             multiple=rec["multiple"],
             status_text=rec["status_text"],
             reasons=rec["reasons"],
+            basis=rec.get("basis"),
             total=s["total"], open_cnt=s["open"],
             suspend_cnt=s["suspend"], limit_cnt=s["limit"],
             companies=s["companies"],
@@ -327,19 +402,24 @@ def build_category_decisions(date: str = None, path: str = C.QDII_DB_PATH):
 
 
 def run_category_decision(date: str = None, path: str = C.QDII_DB_PATH):
-    date = date or datetime.date.today().isoformat()
-    now = datetime.datetime.now().isoformat(timespec="seconds")
+    date = date or ms.bj_today()
+    now = ms.bj_now().isoformat(timespec="seconds")
     P = C.STRATEGY_PARAMS
     rows = build_category_decisions(date, path)
     conn = db.get_conn(path)
     for r in rows:
+        b = r.get("basis") or {}
         db.upsert_row(conn, "qdii_decision_cat",
                       ["date", "category", "strategy", "suggested_multiple",
                        "status_text", "reason_json", "total", "open_cnt",
-                       "suspend_cnt", "limit_cnt"],
+                       "suspend_cnt", "limit_cnt",
+                       "basis_symbol", "basis_label", "basis_chg", "basis_kind",
+                       "basis_asof"],
                       [date, r["category"], P["mode"], r["multiple"],
                        r["status_text"], json.dumps(r["reasons"], ensure_ascii=False),
-                       r["total"], r["open_cnt"], r["suspend_cnt"], r["limit_cnt"]],
+                       r["total"], r["open_cnt"], r["suspend_cnt"], r["limit_cnt"],
+                       b.get("symbol"), b.get("label"), b.get("chg"),
+                       b.get("kind"), b.get("as_of")],
                       "date,category")
     # 清理**当日已不存在的类别**的历史行：大类会增删（2026-10-29 移除了
     # 纳斯达克生物科技/纳斯达克科技/标普500等权），只 upsert 不删除的话，
@@ -384,7 +464,7 @@ def get_latest_category_decisions(path: str = C.QDII_DB_PATH):
 
 
 def build_contexts(date: str = None, path: str = C.QDII_DB_PATH):
-    date = date or datetime.date.today().isoformat()
+    date = date or ms.bj_today()
     pool = db.get_fund_pool(path)
     limit_map = {r["code"]: r for r in fetcher_limit.get_latest_limit_status(path=path)}
     us_map = {r["symbol"]: r for r in fetcher_signal.get_latest_us_signal(path=path)}
@@ -411,8 +491,8 @@ def build_contexts(date: str = None, path: str = C.QDII_DB_PATH):
 
 
 def run_daily_decision(date: str = None, path: str = C.QDII_DB_PATH):
-    date = date or datetime.date.today().isoformat()
-    now = datetime.datetime.now().isoformat(timespec="seconds")
+    date = date or ms.bj_today()
+    now = ms.bj_now().isoformat(timespec="seconds")
     P = C.STRATEGY_PARAMS
     ctxs = build_contexts(date, path)
     conn = db.get_conn(path)

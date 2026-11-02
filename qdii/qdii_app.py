@@ -6,6 +6,7 @@
 import os
 import sys
 import json
+import time
 import http.server
 import socketserver
 import datetime
@@ -39,6 +40,8 @@ import fetcher_premium
 import tracking_error
 import board
 import strategy
+import common.market_session as ms
+import common.market_calendar as cal
 
 TEMPLATES = os.path.join(BASE, "templates")
 INDEX = os.path.join(TEMPLATES, "index.html")
@@ -46,7 +49,7 @@ INDEX = os.path.join(TEMPLATES, "index.html")
 # ValueError 让子进程起不来（combo_app 那边就表现为「预热中」永不结束）。
 PORT = int(os.environ.get("QDII_PORT") or "5001")
 # 版本指纹：/api/qdii/status 里带回，配合 sig/codes 让部署后一眼辨新/旧代码。
-APP_VERSION = "v2.7.2-qdii"
+APP_VERSION = "v2.8.0-qdii"
 # 站点路径前缀：域名反代把本面板挂在子路径（如 /qdii）时，若 Nginx/NPM 保留前缀不剥，
 # 就在这里声明（BASE_PATH=/qdii），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
 BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")
@@ -62,9 +65,14 @@ def strip_base(path):
 def route_api(path, query=None):
     query = query or {}
     if path == "/api/qdii/status":
+        fresh = freshness()
         return {"status": "ok", "db": C.QDII_DB_PATH,
                 "pool_size": len(C.FUND_POOL), "now": _now(),
                 "app_version": APP_VERSION,
+                # 数据新鲜度：页面必须显示它，才能一眼看出「这份数据是几分钟前还是几天前」
+                "data_as_of": fresh["data_as_of"],
+                "data_age_sec": fresh["age_sec"],
+                "data_stale": fresh["stale"],
                 # 代码版本指纹：排查「部署后线上跑的还是旧代码」时一眼可辨。
                 # sig = MARKET_SIGNALS 首行长度（加了交易所代码字段后为 5）。
                 "sig": len(C.MARKET_SIGNALS[0]) if C.MARKET_SIGNALS else 0,
@@ -122,7 +130,43 @@ def route_api(path, query=None):
 
 
 def _now():
-    return datetime.datetime.now().isoformat(timespec="seconds")
+    """服务器当前**北京时间**（naive ISO）。部署环境可能是 UTC，不能直接用 now()。"""
+    return ms.bj_now().isoformat(timespec="seconds")
+
+
+_DATA_TABLES = ("qdii_us_signal", "qdii_premium", "qdii_limit_status")
+
+
+def freshness():
+    """最近一次真实抓取的时间与距今秒数。
+
+    为什么必须单独算：旧页面把 `now` 当状态时间显示，数据停了三天也看不出来
+    （2026-11-02 实测 WorkBuddy 应用整份数据停在 10-30，页面却显示「10:02:43」）。
+    """
+    latest = None
+    try:
+        conn = db.get_conn(C.QDII_DB_PATH)
+        for tbl in _DATA_TABLES:
+            row = conn.execute("SELECT MAX(fetched_at) AS t FROM %s" % tbl).fetchone()
+            t = row["t"] if row else None
+            if t and (latest is None or str(t) > str(latest)):
+                latest = str(t)
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+    if not latest:
+        return {"data_as_of": None, "age_sec": None, "stale": True}
+    age = None
+    try:
+        dt = datetime.datetime.fromisoformat(latest.replace("Z", ""))
+        age = int((ms.bj_now() - dt).total_seconds())
+        if age < 0:
+            age = 0
+    except Exception:  # noqa: BLE001
+        pass
+    return {"data_as_of": latest.replace("T", " "),
+            "age_sec": age,
+            "stale": bool(age is None or age > 1800)}
 
 
 # ---- 服务端手动刷新（后台线程 + 状态查询）----
@@ -175,6 +219,43 @@ def refresh_status():
     with _REFRESH_LOCK:
         return {"running": _REFRESH["running"], "start": _REFRESH["start"],
                 "done": _REFRESH["done"], "result": _REFRESH["result"]}
+
+
+# ---- 自动刷新（WorkBuddy 单应用没有 cron，必须自己在进程内定时）----
+# 只在 combo 部署里由 combo_app 注入 QDII_AUTO_REFRESH=1 开启；
+# VPS/Docker 不该开（那边已有 qdii_scheduler 独立进程，重复跑只会白耗上游配额）。
+AUTO_REFRESH = (os.environ.get("QDII_AUTO_REFRESH") or "0").strip().lower() in (
+    "1", "true", "yes", "on")
+AUTO_INTERVAL = max(120, int(os.environ.get("QDII_AUTO_INTERVAL") or "600"))
+
+
+def _auto_refresh_loop():
+    """按「15:00 前必须是最新数据」倒排的刷新节奏：
+
+    - 交易日 09:00–15:05：每 10 分钟一次（AUTO_INTERVAL）；
+    - 14:38–14:52 定档窗口：每 5 分钟一次（保证 15:00 下单前看到的是收盘前最新值）；
+    - 其余时段：每 60 分钟兜底（隔夜也有数据，不至于停更）。
+
+    抓取放进后台线程，任何一路上游超时都不会阻塞页面。
+    """
+    last = None
+    while True:
+        try:
+            now = ms.bj_now()
+            hm = now.hour * 60 + now.minute
+            if cal.is_a_share_trading_day(now) and 9 * 60 <= hm <= 15 * 60 + 5:
+                interval = 300 if 14 * 60 + 38 <= hm <= 14 * 60 + 52 else AUTO_INTERVAL
+            else:
+                interval = 3600
+            due_now = last is None or (now - last).total_seconds() >= interval
+            with _REFRESH_LOCK:
+                busy = _REFRESH["running"]
+            if due_now and not busy:
+                last = now
+                trigger_refresh()
+        except Exception as e:  # noqa: BLE001
+            print("[qdii-app] auto refresh error:", e)
+        time.sleep(30)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -275,6 +356,9 @@ def main():
     # 端口，工作线程随主进程退出（否则 SIGTERM 会被 handler 里最长的 150s 上游读拖住）。
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     socketserver.ThreadingTCPServer.daemon_threads = True
+    if AUTO_REFRESH:
+        threading.Thread(target=_auto_refresh_loop, daemon=True).start()
+        print("[qdii-app] auto refresh ON, interval=%ss" % AUTO_INTERVAL)
     with socketserver.ThreadingTCPServer((bind, PORT), Handler) as httpd:
         print("[qdii-app] listening on %s:%d (db=%s)" % (bind, PORT, C.QDII_DB_PATH))
         httpd.serve_forever()

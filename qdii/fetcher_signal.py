@@ -28,6 +28,7 @@ if sys.path and sys.path[0] != BASE:
     sys.path.insert(0, BASE)
 
 from common.http import fetch_text
+from common.market_session import bj_today, bj_now
 import db
 import constants as C
 
@@ -478,8 +479,8 @@ def _apply_market_session(row, now_dt):
 
 
 def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
-    date = date or datetime.date.today().isoformat()
-    now_dt = datetime.datetime.now()
+    date = date or bj_today()
+    now_dt = bj_now()
     now = now_dt.isoformat(timespec="seconds")
     # 确保旧库补齐新增列（change_value / change_bp）：本函数是唯一不依赖
     # app/scheduler 启动时 init_db 的入口，缺列会直接 INSERT 失败。

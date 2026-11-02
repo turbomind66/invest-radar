@@ -125,6 +125,12 @@ def init_db(path: str = DB_PATH):
         ("qdii_us_signal", "change_bp", "REAL"),
         ("qdii_us_signal", "change_value", "REAL"),
         ("qdii_us_signal", "market_status", "TEXT"),
+        # 决策依据（当日口径）：15:00 前这笔该看哪个价格、属于哪种口径
+        ("qdii_decision_cat", "basis_symbol", "TEXT"),
+        ("qdii_decision_cat", "basis_label", "TEXT"),
+        ("qdii_decision_cat", "basis_chg", "REAL"),
+        ("qdii_decision_cat", "basis_kind", "TEXT"),
+        ("qdii_decision_cat", "basis_asof", "TEXT"),
     ):
         try:
             cur.execute("ALTER TABLE %s ADD COLUMN %s %s" % (_tbl, _col, _decl))

@@ -363,7 +363,9 @@ def main():
           {"NT_AUTO_ENSURE": "0", "PEER_URL": "/qdii"},
           "PORT", nt_port)
     spawn("qdii", "qdii/qdii_app.py",
-          {"BASE_PATH": "/qdii", "PEER_URL": "/"},
+          # QDII_AUTO_REFRESH：单应用部署没有 cron，靠进程内定时刷新保证
+          # 15:00 前数据是当天的（见 qdii_app._auto_refresh_loop）。
+          {"BASE_PATH": "/qdii", "PEER_URL": "/", "QDII_AUTO_REFRESH": "1"},
           "QDII_PORT", qdii_port)
 
     # 收尾：atexit + SIGTERM/SIGINT 都把子进程带走，避免留下孤儿占 SQLite 锁 / 端口

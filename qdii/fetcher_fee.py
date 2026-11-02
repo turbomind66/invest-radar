@@ -26,6 +26,7 @@ if sys.path and sys.path[0] != BASE:
     sys.path.insert(0, BASE)
 
 from common.http import fetch_text, fetch_json
+from common.market_session import bj_today, bj_now
 import db
 import constants as C
 
@@ -144,8 +145,8 @@ def _fetch_all_raw(codes, workers=8):
 
 
 def fetch_platform_fee(date: str = None, path: str = C.QDII_DB_PATH):
-    date = date or datetime.date.today().isoformat()
-    now = datetime.datetime.now().isoformat(timespec="seconds")
+    date = date or bj_today()
+    now = bj_now().isoformat(timespec="seconds")
     conn = db.get_conn(path)
     # 天天基金即东方财富自家平台，其在售状态应以模块B的申购状态为准
     # （不能只用「是否取到费率数据」代替，否则暂停申购的基金会误显示成在售）。

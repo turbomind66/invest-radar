@@ -23,6 +23,7 @@ if sys.path and sys.path[0] != BASE:
     sys.path.insert(0, BASE)
 
 from common.http import fetch_text
+from common.market_session import bj_today, bj_now
 import db
 import constants as C
 
@@ -65,14 +66,14 @@ def normalize_sub_status(s):
 
 
 def fetch_all_limit_status(date: str = None, path: str = C.QDII_DB_PATH):
-    date = date or datetime.date.today().isoformat()
+    date = date or bj_today()
     # 实测：该接口返回 UTF-8 字节，若按 GBK 解码会静默产生乱码（GBK 几乎不抛
     # UnicodeDecodeError，不会触发降级），导致「暂停申购」被误判成 OPEN。务必用 utf-8。
     txt = fetch_text(C.URL_LIMIT_ALL, referer="https://fund.eastmoney.com/",
                      encoding="utf-8", use_proxy=None, retries=2)
     datas = extract_datas(txt)
     pool_codes = {f["code"] for f in C.FUND_POOL}
-    now = datetime.datetime.now().isoformat(timespec="seconds")
+    now = bj_now().isoformat(timespec="seconds")
     conn = db.get_conn(path)
     cnt = 0
     for row in datas:

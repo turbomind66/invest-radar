@@ -35,6 +35,7 @@ if sys.path and sys.path[0] != BASE:
     sys.path.insert(0, BASE)
 
 from common.http import fetch_text, fetch_json
+from common.market_session import bj_today, bj_now
 import db
 import constants as C
 import tracking_error
@@ -147,8 +148,8 @@ def fetch_premium(date: str = None, path: str = C.QDII_DB_PATH):
     ⚠️ 不要改回「遍历场外基金 + online_code」：场外联接基金与其 ETF 不存在唯一映射，
     旧写法让纳指 5 只场外基金全部指向 513100，159941 永远不出现、5 行溢价率完全相同。
     """
-    date = date or datetime.date.today().isoformat()
-    now = datetime.datetime.now().isoformat(timespec="seconds")
+    date = date or bj_today()
+    now = bj_now().isoformat(timespec="seconds")
     etfs = C.PREMIUM_ETFS
     codes = [e["code"] for e in etfs]
     market_codes = [market_prefix(c) + c for c in codes]

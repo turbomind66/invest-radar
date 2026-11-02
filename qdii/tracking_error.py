@@ -40,6 +40,7 @@ if sys.path and sys.path[0] != BASE:
     sys.path.insert(0, BASE)
 
 from common.http import fetch_json, fetch_text
+from common.market_session import bj_today, bj_now
 import db
 import constants as C
 import time
@@ -301,8 +302,8 @@ def _prefetch_benchmarks():
 
 
 def fetch_tracking_error(date: str = None, path: str = C.QDII_DB_PATH):
-    date = date or datetime.date.today().isoformat()
-    now = datetime.datetime.now().isoformat(timespec="seconds")
+    date = date or bj_today()
+    now = bj_now().isoformat(timespec="seconds")
     conn = db.get_conn(path)
     # ⚠️ 规模变化：基金池 11 → 66 只，串行（含 0.6s 限速）要 40 分钟以上。
     # 改为：① 先单线程**预取基准日线**（同大类共用一份，缓存住）；

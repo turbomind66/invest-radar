@@ -7,6 +7,7 @@
 import os
 import sys
 import json
+import datetime
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -276,22 +277,17 @@ class CategoryDecisionTest(unittest.TestCase):
         self.assertAlmostEqual(r["multiple"], 2.0)
         self.assertTrue(any("跌 4.20%" in x for x in r["reasons"]))
 
-    def test_borrowed_signal_is_labelled(self):
-        # 2026-10-29 起每个大类都有自有信号（日经→日经期货、DAX→境内ETF…），
-        # 这里用一个**没有配置信号**的假类别，验证「借用美股风向时必须写明」，
-        # 避免误读成本地数据。
-        import constants as C
-        C.CATEGORY_SIGNAL["测试类"] = ["IXIC"]      # 临时给一个「借来的」信号
-        try:
-            r = strategy.recommend_category("测试类", self._stats(), self._us(), None)
-        finally:
-            C.CATEGORY_SIGNAL.pop("测试类", None)
-        self.assertTrue(any("无本地指数信号" in x for x in r["reasons"]))
+    def test_unknown_category_says_no_signal(self):
+        # 决策依据必须显式配置在 DECISION_BASIS（当日口径：现货实时 > 期货前瞻 >
+        # 最后收盘）；没配置的类别要明说，不能悄悄拿某个指数算出一个倍数。
+        r = strategy.recommend_category("测试类", self._stats(), self._us(), None)
+        self.assertTrue(any("暂无对应指数信号" in x for x in r["reasons"]))
 
     def test_own_signal_not_labelled(self):
         r = strategy.recommend_category("纳斯达克100", self._stats(), self._us(), None)
-        self.assertFalse(any("无本地指数信号" in x for x in r["reasons"]))
-        self.assertTrue(any("纳指现货" in x for x in r["reasons"]))
+        self.assertIsNotNone(r.get("basis"))
+        self.assertIn(r["basis"]["kind"], ("spot_live", "future_proxy", "spot_prev"))
+        self.assertTrue(any("纳指" in x for x in r["reasons"]))
 
     def test_no_amount_in_reasons(self):
         # 用户口径：决策不再落到金额
@@ -302,6 +298,64 @@ class CategoryDecisionTest(unittest.TestCase):
         r = strategy.recommend_category("纳斯达克100", self._stats(min_limit=10.0),
                                         self._us(), None)
         self.assertIn("限额 10 元", r["status_text"])
+
+
+class DecisionBasisTest(unittest.TestCase):
+    """当日口径：15:00 前下单该看哪个价格。
+
+    规则（与 strategy.decision_input 一致）：
+      1) 该市场现货在交易 → 用现货实时；
+      2) 没开盘但有期货 → 用期货实时（今晚前瞻）；
+      3) 都已收盘/未开盘 → 用最后截止的收盘价。
+    """
+
+    def _us(self):
+        return {
+            "IXIC": {"name": "纳指现货", "change_pct": -1.38, "is_realtime": 0},
+            "NDX_FUT": {"name": "纳指期货", "change_pct": -2.42, "is_realtime": 1},
+            "SPX": {"name": "标普500现货", "change_pct": -0.30, "is_realtime": 0},
+            "SPX_FUT": {"name": "标普500期货", "change_pct": -1.04, "is_realtime": 1},
+            "NK": {"name": "日经225指数", "change_pct": -2.12, "is_realtime": 1},
+            "DAX": {"name": "德国DAX指数", "change_pct": -0.85, "is_realtime": 0},
+        }
+
+    def test_us_before_open_uses_futures(self):
+        # 北京 10:00，美股未开盘 → 用纳指期货（今晚方向），而不是昨收
+        now = datetime.datetime(2026, 11, 2, 10, 0)
+        b = strategy.decision_input("纳斯达克100", self._us(), now)
+        self.assertEqual(b["symbol"], "NDX_FUT")
+        self.assertEqual(b["kind"], "future_proxy")
+        self.assertAlmostEqual(b["chg"], -2.42)
+
+    def test_us_during_session_uses_spot(self):
+        # 北京 23:00 = 美东 10:00（冬令）盘中 → 用现货实时，不再用期货
+        now = datetime.datetime(2026, 11, 2, 23, 0)
+        b = strategy.decision_input("纳斯达克100", self._us(), now)
+        self.assertEqual(b["symbol"], "IXIC")
+        self.assertEqual(b["kind"], "spot_live")
+
+    def test_japan_after_close_is_today_close(self):
+        # 日经 14:30 收盘后，看到的就是今天收盘，而不是「昨收」
+        now = datetime.datetime(2026, 11, 2, 14, 40)
+        b = strategy.decision_input("日经225", self._us(), now)
+        self.assertTrue(b["today_close"])
+        self.assertIn("今日收盘", strategy._basis_prefix(b)[0])
+
+    def test_europe_before_open_falls_back_to_last_close(self):
+        # 欧股 15:00 才开盘，10:00 只能按最后收盘，并明确标注
+        now = datetime.datetime(2026, 11, 2, 10, 0)
+        b = strategy.decision_input("德国DAX", self._us(), now)
+        self.assertEqual(b["kind"], "spot_prev")
+        self.assertIn("暂按昨收", strategy._basis_prefix(b)[1])
+
+    def test_future_missing_falls_back_to_spot(self):
+        # 期货抓取失败时不能给 None，必须退回现货昨收，保证决策仍可出
+        us = self._us()
+        us.pop("NDX_FUT")
+        now = datetime.datetime(2026, 11, 2, 10, 0)
+        b = strategy.decision_input("纳斯达克100", us, now)
+        self.assertEqual(b["symbol"], "IXIC")
+        self.assertEqual(b["kind"], "spot_prev")
 
 
 class PremiumEtfListTest(unittest.TestCase):

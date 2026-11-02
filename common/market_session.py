@@ -22,7 +22,26 @@
   - 休市日只判周末 + 美股节假日表（EU/JP 节假日未建表，按周末处理 ——
     节假日对状态文案的影响只是「上一交易日」的前移一天，不影响实时/收盘判定）。
 """
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
+
+# 全项目统一的「北京时间」——部署环境可能是 UTC（GitHub Actions）或本地时区，
+# 任何 `date.today()` / `datetime.now()` 都会因此漂移 8 小时。
+BJ_TZ = timezone(timedelta(hours=8))
+
+
+def bj_now() -> datetime:
+    """当前北京时间（naive，便于与既有 naive 调用点兼容）。"""
+    return datetime.now(BJ_TZ).replace(tzinfo=None)
+
+
+def bj_today() -> str:
+    """当前北京日期 YYYY-MM-DD。
+
+    ⚠️ 不要再用 datetime.date.today()：GitHub Actions runner 是 UTC，
+    北京 06:00 的补抓会写成前一天的 date（实测 2026-11-02 06:06 的抓取
+    date=2026-11-01），把历史记录覆盖掉。
+    """
+    return bj_now().date().isoformat()
 
 # 各市场当地连续交易时段（当地时钟）与所属时区规则
 #   tz: "JP"(+9 无夏令时) / "EU"(+1/+2) / "UK"(+0/+1) / "US"(-5/-4)
@@ -36,10 +55,17 @@ _SESSIONS = {
     "IXIC": ("US", "09:30", "16:00", "纳斯达克"),
     "SPX": ("US", "09:30", "16:00", "纽交所"),
     "VIX": ("US", "09:30", "16:00", "CBOE"),
-    "NDX_FUT": ("US", "06:00", "05:00", "CME Globex"),
-    "SPX_FUT": ("US", "06:00", "05:00", "CME Globex"),
+    # CME Globex 股指期货：周日 18:00 ET 开盘 → 周五 17:00 ET 收盘，
+    # 每日 17:00–18:00 ET 结算暂停（见 _futures_status）。
+    "NDX_FUT": ("US", "18:00", "17:00", "CME Globex"),
+    "SPX_FUT": ("US", "18:00", "17:00", "CME Globex"),
     "UST10Y": None,
 }
+
+# 期货单独判定（不能套用「周一至周五才开市」的通用规则：
+# 周日 18:00 ET 就开盘了，旧实现把周日夜盘整段判成「休市」，
+# 而页面同时显示期货 +0.68% 在动，自相矛盾）。
+_FUTURES = ("NDX_FUT", "SPX_FUT")
 
 # 美股节假日（与 market_calendar.US_HOLIDAYS 同源，避免跨模块循环 import 时重复维护，
 # 这里只用到「是不是交易日」这一层，故直接复用 market_calendar 的函数）
@@ -121,6 +147,47 @@ def known_symbols():
     return set(_SESSIONS)
 
 
+def _futures_status(now: datetime) -> dict:
+    """CME Globex 股指期货状态（now = 北京时间 naive）。
+
+    交易时段：周日 18:00 ET 开盘 → 周五 17:00 ET 收盘，每日 17:00–18:00 ET
+    为结算暂停。旧实现直接套「当地周一至周五 + 06:00–05:00」，导致
+    周日晚上（北京周一早 07:00 起）期货明明在交易却标「休市」，
+    页面同时显示 +0.68% 的实时涨跌，自相矛盾。
+    """
+    off = _tz_offset("US", now.date())
+    et = now + timedelta(hours=off - 8)
+    wd, hm = et.weekday(), et.hour * 60 + et.minute
+    in_maint = 17 * 60 <= hm < 18 * 60        # 每日结算暂停窗口
+    if wd == 5:                                # 周六全天
+        is_open = False
+    elif wd == 6:                              # 周日 18:00 后开盘
+        is_open = hm >= 18 * 60
+    elif wd == 4 and hm >= 17 * 60:            # 周五 17:00 收盘
+        is_open = False
+    else:
+        is_open = not in_maint
+    if is_open:
+        return {"is_realtime": 1, "market_status": "实时",
+                "session_close": "17:00", "next_open": None, "venue": "CME Globex"}
+    # 下一个开盘：从今天起找最近的周日~周四 18:00 ET
+    nxt = et.replace(hour=18, minute=0, second=0, microsecond=0)
+    if nxt <= et:
+        nxt += timedelta(days=1)
+    for _ in range(7):
+        if nxt > et and nxt.weekday() in (6, 0, 1, 2, 3):
+            break
+        nxt += timedelta(days=1)
+    nxt_bj = nxt - timedelta(hours=off - 8)
+    if in_maint and wd in (0, 1, 2, 3):
+        label = "结算休市 · %s 开盘" % nxt_bj.strftime("%H:%M")
+    else:
+        label = "休市 · 上一交易日收盘"
+    return {"is_realtime": 0, "market_status": label,
+            "session_close": "17:00",
+            "next_open": nxt_bj.strftime("%H:%M"), "venue": "CME Globex"}
+
+
 def market_status(symbol: str, now: datetime = None) -> dict:
     """返回某标的在 `now`（**北京时间**，naive datetime）的市场状态。
 
@@ -133,16 +200,21 @@ def market_status(symbol: str, now: datetime = None) -> dict:
     }
     """
     now = now or datetime.now()
+    if symbol in _FUTURES:
+        return _futures_status(now)
     cfg = _SESSIONS.get(symbol)
     if cfg is None:
         return {"is_realtime": 1, "market_status": "实时", "session_close": None,
                 "next_open": None, "venue": ""}
     tz, open_hm, close_hm, venue = cfg
 
-    # 只考察「当地日历日」在 now 前后 3 天内的时段，足够覆盖所有跨日情形
+    # 只考察「当地日历日」在 now 前后 7 天内的时段。
+    # ⚠️ 必须 ≥7 天：原来只回看 2 天，周一早上找「上一个收盘」时，
+    # 上周五（3 天前）已经落在窗口外 → prev_close=None → 状态退化成裸「休市」，
+    # 页面看起来像从来没有交易过（VPS 的「休市」就是这个原因，不是版本问题）。
     bj_day = now.date()
     cands = []
-    for delta in (-2, -1, 0, 1, 2):
+    for delta in range(-7, 3):
         local_day = bj_day + timedelta(days=delta)
         if not _is_open_day(tz, local_day):
             continue
