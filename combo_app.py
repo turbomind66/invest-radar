@@ -93,7 +93,14 @@ def free_port(exclude=(), host="127.0.0.1"):
 
 
 def _drain_stderr(label, proc):
-    """后台线程：持续读子进程 stderr，保留最近 4KB。"""
+    """后台线程：持续读子进程 stderr，保留最近 4KB。
+
+    ⚠️ 2026-11-02 修：**必须在循环内就更新** stderr_tail。
+    旧实现把赋值放在 for 循环**之后**，于是只要子进程还活着，
+    stderr_tail 就一直是空字符串 —— /__diag 永远看不到任何子进程日志
+    （本次排查「WorkBuddy 版很多内容不显示」时就被这个坑过：
+    auto_refresh 的进度日志全在 stderr 里，却一条都看不到）。
+    """
     buf = []
     total = 0
     try:
@@ -103,9 +110,13 @@ def _drain_stderr(label, proc):
             total += len(text)
             while buf and total - len(buf[0]) > 4096:
                 total -= len(buf.pop(0))
+            # 实时更新，进程存活期间也能在 /__diag 看到
+            with _CHILDREN_LOCK:
+                PROC_DIAG[label]["stderr_tail"] = "".join(buf)[-4096:]
     except Exception:
         pass
-    PROC_DIAG[label]["stderr_tail"] = "".join(buf)[-4096:]
+    with _CHILDREN_LOCK:
+        PROC_DIAG[label]["stderr_tail"] = "".join(buf)[-4096:]
 
 
 def spawn(label, script_rel, env_extra, port_key, port_val):
