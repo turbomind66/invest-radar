@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <!-- 对端面板地址：由服务端按 PEER_URL 环境变量注入（域名反代后端口推断会跳成死链） -->
 <meta name="peer-url" content="">
-<title>国家队买卖A股日报</title>
+<title>汪汪队买卖A股日报</title>
 <script src="echarts.min.js"></script>
 <style>
   :root{
@@ -25,7 +25,7 @@
   .btn:active{transform:translateY(1px)}
   .btn.ghost{background:#fff;color:var(--blue);border:1px solid #c9dcff;padding:7px 13px;font-size:13px}
   .btn.ghost:hover{background:#f2f7ff}
-  /* 面板选项卡：同一域名下「国家队 / QDII」两个面板互切。
+  /* 面板选项卡：同一域名下「汪汪队 / QDII」两个面板互切。
      当前面板用 span 承载（不可点），对端面板用 a#peerTab（地址由 PEER_URL 或端口±1 推断）。
      对端不可达（静态站 / file://）时整条隐藏，不给死链。 */
   .htitle{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
@@ -139,9 +139,9 @@
 <div class="wrap">
   <header>
     <div class="htitle">
-      <h1>🛡️ 国家队买卖A股日报 <span class="tag">宽基ETF主力净流入代理</span></h1>
+      <h1>🛡️ 汪汪队买卖A股日报 <span class="tag">宽基ETF主力净流入代理</span></h1>
       <nav class="tabbar" id="tabbar">
-        <span class="tab active">🛡️ 国家队 A股</span>
+        <span class="tab active">🛡️ 汪汪队 A股</span>
         <a class="tab" id="peerTab" href="#" title="同一站点的 QDII 定投面板">📈 全球 QDII 定投</a>
       </nav>
     </div>
@@ -164,9 +164,9 @@
   </div>
 
   <div class="note">
-    <b>口径说明：</b>国家队（中央汇金、证金公司等）不逐日公开买卖明细。本工具以<b>宽基指数ETF（沪深300/中证500/中证1000/上证50/创业板/科创50/科创100/中证A500）的主力资金净流入</b>作为国家队护盘动向的核心代理指标——这些ETF是国家队进场的标准通道。数据每日收盘后（约16:05）自动抓取并归档，历史曲线随运行天数累积。新闻为服务端尽力抓取，若上游不通则显示提示。<br>
+    <b>口径说明：</b>汪汪队（中央汇金、证金公司等）不逐日公开买卖明细。本工具以<b>宽基指数ETF（沪深300/中证500/中证1000/上证50/创业板/科创50/科创100/中证A500）的主力资金净流入</b>作为汪汪队护盘动向的核心代理指标——这些ETF是汪汪队进场的标准通道。数据每日收盘后（约16:05）自动抓取并归档，历史曲线随运行天数累积。新闻为服务端尽力抓取，若上游不通则显示提示。<br>
     <b>四档净额：</b>东财「主力净买」= 超大单净 + 大单净的<b>净额</b>——分时图上的大额买入可能被更大额的超大单卖出对冲，或被算法拆成中小单，表面上"没统计上"。明细表新增超大单/大单/中单/小单四档净额列，买入卖出毛向一目了然。<br>
-    <b>一级市场申赎（份额口径）：</b>ETF 的一级申购/赎回<b>不计入二级市场资金流</b>，是另一层证据。明细表的「份额日变动」为交易所公布的 ETF 份额变化（亿份），「一级净申购」≈ 份额日变动 × 单位净值（亿元），正=一级净申购。份额数据由 T+1 公布，最新交易日可能沿用上一日数值；该项为全市场机构与散户的合计申赎，<b>不等同于国家队专属行为</b>，与二级口径合看更稳妥。
+    <b>一级市场申赎（份额口径）：</b>ETF 的一级申购/赎回<b>不计入二级市场资金流</b>，是另一层证据。明细表的「份额日变动」为交易所公布的 ETF 份额变化（亿份），「一级净申购」≈ 份额日变动 × 单位净值（亿元），正=一级净申购。份额数据由 T+1 公布，最新交易日可能沿用上一日数值；该项为全市场机构与散户的合计申赎，<b>不等同于汪汪队专属行为</b>，与二级口径合看更稳妥。
   </div>
 
   <div class="note" id="warn" style="display:none;background:#fff0f0;border-color:#f3c2c2;color:#a33"></div>
@@ -193,11 +193,11 @@
 
   <div class="grid2" style="grid-template-columns:1.5fr 1fr">
     <div class="panel">
-      <h2>📈 国家队净买入历史趋势 <small id="trend-sub">单位：亿元（每日合计主力净流入）</small></h2>
+      <h2>📈 汪汪队净买入历史趋势 <small id="trend-sub">单位：亿元（每日合计主力净流入）</small></h2>
       <div id="trend" class="chart"></div>
     </div>
     <div class="panel">
-      <h2>📰 国家队相关新闻</h2>
+      <h2>📰 汪汪队相关新闻</h2>
       <ul class="news" id="news"></ul>
     </div>
   </div>
@@ -313,9 +313,9 @@ function siteBase(){
   }catch(e){ return ''; }
 }
 
-// 面板互跳：国家队 ↔ QDII。
+// 面板互跳：汪汪队 ↔ QDII。
 //   ① 静态站(GitHub Pages / file:// 本地预览)：两页都已导出，用 staticsite 注入的
-//      相对地址 peer_url 互跳（国家队→qdii/、QDII→../）。未注入则保持隐藏，不给死链。
+//      相对地址 peer_url 互跳（汪汪队→qdii/、QDII→../）。未注入则保持隐藏，不给死链。
 //   ② 服务端模式：PEER_URL 显式指定（域名反代：完整 URL 或同域相对路径 /qdii/）；
 //   ③ 服务端未配 PEER_URL 则回退「本端口 +1」（只在本地分别起 5000/5001 时有效；
 //      容器部署走 gateway 单端口，请务必设 PEER_URL）。
@@ -636,7 +636,7 @@ function render(d){
     : (d.mainnet_ok ? sig[0] : "主力净流入暂不可用");
   const catCount = Object.keys(s.by_cat_yi||{}).length;
   const cards = [
-    {k:"国家队净买入合计", v:netTxt, sub:scopeSub, cls:sig[1]==="buy"?"red":(sig[1]==="sell"?"green":"amber")},
+    {k:"汪汪队净买入合计", v:netTxt, sub:scopeSub, cls:sig[1]==="buy"?"red":(sig[1]==="sell"?"green":"amber")},
     {k:"信号判定", v:sig[0], sub:isFiltered?"仅代表当前筛选范围":"基于宽基ETF主力净流入",
      cls:sig[1]==="buy"?"red":(sig[1]==="sell"?"green":"amber")},
     {k:"当前范围基金数", v:(s.etf_count||0)+" 只", sub:`覆盖 ${catCount} 个类别${isFiltered?"（已筛选）":"（全量）"}`, cls:"blue"},
@@ -717,7 +717,7 @@ function render(d){
         <div class="t">${esc(n.time||"")}<span class="src">${esc(n.src||"")}</span></div></li>`).join("")
         + `<li class="empty" style="border:0;padding-top:6px">（该日期无新闻，以上为 ${esc(fb.date||"")} 的记录）</li>`;
     } else {
-      nl.innerHTML = `<li class="empty">${isHistory?"该历史日期无新闻记录（历史补数不回溯新闻）。":"今日暂无匹配“国家队/汇金/证金/增持”的新闻。"}</li>`;
+      nl.innerHTML = `<li class="empty">${isHistory?"该历史日期无新闻记录（历史补数不回溯新闻）。":"今日暂无匹配“汪汪队/汇金/证金/增持”的新闻。"}</li>`;
     }
   } else {
     nl.innerHTML = d.news.map(n=>`<li>
@@ -931,7 +931,7 @@ function renderIntraday(d){
   if(note){
     note.innerHTML = `判定四条件：① 单只分钟额 ≥ 日均 <b>${th.ratio}×</b>；② 全池共振 ≥ <b>${th.cover}×</b> 且同时放量 ≥ <b>${th.breadth}</b> 只；`
       + `③ 护盘=价格不跌破均价、压盘=跌破 <b>${th.drop}%</b>；④ 收盘后大单净额方向一致才升级为「已印证」。`
-      + `<br>分时数据来自腾讯行情接口（分钟级），与主流程口径完全独立；<b>放量不等于国家队行为</b>，本表只提示"值得看一眼"的时点与规模。`;
+      + `<br>分时数据来自腾讯行情接口（分钟级），与主流程口径完全独立；<b>放量不等于汪汪队行为</b>，本表只提示"值得看一眼"的时点与规模。`;
   }
   drawIntradayChart(iv, (fundSel && fundSel.value) || codes[0]);
 }

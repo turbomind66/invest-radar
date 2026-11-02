@@ -440,7 +440,7 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   chk(itbody.includes('0930') && itbody.includes('疑似压盘'), '放量事件表渲染（时段+方向）');
   chk(itbody.includes('32.00') || itbody.includes('32.0'), '事件表含合计成交额');
   const inote = els['intraday-note'].innerHTML;
-  chk(inote.includes('放量不等于国家队'), '口径说明强调放量≠国家队');
+  chk(inote.includes('放量不等于汪汪队'), '口径说明强调放量≠汪汪队');
   chk(inote.includes('四条件'), '口径说明列出四条件');
   // 无分时数据时的兜底
   const base2 = buildData('');

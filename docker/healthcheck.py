@@ -3,8 +3,8 @@
 
 一个镜像里有三种对外角色，逐个探测、任一成功即视为健康，这样同一条 HEALTHCHECK
 指令可以同时用于 gateway / web / qdii-web 三个容器，不必按角色分支：
-  · gateway 容器 → GATEWAY_PORT（默认 38881，转发到国家队 /api/status）
-  · web 容器     → PORT（默认 5000，国家队）
+  · gateway 容器 → GATEWAY_PORT（默认 38881，转发到汪汪队 /api/status）
+  · web 容器     → PORT（默认 5000，汪汪队）
   · qdii-web     → QDII_PORT（默认 5001，QDII）
 
 cron 容器不提供 HTTP 端口，compose 里已把 test 覆盖为 `true`。

@@ -1,4 +1,4 @@
-"""抓取：国家队宽基ETF主力净流入（代理"国家队买卖A股"）+ 相关新闻。"""
+"""抓取：汪汪队宽基ETF主力净流入（代理"汪汪队买卖A股"）+ 相关新闻。"""
 import urllib.request
 import urllib.parse
 import json
@@ -27,7 +27,7 @@ HOSTS = [
     "11.push2.eastmoney.com",
 ]
 
-# 国家队常用护盘宽基ETF池（代码, 名称, 类别）
+# 汪汪队常用护盘宽基ETF池（代码, 名称, 类别）
 WATCHLIST = [
     ("510300", "华泰柏瑞沪深300ETF", "沪深300"),
     ("510310", "易方达沪深300ETF", "沪深300"),
@@ -95,14 +95,14 @@ NT_TICK_FALLBACK_URL = os.environ.get(
 SCORE_STRONG = 2    # 标题含主体词
 SCORE_WEAK = 1      # 标题含弱词 + 语境
 
-# 主体词：唯一指向证券国家队（中央汇金/证金/汇金公司），标题命中即相关
+# 主体词：唯一指向证券汪汪队（中央汇金/证金/汇金公司），标题命中即相关
 NEWS_STRONG = ["中央汇金", "证金公司", "汇金公司"]
-# 「国家队」一词在中文里还指科技/高校/航天/数据等领域的国家队，
+# 「汪汪队」一词在中文里还指科技/高校/航天/数据等领域的汪汪队，
 # 故需搭配金融语境才算命中本面板（A股资金动向）
-NEWS_GUOJIA = "国家队"
+NEWS_GUOJIA = "汪汪队"
 # 金融语境词：必须是「资金/持仓」类实义词。
 # 注意排除「科创」「创业板」「机构」等泛词 —— 它们是板块名/泛称，
-# 会让「半导体国家队科创板IPO辅导」这类非金融条目误命中。
+# 会让「半导体汪汪队科创板IPO辅导」这类非金融条目误命中。
 NEWS_FIN_CTX = ["A股", "沪深", "上证", "深证", "宽基", "ETF",
                 "基金", "持仓", "重仓", "增持", "买入", "加仓", "建仓", "入市", "注资",
                 "举牌", "配置", "仓位", "资金", "净流入", "净买入", "主力",
@@ -116,13 +116,13 @@ NEWS_ACTION = ["增持", "护盘", "主力资金", "宽基", "重仓"]
 NEWS_A_CTX = ["A股", "沪深", "上证", "深证", "创业板", "科创", "北交所", "宽基",
               "场内", "基金", "份额", "净流入", "两市", "成交额", "主力", "板块", "市场"]
 # 买入语境：裸 ETF 标题（ETF午评/两市成交额/央行抛售ETF）不相关，
-# 只有出现买入/增持类语境才算国家队动向
-NEWS_BUY_CTX = ["增持", "买入", "加仓", "国家队", "汇金", "证金", "护盘", "净流入", "建仓"]
+# 只有出现买入/增持类语境才算汪汪队动向
+NEWS_BUY_CTX = ["增持", "买入", "加仓", "汪汪队", "汇金", "证金", "护盘", "净流入", "建仓"]
 # 误伤黑名单：「保证金」含「证金」子串；其余为公司/基金同名噪音
 NEWS_BLOCK = ["保证金", "汇金科技", "浙商汇金", "汇金通", "汇金蓝", "汇金诺", "汇金宝"]
-# 「国家队」的非金融义噪音（科技/高校/航天/数据等领域）
-NEWS_NOISE = ["数据国家队", "数据集团", "数据要素", "教育部", "高校", "职业院校",
-               "火箭", "商火", "商业航天", "科技国家队"]
+# 「汪汪队」的非金融义噪音（科技/高校/航天/数据等领域）
+NEWS_NOISE = ["数据汪汪队", "数据集团", "数据要素", "教育部", "高校", "职业院校",
+               "火箭", "商火", "商业航天", "科技汪汪队"]
 # 同题异写去重：同一条新闻的不同标题写法（如「中央汇金打假」「中央汇金公司打假」
 # 「中央汇金郑重提醒」）会刷屏挤掉时效新闻，故按事件特征词二次去重
 NEWS_EVENT_GROUPS = [
@@ -471,6 +471,28 @@ def _norm_news_title(t: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def mask_news_title(t: str) -> str:
+    """展示层去敏：抓取层保留真实'国家队'以匹配新闻源关键词（NEWS_EM_KEYWORDS），
+    但对外展示（/api/data 接口、静态站 data.json）将敏感词替换为代号'汪汪队'，
+    避免敏感信息露出。仅作用于展示，不改写 DB。"""
+    if not t:
+        return t
+    return t.replace("国家队", "汪汪队")
+
+
+def mask_news_items(items: list) -> list:
+    """对新闻列表逐条做标题去敏，返回新列表（不改动入参）。"""
+    if not items:
+        return items
+    out = []
+    for it in items:
+        if isinstance(it, dict) and "title" in it:
+            it = dict(it)
+            it["title"] = mask_news_title(it.get("title") or "")
+        out.append(it)
+    return out
+
+
 def _norm_news_time(t) -> str:
     """统一时间格式为 'YYYY-MM-DD HH:MM'（可直接字符串排序）。
 
@@ -523,7 +545,7 @@ def _em_search_url(keyword: str, page: int = 1, page_size: int = 20) -> str:
 
     旧版 ?search_text=...&type=12 已于上游废弃（400 Bad Request），
     现版必须把检索条件放进 param 的 JSON 里，keyword 为检索词。
-    sort=default 为综合排序（相关度优先），比 sort=time 更贴合「国家队」主题。
+    sort=default 为综合排序（相关度优先），比 sort=time 更贴合「汪汪队」主题。
     """
     param = {
         "uid": "",
@@ -554,8 +576,8 @@ def _news_score(title: str) -> int:
     噪音治理：
       - 「保证金」含「证金」子串 → 期货保证金调整通知被误收；
       - 「汇金科技」「浙商汇金」等公司/基金名 → 三季报公告被误收；
-      - 裸 ETF 标题（ETF午评 / 两市成交额 / 央行抛售ETF）→ 非国家队动向；
-      - 「国家队」在中文里也指科技/高校/航天/数据等领域 → 须搭配金融语境。
+      - 裸 ETF 标题（ETF午评 / 两市成交额 / 央行抛售ETF）→ 非汪汪队动向；
+      - 「汪汪队」在中文里也指科技/高校/航天/数据等领域 → 须搭配金融语境。
     """
     if not title:
         return 0
@@ -563,10 +585,10 @@ def _news_score(title: str) -> int:
         return 0
     if any(n in title for n in NEWS_NOISE):
         return 0
-    # 中央汇金/证金公司/汇金公司：唯一指向证券国家队，命中即相关
+    # 中央汇金/证金公司/汇金公司：唯一指向证券汪汪队，命中即相关
     if any(k in title for k in NEWS_STRONG):
         return SCORE_STRONG
-    # 国家队：须搭配金融语境才属本面板
+    # 汪汪队：须搭配金融语境才属本面板
     if NEWS_GUOJIA in title:
         return SCORE_STRONG if any(c in title for c in NEWS_FIN_CTX) else 0
     if any(k in title for k in NEWS_WEAK_SUBJECT):
@@ -613,13 +635,13 @@ def _finalize_news(scored: list) -> list:
 
 
 def fetch_news() -> list:
-    """多源尽力抓取与国家队相关的财经新闻，失败则降级返回空。
+    """多源尽力抓取与汪汪队相关的财经新闻，失败则降级返回空。
 
     每个源独立 try/except：单源故障不影响其它源产出。
     """
     raw = []
     # 主源：东财搜索（keyword 精确，作候选池；入榜仍以标题判定）
-    # 取 2 页：单页仅 20 条，含大量旧文，取 2 页可覆盖到「ETF数据专题-国家队今天买了啥」这类高价值条目
+    # 取 2 页：单页仅 20 条，含大量旧文，取 2 页可覆盖到「ETF数据专题-汪汪队今天买了啥」这类高价值条目
     for kw in NEWS_EM_KEYWORDS:
         for pg in (1, 2):
             raw.append(("东方财富", _em_search_url(kw, page=pg), "https://search.eastmoney.com/"))
@@ -894,7 +916,7 @@ def fetch_and_save(force: bool = False) -> dict:
     today = datetime.date.today().strftime("%Y-%m-%d")
     trading = is_trading_day()
 
-    # 新闻：无论是否交易日都抓（周末也有国家队/汇金相关新闻），先入库
+    # 新闻：无论是否交易日都抓（周末也有汪汪队/汇金相关新闻），先入库
     news = fetch_news()
     for d, items in split_news_by_date(news).items():
         db.merge_news(d, items)

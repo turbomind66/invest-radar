@@ -1,13 +1,13 @@
-"""combo_app.py — 单端口托管「国家队 + 海外QDII」两个面板（WorkBuddy 单应用双页）。
+"""combo_app.py — 单端口托管「汪汪队 + 海外QDII」两个面板（WorkBuddy 单应用双页）。
 
 为什么需要它：
 - 发布平台对一个项目只给一个在线应用 / 一个对外端口。
-- 国家队(national_team/app.py) 与 QDII(qdii/qdii_app.py) 都 import 顶层同名模块 `db`，
+- 汪汪队(national_team/app.py) 与 QDII(qdii/qdii_app.py) 都 import 顶层同名模块 `db`，
   同进程加载会冲突（sys.modules['db'] 只能存一个）。
 - 故用子进程隔离两个子系统，主进程监听 $PORT，按路径前缀反向代理：
     /qdii 与 /qdii/* 与 /api/qdii/*  -> QDII 子进程（内部端口，已设 BASE_PATH=/qdii）
-    其余                               -> 国家队子进程（内部端口）
-两边用 PEER_URL 互跳：国家队跳 /qdii、QDII 跳 /。
+    其余                               -> 汪汪队子进程（内部端口）
+两边用 PEER_URL 互跳：汪汪队跳 /qdii、QDII 跳 /。
 
 仅依赖 Python 标准库。
 
@@ -19,7 +19,7 @@
   避免「内部端口」跟父进程一起在宿主 LAN 上开（Windows 每次弹防火墙、
   也绕过 combo_app 的 /qdii 路径路由）。
 - 清理从父进程继承下来的 BASE_PATH：QDII 子进程需要 BASE_PATH=/qdii，
-  但国家队子进程如果继承了同一个变量会把 /api/data 剥成 /data 而 404。
+  但汪汪队子进程如果继承了同一个变量会把 /api/data 剥成 /data 而 404。
 - free_port() 竞态保护：NT_PORT == QDII_PORT 时重分配；两个端口都 try-bind
   确认可用再交给子进程。
 - _pick_backend 的 `/qdii` 前缀严格匹配：`startswith("/qdii")` 会连带命中

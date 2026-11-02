@@ -1,7 +1,7 @@
 #!/bin/sh
 # 容器入口：按 APP_ROLE 决定跑哪个进程
 #   gateway -> 单端口入口（38881），把 / 与 /qdii/ 分发到两个看板
-#   web     -> 只跑国家队看板服务（app.py）
+#   web     -> 只跑汪汪队看板服务（app.py）
 #   cron    -> 只跑定时调度（scheduler.py）
 #   all     -> 全部跑在一个容器里，适合单容器一键部署（docker run）
 set -eu

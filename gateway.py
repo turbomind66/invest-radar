@@ -2,7 +2,7 @@
 
 两个面板是同一个镜像里跑起来的两个独立进程，各占一个内部端口；对外只需要一个端口：
 
-    http://<host>:38881/         ->  web:5000        国家队 A 股看板
+    http://<host>:38881/         ->  web:5000        汪汪队 A 股看板
     http://<host>:38881/nt/...   ->  web:5000        同上（前缀剥掉），让页头选项卡地址对称
     http://<host>:38881/qdii/... ->  qdii-web:5001   QDII 面板（前缀剥掉）
 
@@ -14,10 +14,10 @@
 
 环境变量：
     GATEWAY_PORT   容器内监听端口，默认 38881
-    NT_UPSTREAM    国家队上游，默认 http://web:5000（单容器模式由 entrypoint 改成 127.0.0.1）
+    NT_UPSTREAM    汪汪队上游，默认 http://web:5000（单容器模式由 entrypoint 改成 127.0.0.1）
     QDII_UPSTREAM  QDII 上游，默认 http://qdii-web:5001
     QDII_PREFIX    QDII 路径前缀，默认 /qdii
-    NT_PREFIX      国家队路径前缀（别名），默认 /nt
+    NT_PREFIX      汪汪队路径前缀（别名），默认 /nt
     GATEWAY_TIMEOUT    上游读超时秒数，默认 180（覆盖 /api/refresh 最坏耗时）
     GATEWAY_SOCK_TIMEOUT  单 socket 空闲超时秒数，默认 60（防 keep-alive 泄漏线程）
 

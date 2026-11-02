@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 抓取并导出静态数据（国家队）
+      - name: 抓取并导出静态数据（汪汪队）
         run: python national_team/staticsite.py
 
       # QDII 静态站导出前必须先抓数据。qdii.db 被 .gitignore 排除，
@@ -69,5 +69,5 @@ jobs:
             echo "远端已包含相同快照，跳过提交"
             exit 0
           fi
-          git commit -m "data: 更新 ${BJDATE} 国家队 + QDII 快照"
+          git commit -m "data: 更新 ${BJDATE} 汪汪队 + QDII 快照"
           git push origin "HEAD:${GITHUB_REF_NAME}"

@@ -13,7 +13,7 @@
   body{margin:0;font-family:-apple-system,Segoe UI,Roboto,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--t1);}
   header{padding:16px 22px;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;}
   header h1{font-size:18px;margin:0;font-weight:600;}
-  /* 面板选项卡：同一域名下「国家队 / QDII」两个面板互切（深色页头配色）。
+  /* 面板选项卡：同一域名下「汪旺队 / QDII」两个面板互切（深色页头配色）。
      当前面板用 span 承载（不可点），对端面板用 a#peerTab；对端不可达时整条隐藏。 */
   .htitle{display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
   .tabbar{display:none;gap:4px;background:rgba(255,255,255,.10);border-radius:10px;padding:3px;}
@@ -91,7 +91,7 @@
   .warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:8px 10px;border-radius:8px;font-size:12px;}
 </style>
 <script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-11-03 06:08:03", "worker_url": "", "peer_url": "../"};</script>
-<script>/* common/static_refresh.js — 静态托管站共享刷新逻辑（国家队 / QDII 复用）
+<script>/* common/static_refresh.js — 静态托管站共享刷新逻辑（汪旺队 / QDII 复用）
  *
  * 由 national_team/app.py 与 qdii 的 render_index / staticsite 在「构建或响应时」
  * 内联注入到页面 <head>，因此服务端模式与 GitHub Pages / WorkBuddy 静态模式都能用。
@@ -169,7 +169,7 @@
   <div class="htitle">
     <h1>海外 QDII 定投决策面板</h1>
     <nav class="tabbar" id="tabbar">
-      <a class="tab" id="peerTab" href="#" title="同一站点的国家队 A股看板">🛡️ 国家队 A股</a>
+      <a class="tab" id="peerTab" href="#" title="同一站点的汪旺队 A股看板">🛡️ 汪旺队 A股</a>
       <span class="tab active">📈 全球 QDII 定投</span>
     </nav>
   </div>
@@ -279,7 +279,7 @@
 function fmtPct(v){ if(v===null||v===undefined||isNaN(v)) return '—'; return (v>=0?'+':'')+v.toFixed(2)+'%'; }
 // ⚠️ 2026-10-30 修：本模板此前没有 esc()，而信号表渲染调用了它 ——
 // 浏览器一跑到第一个数据行就抛 ReferenceError，分组头画得出、数据行全不渲染，
-// 表现为「全球市场信号表格只剩分组标题、下面全空」。补上定义（与国家队模板同款）。
+// 表现为「全球市场信号表格只剩分组标题、下面全空」。补上定义（与汪旺队模板同款）。
 function esc(s){ return String(s===null||s===undefined?'':s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
 function clsPct(v){ if(v===null||v===undefined||isNaN(v)) return ''; return v>=0?'up':'down'; }
 function el(id){ return document.getElementById(id); }
@@ -307,9 +307,9 @@ async function api(path){
   return await r.json();
 }
 
-// 面板互跳：QDII ↔ 国家队。
+// 面板互跳：QDII ↔ 汪旺队。
 //   ① 静态站(GitHub Pages / file:// 本地预览)：两页都已导出，用 staticsite 注入的
-//      相对地址 peer_url 互跳（QDII→../、国家队→qdii/）。未注入则保持隐藏，不给死链。
+//      相对地址 peer_url 互跳（QDII→../、汪旺队→qdii/）。未注入则保持隐藏，不给死链。
 //   ② 服务端模式：PEER_URL 显式指定（域名反代：完整 URL 或同域相对路径 /nt/）；
 //   ③ 服务端未配 PEER_URL 则回退「本端口 -1」（只在本地分别起 5001/5000 时有效；
 //      容器部署走 gateway 单端口，请务必设 PEER_URL）。

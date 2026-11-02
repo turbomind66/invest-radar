@@ -1,4 +1,4 @@
-# invest-radar —— 容器镜像（国家队 A 股资金流 + QDII 海外基金定投 + 未来股票模块共用）
+# invest-radar —— 容器镜像（汪汪队 A 股资金流 + QDII 海外基金定投 + 未来股票模块共用）
 # 特点：零第三方 Python 依赖，镜像很小；适合 2C2G 这类小规格 VPS 与其它服务共存。
 FROM python:3.12-slim-bookworm
 

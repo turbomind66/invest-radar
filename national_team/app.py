@@ -1,5 +1,5 @@
-"""国家队买卖A股日报 —— 零依赖 Web 应用（Python 标准库）。
-- 每日收盘后(16:05)自动抓取宽基ETF主力净流入，作为国家队动向代理
+"""汪汪队买卖A股日报 —— 零依赖 Web 应用（Python 标准库）。
+- 每日收盘后(16:05)自动抓取宽基ETF主力净流入，作为汪汪队动向代理
 - 提供仪表盘展示：当日净买入合计、历史趋势、各ETF明细、相关新闻
 """
 import http.server
@@ -35,7 +35,7 @@ INDEX = os.path.join(BASE, "templates", "index.html")
 PORT = int(os.environ.get("PORT") or "5000")
 # 版本指纹：与 qdii 侧的 sig/codes 同用途，部署后 /api/status 里能一眼辨新旧代码。
 # 手动同步更新，或用 git rev-parse 生成一次写死。
-APP_VERSION = "v2.8.4-nt"
+APP_VERSION = "v2.8.5-nt"
 # 站点路径前缀：域名反代把本面板挂在子路径（如 /nt）时，若 Nginx/NPM 保留前缀不剥，
 # 就在这里声明（BASE_PATH=/nt），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
 BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")
@@ -123,13 +123,13 @@ def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
         e["shares"] = s.get("shares")
         e["chg_shares"] = s.get("chg_shares")
         e["net_sub"] = s.get("net_sub")
-    news = db.get_news_by_date(sel_date, path) if sel_date else []
+    news = fetcher.mask_news_items(db.get_news_by_date(sel_date, path)) if sel_date else []
     # 兜底新闻：所选日期没有新闻时取最近有新闻的那天（避免面板整块空白）
     news_fallback = {"date": None, "items": []}
     if not news:
         fd = db.get_latest_news_date(path)
         if fd:
-            news_fallback = {"date": fd, "items": db.get_news_by_date(fd, path)}
+            news_fallback = {"date": fd, "items": fetcher.mask_news_items(db.get_news_by_date(fd, path))}
     # 历史序列：未筛选用全量汇总（趋势图展示完整区间，日期=二级∪一级并集）；
     # 筛选时用窗口内聚合（与静态端浏览器自算同口径）
     if cats or codes:
@@ -510,7 +510,7 @@ def main():
     # 工作线程随主进程退出，避免 SIGTERM 时被某个最长 150s 的 /api/refresh 卡住
     socketserver.ThreadingTCPServer.daemon_threads = True
     with socketserver.ThreadingTCPServer((bind, PORT), Handler) as httpd:
-        print("国家队A股日报 running on http://%s:%d" % (bind, PORT))
+        print("汪汪队A股日报 running on http://%s:%d" % (bind, PORT))
         httpd.serve_forever()
 
 

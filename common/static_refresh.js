@@ -1,4 +1,4 @@
-/* common/static_refresh.js — 静态托管站共享刷新逻辑（国家队 / QDII 复用）
+/* common/static_refresh.js — 静态托管站共享刷新逻辑（汪汪队 / QDII 复用）
  *
  * 由 national_team/app.py 与 qdii 的 render_index / staticsite 在「构建或响应时」
  * 内联注入到页面 <head>，因此服务端模式与 GitHub Pages / WorkBuddy 静态模式都能用。

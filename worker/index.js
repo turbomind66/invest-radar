@@ -3,7 +3,7 @@
 // 部署：Cloudflare Workers 新建服务，将本文件设为入口，设置环境变量 GH_TOKEN
 //      （仅服务端使用，前端永不接触，避免泄露）。
 // 作用：
-//   GET  /today?module=nt    服务端拉取国家队当天实时价+资金流（绕开浏览器 CORS/编码坑）
+//   GET  /today?module=nt    服务端拉取汪汪队当天实时价+资金流（绕开浏览器 CORS/编码坑）
 //   GET  /today?module=qdii 返回最新已发布的 QDII 快照（QDII 实时源重，阶段一用最新提交近似）
 //   POST /refresh            持有 GH_TOKEN 触发 daily.yml 工作流（点“全量更新”时调用）
 //
@@ -46,7 +46,7 @@ function json(o, headers, status = 200) {
 
 const SITE = "https://turbomind66.github.io/invest-radar";
 
-// ---------- 国家队：服务端实时抓取 ----------
+// ---------- 汪汪队：服务端实时抓取 ----------
 async function ntToday() {
   const meta = await (await fetch(SITE + "/data.json")).json();
   const funds = (meta.funds || []).map((f) => f.code);

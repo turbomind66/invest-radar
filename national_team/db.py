@@ -1,4 +1,4 @@
-"""SQLite 存储：国家队宽基ETF每日净买入快照 + 相关新闻。"""
+"""SQLite 存储：汪汪队宽基ETF每日净买入快照 + 相关新闻。"""
 import sqlite3
 import os
 import threading

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# invest-radar（国家队看板 + QDII 决策面板） —— Debian / Ubuntu VPS 一键部署脚本
+# invest-radar（汪汪队看板 + QDII 决策面板） —— Debian / Ubuntu VPS 一键部署脚本
 #
 # 用法：
 #   ./deploy.sh                    # 一键：拉取最新代码 + Docker Compose 部署（默认，推荐）
@@ -309,7 +309,7 @@ IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo ""
 if [ "${READY}" = "1" ]; then
     info "部署完成 ✅"
-    info "  国家队看板：http://${IP}:${GATEWAY_HOST_PORT}"
+    info "  汪汪队看板：http://${IP}:${GATEWAY_HOST_PORT}"
     info "  QDII 面板 ：http://${IP}:${GATEWAY_HOST_PORT}/qdii/"
 else
     warn "服务已启动但 90 秒内未通过自检（首次启动会先抓取数据，可能较慢）。"
