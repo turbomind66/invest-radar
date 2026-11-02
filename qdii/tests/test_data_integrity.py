@@ -47,6 +47,7 @@ class VixTencentFallbackShapeTest(unittest.TestCase):
 
         old = {
             "fetch_cnbc_ust10y": fs.fetch_cnbc_ust10y,
+            "fetch_treasury_ust10y": getattr(fs, "fetch_treasury_ust10y", None),
             "fetch_cboe_vix": fs.fetch_cboe_vix,
             "fetch_sina_us_index": fs.fetch_sina_us_index,
             "fetch_sina_futures": fs.fetch_sina_futures,
@@ -56,6 +57,8 @@ class VixTencentFallbackShapeTest(unittest.TestCase):
             "fetch_sina_a_etf": getattr(fs, "fetch_sina_a_etf", None),
         }
         fs.fetch_cnbc_ust10y = _boom
+        if "fetch_treasury_ust10y" in old and old["fetch_treasury_ust10y"] is not None:
+            fs.fetch_treasury_ust10y = _boom
         fs.fetch_cboe_vix = _boom
         fs.fetch_sina_us_index = _boom
         fs.fetch_sina_futures = _boom

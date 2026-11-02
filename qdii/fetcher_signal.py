@@ -248,6 +248,104 @@ def fetch_cnbc_ust10y():
     return last, bp, chg_pct, ("美东 " + as_of if as_of else "")
 
 
+# ---------------------------------------------------------------------------
+# 美债10Y 兜底源：美国财政部日频收益率曲线
+# ---------------------------------------------------------------------------
+# 背景（2026-11-02 修复）：GitHub Actions 的 ubuntu-latest 跑 `qdii_scheduler
+# --once` 时 CNBC 实时源取不到（金融数据站对数据中心 IP 段限流/封锁），导致
+# UST10Y 行被 `except` 静默丢弃，GitHub Pages 的「全球市场信号」整行消失，而
+# WorkBuddy 应用 / 本地（CNBC 可达）却正常。财政部 .gov 站点不被封锁、亦无需
+# API key，作为 T+1 权威兜底，保证 GitHub Pages 也能显示美债10Y。
+TREASURY_CSV_URL = (
+    "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
+    "daily-treasury-rates.csv/{year}/all?type=daily_treasury_yield_curve&_format=csv"
+)
+
+
+def _parse_treasury_10y(txt):
+    """从财政部 CSV 抽取「10 Yr」列最近若干交易日收益率。
+
+    返回 [(日期YYYY-MM-DD, 收益率%), ...]（升序，跳过 N/A）。
+    CSV 表头形如 Date,"1 Mo",...,"10 Yr",...，可能带前置标题行，故先定位
+    含 "10 Yr" 的表头行再解析。
+    """
+    import csv
+    import io
+    lines = (txt or "").splitlines()
+    hidx = None
+    for i, line in enumerate(lines):
+        if line.strip().startswith("Date") or "10 Yr" in line:
+            hidx = i
+            break
+    if hidx is None:
+        raise ValueError("Treasury CSV 无表头")
+    rows = list(csv.reader(lines[hidx:]))
+    if not rows:
+        raise ValueError("Treasury CSV 空")
+    header = [h.strip().strip('"') for h in rows[0]]
+    try:
+        col = header.index("10 Yr")
+    except ValueError:
+        col = next((i for i, h in enumerate(header) if "10" in h and "Yr" in h), None)
+    if col is None:
+        raise ValueError("Treasury CSV 无 10 Yr 列")
+    out = []
+    for r in rows[1:]:
+        if len(r) <= col:
+            continue
+        d, v = r[0].strip(), r[col].strip()
+        if not v or v.upper() == "N/A":
+            continue
+        try:
+            mm, dd, yyyy = (int(x) for x in d.split("/"))
+            iso = "%04d-%02d-%02d" % (yyyy, mm, dd)
+            out.append((iso, float(v)))
+        except (ValueError, AttributeError):
+            continue
+    return out
+
+
+def fetch_treasury_ust10y():
+    """美国财政部日频 10Y 收益率（**T+1 兜底**，CNBC 实时不可达时启用）。
+
+    返回 (收益率%, 变动bp, 相对变动%, 时间描述)。bp 取相邻两个交易日收益率差，
+    足以支撑「单日跳升 >30bp 触发防御」判断。
+    """
+    year = int(bj_today()[:4])
+    last_err = None
+    for y in (year, year - 1):
+        try:
+            url = TREASURY_CSV_URL.format(year=y)
+            txt = fetch_text(url, timeout=30, retries=2)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            print("[signal] treasury csv fetch failed (year=%d):" % y, e)
+            continue
+        try:
+            vals = _parse_treasury_10y(txt)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            print("[signal] treasury parse failed (year=%d):" % y, e)
+            continue
+        if len(vals) >= 2:
+            vals = sorted(vals, key=lambda x: x[0])  # 按日期升序，末位为最新
+            (d0, v0), (d1, v1) = vals[-2], vals[-1]
+            bp = round((v1 - v0) * 100, 1)
+            chg_pct = round((v1 / v0 - 1) * 100, 4) if v0 else None
+            return v1, bp, chg_pct, ("美财政部 T+1 (%s)" % d1)
+        last_err = ValueError("Treasury 10Y 数据不足（仅 %d 行）" % len(vals))
+    raise ValueError("Treasury 10Y 解析失败: %s" % last_err)
+
+
+def fetch_ust10y():
+    """美债10Y 统一入口：CNBC 实时优先，失败回退财政部 T+1。"""
+    try:
+        return fetch_cnbc_ust10y()
+    except Exception as e:  # noqa: BLE001
+        print("[signal] cnbc ust10y failed, fallback treasury:", e)
+        return fetch_treasury_ust10y()
+
+
 def fetch_sina_global_index():
     """新浪全球指数（znb_ 前缀）：欧洲三大指数 + 日经225 —— **主源**。
 
@@ -515,13 +613,14 @@ def fetch_us_signal(date: str = None, path: str = C.QDII_DB_PATH):
                 rows.append((date, symbol, name, price, chg, is_rt, now, now, None, chg_val))
     except Exception as e:  # noqa: BLE001
         print("[signal] tencent failed:", e)
-    # 美债10年期收益率（实时，CNBC）
+    # 美债10年期收益率：CNBC 实时为主源；CNBC 不可达（如 GitHub Actions 数据中心
+    # IP 被金融数据站封锁）时回退美国财政部日频曲线（T+1，权威、.gov 不被封锁）。
     try:
-        ust, ust_bp, ust_pct, ust_ts = fetch_cnbc_ust10y()
+        ust, ust_bp, ust_pct, ust_ts = fetch_ust10y()
         rows.append((date, "UST10Y", "美债10Y收益率", ust, ust_pct, 1,
                      ust_ts or now, now, ust_bp, ust_bp))
     except Exception as e:  # noqa: BLE001
-        print("[signal] cnbc ust10y failed:", e)
+        print("[signal] ust10y failed (cnbc + treasury):", e)
     # VIX（避险开关 + 面板展示）：CBOE 官方 CSV 优先，失败再退回腾讯（可能停在旧值）。
     # 美债10Y 是「原因」（贴现率上行压制估值），VIX 是「结果」（恐慌程度已到多少），
     # 两者维度不同、并列参与避险判断（见 strategy.risk_off_assess），缺一个都不完整。
