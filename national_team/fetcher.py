@@ -81,6 +81,16 @@ NT_FUND_FALLBACK_URL = os.environ.get(
     NT_NEWS_FALLBACK_URL,
 )
 
+# 逐笔大单兜底源（2026-11-02 新增）：与新闻/资金流兜底同源（同一份 data.json）。
+# 当本机 archive_tick 抓空（VPS/云端 IP 被东财 push2 限流、或盘后滚动窗口冻结）
+# 时，从公开快照 tick_rows[date] 借同日的逐笔大单，使 GitHub Pages / VPS / WorkBuddy
+# 三端逐笔大单一致。仅当本地该日期完全无大单才借，绝不覆盖真实抓取值；
+# 网络异常静默降级。默认与新闻兜底同源；可用 NT_TICK_FALLBACK_URL 单独覆盖。
+NT_TICK_FALLBACK_URL = os.environ.get(
+    "NT_TICK_FALLBACK_URL",
+    NT_NEWS_FALLBACK_URL,
+)
+
 # 相关性分层：score 越大越靠前（同分按时间倒序）
 SCORE_STRONG = 2    # 标题含主体词
 SCORE_WEAK = 1      # 标题含弱词 + 语境
@@ -711,8 +721,28 @@ def _fetch_remote_news() -> list:
 
 
 # 公开快照 data.json 单次运行内缓存：121 天回补若每天各拉一次 1MB 快照太浪费，
-# 同一 url 只解析一次，复用 days 全文。
+# 同一 url 只解析一次，复用 days 全文（资金流/新闻/逐笔三类兜底共用）。
 _FUND_FLOW_CACHE = {}
+
+
+def _get_snapshot(url: str) -> dict:
+    """拉取并缓存公开快照 data.json 全文（单次运行内复用，避免多日期重复下载）。
+
+    资金流 / 新闻 / 逐笔三类兜底共用同一份 data.json，走同一缓存。
+    任意网络异常静默返回 {}，绝不阻断主流程。
+    """
+    if not url:
+        return {}
+    d = _FUND_FLOW_CACHE.get(url)
+    if d is None:
+        try:
+            txt = _get(url)
+            d = json.loads(txt)
+            _FUND_FLOW_CACHE[url] = d
+        except Exception as e:
+            print("[fallback] 拉取公开快照失败: %s" % type(e).__name__)
+            return {}
+    return d
 
 
 def _fetch_remote_fund_flow(date: str) -> dict:
@@ -723,18 +753,7 @@ def _fetch_remote_fund_flow(date: str) -> dict:
     mid_net,small_net}}（单位元，字段可能为 None）。任意网络异常静默返回 {}，
     绝不阻断主流程。
     """
-    url = NT_FUND_FALLBACK_URL
-    if not url:
-        return {}
-    d = _FUND_FLOW_CACHE.get(url)
-    if d is None:
-        try:
-            txt = _get(url)
-            d = json.loads(txt)
-            _FUND_FLOW_CACHE[url] = d
-        except Exception as e:
-            print("[fund-fallback] 拉取公开快照失败: %s" % type(e).__name__)
-            return {}
+    d = _get_snapshot(NT_FUND_FALLBACK_URL)
     out = {}
     for row in (d.get("days") or {}).get(date) or []:
         code = row.get("code")
@@ -748,6 +767,45 @@ def _fetch_remote_fund_flow(date: str) -> dict:
             "small_net": row.get("small_net"),
         }
     return out
+
+
+def _fetch_remote_tick_rows(date: str) -> list:
+    """从公开快照（默认 GitHub Pages data.json）取 tick_rows[date] 的紧凑大单行。
+
+    与 _fetch_remote_fund_flow 同源（同一份 data.json，走同一缓存）。
+    返回 [[code,ttime,price,volume,direction,amount], ...]；snapshot 该日期不存在
+    → 返回 []。任意网络异常已由 _get_snapshot 静默吞掉。
+    """
+    d = _get_snapshot(NT_TICK_FALLBACK_URL)
+    rows = (d.get("tick_rows") or {}).get(date) or []
+    # 只保留形如 6 元组的紧凑行，过滤脏数据，避免把坏行写进库
+    return [r for r in rows if isinstance(r, (list, tuple)) and len(r) >= 6]
+
+
+def _apply_tick_fallback(date: str, path: str = db.DB_PATH) -> int:
+    """本地某日无逐笔大单时，从公开快照借同日的 tick_rows 补齐并落库。
+
+    原则（与资金流兜底同源）：
+      - 仅补缺：本地该日期**已经有**大单（哪怕部分）则直接跳过，绝不覆盖/混入
+        真实抓取值（避免用陈旧/同源快照盖掉当天真实滚动窗口）；
+      - 仅同日期：只借 tick_rows[date]，绝不借别的日期；
+      - 网络异常静默降级，返回 0，绝不阻断主流程。
+    返回实际借入并落库的笔数；借到时把 meta tick_fallback 置 "1"（供 /api/status 可见）。
+    """
+    # 延迟导入，避免 fetcher ↔ intraday 在模块加载期形成循环依赖
+    from intraday import restore_tick_rows
+    # 本地该日期已有一行及以上大单 → 不借（保护真实抓取值）
+    if db.get_tick_by_date(date, path=path):
+        return 0
+    rows = _fetch_remote_tick_rows(date)
+    if not rows:
+        return 0
+    n = restore_tick_rows(date, rows, path=path)
+    if n:
+        # 一律用关键字传 path：测试里的 db shim 会 setdefault("path")，
+        # 位置传参会与之冲突成 "multiple values for argument 'path'"。
+        db.set_meta("tick_fallback", "1", path=path)
+    return n
 
 
 def _apply_fund_flow_fallback(date: str, etfs: list) -> int:

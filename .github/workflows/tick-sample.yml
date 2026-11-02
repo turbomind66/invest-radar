@@ -47,4 +47,8 @@ jobs:
           fi
           BJTIME=$(TZ=Asia/Shanghai date +%Y-%m-%d\ %H:%M)
           git commit -m "data: 盘中逐笔大单采样 ${BJTIME}"
-          git push
+          # 防 non-fast-forward（同 daily.yml）：先 fetch + rebase -X theirs，
+          # docs/data.json 的 tick_rows 是本工作流重新采样的累积结果，冲突取 ours。
+          git fetch origin "${GITHUB_REF_NAME}"
+          git rebase -X theirs "origin/${GITHUB_REF_NAME}" || git rebase --abort
+          git push origin "HEAD:${GITHUB_REF_NAME}"

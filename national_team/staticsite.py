@@ -504,6 +504,18 @@ def main():
                       % (ds, tn, tf, len(ev or [])))
             except Exception as e:
                 print("[tick] 逐笔采样失败：%s" % e)
+                tn = 0
+            # 逐笔兜底（2026-11-02）：本地抓不到大单（机房/云端 IP 被东财 push2
+            # 限流、或盘后滚动窗口冻结）→ 该日期库里 0 行 → 从公开快照借同日的
+            # tick_rows，让 VPS / WorkBuddy 也能显示 GitHub 已验证的大单。仅本地
+            # 为空才借，绝不覆盖真实抓取值；网络异常静默降级。
+            if tn == 0:
+                try:
+                    fb = fetcher._apply_tick_fallback(ds)
+                    if fb:
+                        print("[tick] 兜底：从公开快照借入 %d 行（%s）" % (fb, ds))
+                except Exception as e:
+                    print("[tick] 逐笔兜底失败（不影响采样）：%s" % e)
         res = export(out_dir=args.out)
         print("[export] %s" % json.dumps(res, ensure_ascii=False))
         return
@@ -601,6 +613,16 @@ def main():
                 print("[tick] 逐笔大单归档 %d 行 / 覆盖 %d 只基金（盘后仅尾盘快照，"
                       "盘中采样可累积全天；历史日只重算 detect，不重抓滚动窗口）"
                       % (tk_total, tk_funds))
+            # 逐笔兜底（2026-11-02）：full 同步若本地抓不到今日大单（IP 被限流/
+            # 盘后冻结）→ 该日期库里 0 行 → 从公开快照借同日的 tick_rows，
+            # 保证 VPS / WorkBuddy 仍可见大单。仅本地为空且当日为交易日才借。
+            if tk_total == 0 and fetcher.is_trading_day(today_iso):
+                try:
+                    fb = fetcher._apply_tick_fallback(today_iso)
+                    if fb:
+                        print("[tick] 兜底：从公开快照借入 %d 行（%s）" % (fb, today_iso))
+                except Exception as e:
+                    print("[tick] 逐笔兜底失败（不影响同步）：%s" % e)
             if tick_notes:
                 print("[tick] ⚠ 逐笔大单处理失败：%s" % ", ".join(tick_notes))
             # 缺口检测：某天没抓到且已滑出上游窗口 → 永久缺失，明确告知

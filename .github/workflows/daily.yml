@@ -56,9 +56,10 @@ jobs:
           fi
           BJDATE=$(TZ=Asia/Shanghai date +%Y-%m-%d)
           git commit -m "data: 更新 ${BJDATE} 国家队 + QDII 快照"
-          # 2026-10-30 修：schedule 触发时 actions/checkout@v4 会把 HEAD 置成
-          # detached（见 https://github.com/actions/checkout#usage），裸 `git push`
-          # 因为没有 refspec 直接失败。目前本 workflow 靠 workflow_dispatch 走
-          # 具名分支（能推），但注释掉的 schedule 一旦被取消启用就会立刻踩到 ——
-          # 显式 push HEAD:${GITHUB_REF_NAME}，两种触发方式都能安全推回。
+          # 防 non-fast-forward（2026-11-02）：checkout 之后远端 main 可能又被推进
+          # （本机发版/外部推送/另一次运行），浅克隆 + 直接 push 必非快进被拒。
+          # 先 fetch 最新并变基到远端：docs/ 全是自动生成的快照，冲突一律取 ours
+          # （本次重新生成的内容比远端快照更新鲜）；README/代码等其它文件不受影响。
+          git fetch origin "${GITHUB_REF_NAME}"
+          git rebase -X theirs "origin/${GITHUB_REF_NAME}" || git rebase --abort
           git push origin "HEAD:${GITHUB_REF_NAME}"

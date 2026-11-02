@@ -242,14 +242,25 @@ def _archive_tick(day: str):
     if not fetcher.is_trading_day(day):
         _log("非交易日（%s），跳过逐笔归档" % day)
         return 0
+    tn = 0
     try:
         tn, tf = intraday.archive_tick(day)
         ev = intraday.detect_tick(day)
         _log("逐笔归档：%d 行 / %d 只；集中事件 %d 个" % (tn, tf, len(ev or [])))
-        return tn
     except Exception as e:  # noqa: BLE001
         _log_exc("逐笔归档", e)
-        return 0
+    # 兜底（2026-11-02）：本地抓不到大单（云端/机房 IP 被东财 push2 限流、或盘后
+    # 滚动窗口冻结）→ 该日期库里 0 行 → 从公开快照（GitHub Pages data.json）借同日的
+    # tick_rows，让 WorkBuddy 也能显示 GitHub 已验证的大单。仅本地为空才借，绝不
+    # 覆盖真实抓取值；网络异常静默降级。
+    if tn == 0:
+        try:
+            fb = fetcher._apply_tick_fallback(day)
+            if fb:
+                _log("逐笔兜底：从公开快照借入 %d 行（%s）" % (fb, day))
+        except Exception as e:  # noqa: BLE001
+            _log_exc("逐笔兜底", e)
+    return tn
 
 
 def bootstrap():
