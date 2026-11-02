@@ -55,11 +55,19 @@ jobs:
             exit 0
           fi
           BJDATE=$(TZ=Asia/Shanghai date +%Y-%m-%d)
-          git commit -m "data: 更新 ${BJDATE} 国家队 + QDII 快照"
-          # 防 non-fast-forward（2026-11-02）：checkout 之后远端 main 可能又被推进
-          # （本机发版/外部推送/另一次运行），浅克隆 + 直接 push 必非快进被拒。
-          # 先 fetch 最新并变基到远端：docs/ 全是自动生成的快照，冲突一律取 ours
-          # （本次重新生成的内容比远端快照更新鲜）；README/代码等其它文件不受影响。
+          # 防 non-fast-forward（2026-11-02）：checkout 是浅克隆（depth=1），若远端
+          # main 在「checkout 之后、push 之前」又被推进（本机发版推送 / 另一次运行），
+          # 直接 push 必成非快进被拒 —— 日志形如 `! [rejected] HEAD -> main (fetch first)`。
+          # 做法：fetch 远端最新 → 把 HEAD 挪到远端（`--mixed` 只重置索引，工作区里刚
+          # 生成好的 docs/ 原样保留）→ 重新只提交 docs → 推。这样 docs/data.json 用的
+          # 永远是本次重新生成的全量快照，且**不依赖 merge-base**（浅克隆下 rebase 可能
+          # 因历史不全失败，故这里不用 rebase）。
           git fetch origin "${GITHUB_REF_NAME}"
-          git rebase -X theirs "origin/${GITHUB_REF_NAME}" || git rebase --abort
+          git reset --mixed "origin/${GITHUB_REF_NAME}"
+          git add docs
+          if git diff --staged --quiet; then
+            echo "远端已包含相同快照，跳过提交"
+            exit 0
+          fi
+          git commit -m "data: 更新 ${BJDATE} 国家队 + QDII 快照"
           git push origin "HEAD:${GITHUB_REF_NAME}"
