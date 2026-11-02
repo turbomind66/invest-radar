@@ -274,12 +274,19 @@ function fmtAge(sec){
   return (sec/86400).toFixed(1)+' 天前';
 }
 function statusHtml(s){
-  const stale = s.data_stale || (s.data_age_sec!=null && s.data_age_sec>1800);
   const asof = (s.data_as_of||'').replace('T',' ');
+  // 静态站（GitHub Pages）里 data_age_sec 是「生成那一刻」的死值，页面放几小时后
+  // 还写「24 秒前」就是骗人。能用 asof 反算就用浏览器当前时间重算。
+  let age = s.data_age_sec;
+  if(asof){
+    const t = Date.parse(asof.replace(' ','T'));
+    if(!isNaN(t)) age = Math.max(0, Math.round((Date.now()-t)/1000));
+  }
+  const stale = s.data_stale || (age!=null && age>1800);
   let html='状态 <b>'+s.status+'</b> · 基金池 <b>'+s.pool_size+'</b> 只';
   if(asof){
-    html+=' · <span style="color:'+(stale?'#fca5a5':'#86efac')+';font-weight:600">数据 '+asof+'（'+fmtAge(s.data_age_sec)+'）</span>';
-    if(stale) html+=' · <span style="color:#fca5a5">已过期，点「立即刷新」</span>';
+    html+=' · <span style="color:'+(stale?'#fca5a5':'#86efac')+';font-weight:600">数据 '+asof+'（'+fmtAge(age)+'）</span>';
+    if(stale) html+=' · <span style="color:#fca5a5">已过期'+(s.data_age_sec!==undefined?'，点「立即刷新」':'')+'</span>';
   }else if(s.now){
     html+=' · 生成于 '+String(s.now).replace('T',' ');
   }else{
