@@ -124,6 +124,73 @@ def import_from_days_file(days_file: str = DAYS_FILE, path: str = db.DB_PATH) ->
     return n
 
 
+def restore_missing_from_days_file(days_file: str = DAYS_FILE, path: str = db.DB_PATH) -> dict:
+    """按日期**增量**恢复历史：只补库里缺的日期，已有日期绝不覆盖。
+
+    ⚠️ 与 import_from_days_file 的区别（后者**语义保持原样不动**，
+    Actions / Docker cron 路径零影响）：
+
+      - import_from_days_file 是「**库非空就整批跳过**」——适用于
+        Actions 干净环境、docker 首次启动（库全空）这两种场景；
+      - 本函数是「**按日期粒度补缺**」——适用于**库里已经有当天数据、
+        但历史全缺**的场景。典型就是 WorkBuddy 单应用形态：用户手动
+        刷新过一次 → 库里有了当天那一行 → 整批跳过 → 90 天历史、90 天份额、
+        91 天新闻、逐笔大单全部补不回来 → 面板表现为「趋势图只有 1 个点、
+        份额列全是 —、新闻整块空白」。
+
+    补缺原则（每条都对应一个已验证的线上症状）：
+      - ETF 明细 / 份额：该日期在库里一行都没有才补（**绝不覆盖**已有的，
+        免得用旧快照盖掉当天真实抓取的值）；
+      - 新闻：一律走 merge_news 按标题去重增量合并（只会新增，不会丢条目）；
+      - 逐笔大单：该日期没有任何行才恢复（restore_tick_rows 主键去重，幂等）。
+
+    ⚠️ data.json 里的 intraday 段是 build_view() 的**视图产物**（5 分钟聚合
+    点），不是 intraday_minute 的原始分钟行，**无法回灌**——分时与护盘/压盘
+    只能靠单应用自己联网抓（见 auto_refresh.py）。
+
+    返回 {"days": n, "shares": n, "news": n, "ticks": n}。
+    """
+    empty = {"days": 0, "shares": 0, "news": 0, "ticks": 0}
+    if not os.path.exists(days_file):
+        return empty
+    try:
+        with open(days_file, encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        return empty
+    have_days = set(db.get_dates(path))
+    have_shares = set(db.get_share_dates(path))
+    have_ticks = set(db.get_tick_dates(path))
+    n = dict(empty)
+    # ETF 明细：库里没有这一天才补（save_etf_daily 会先 DELETE 该日期，
+    # 但既然库里没有该日期，DELETE 不会碰到任何已有数据）
+    for d, rows in (raw.get("days") or {}).items():
+        if d in have_days or not rows:
+            continue
+        db.save_etf_daily(d, rows, path)
+        n["days"] += 1
+    # 一级份额：同样只补库里完全没有的日期
+    for d, rows in (raw.get("shares") or {}).items():
+        if d in have_shares or not rows:
+            continue
+        db.save_share_rows(d, rows, path)
+        n["shares"] += 1
+    # 新闻：一律增量合并（按标题去重），本地已抓到的条目不会被覆盖
+    for d, items in (raw.get("news") or {}).items():
+        if not items:
+            continue
+        n["news"] += db.merge_news(d, items, path)
+    # 方案C 逐笔大单：库里没有该日期才恢复
+    for d, rows in (raw.get("tick_rows") or {}).items():
+        if d in have_ticks or not rows:
+            continue
+        intraday.restore_tick_rows(d, rows, path)
+        n["ticks"] += 1
+    if raw.get("last_fetch"):
+        db.set_meta("last_fetch", raw["last_fetch"], path)
+    return n
+
+
 # ---------------- 补齐缺失交易日 ----------------
 def _recent_trading_days(tgt, n: int, max_lookback: int = 260) -> list:
     """从 tgt 往回数 n 个交易日（跳过周末），返回 YYYY-MM-DD 列表（升序）。"""

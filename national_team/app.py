@@ -35,7 +35,7 @@ INDEX = os.path.join(BASE, "templates", "index.html")
 PORT = int(os.environ.get("PORT") or "5000")
 # 版本指纹：与 qdii 侧的 sig/codes 同用途，部署后 /api/status 里能一眼辨新旧代码。
 # 手动同步更新，或用 git rev-parse 生成一次写死。
-APP_VERSION = "v2.8.1-nt"
+APP_VERSION = "v2.8.2-nt"
 # 站点路径前缀：域名反代把本面板挂在子路径（如 /nt）时，若 Nginx/NPM 保留前缀不剥，
 # 就在这里声明（BASE_PATH=/nt），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
 BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")
@@ -463,6 +463,20 @@ def main():
         t.start()
     else:
         print("NT_AUTO_ENSURE=0：本实例只提供展示，抓取由定时任务容器负责")
+    # 单应用形态（WorkBuddy）：既没有 cron 也没有 Actions 定时跑，
+    # 库里只有「用户手动刷新那一天」的 1 天数据 → 趋势图只有 1 个点、
+    # 份额列全是「—」、分时/逐笔/新闻整块空白。
+    # NT_AUTO_REFRESH=1 时由本进程自己承担「首启补数 + 周期刷新」，
+    # 补齐 90 天历史/份额/新闻/逐笔，并持续累积分时与当日大单。
+    # 默认关闭 → Windows 本地 / Linux 本地 / Linux VPS 三种原部署零影响
+    # （它们各自已有 cron / 定时任务负责抓取）。
+    try:
+        import auto_refresh
+        if auto_refresh.enabled():
+            auto_refresh.start()
+            print("NT_AUTO_REFRESH=1：已启动首启补数 + 周期刷新")
+    except Exception as e:  # noqa: BLE001
+        print("NT_AUTO_REFRESH 启动失败（不影响展示）：%s: %s" % (type(e).__name__, e))
     # 监听地址：默认 0.0.0.0（Docker 容器内网 / 裸机部署对外服务）；
     # combo_app 作为 WorkBuddy 单应用启动子进程时会注入 NT_BIND=127.0.0.1，
     # 让 5000 只在本机回环可达（父进程通过网关对外，内部端口不落到宿主 LAN）。

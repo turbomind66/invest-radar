@@ -1,6 +1,7 @@
 """SQLite 存储：国家队宽基ETF每日净买入快照 + 相关新闻。"""
 import sqlite3
 import os
+import threading
 
 # 数据库路径：默认**仓库根目录**下 data.db。
 # ⚠️ 不要改回「本文件所在目录」：拆分为 national_team/ 三层结构后，历史库仍留在仓库根，
@@ -24,12 +25,35 @@ EXPORT_WINDOW_DAYS = 90
 # 5s 默认 busy timeout 很容易撞出 `database is locked` 直接把连接踢掉。
 _INITIALIZED_PATHS = set()
 
+# ⚠️ 2026-11-02 修：init_db 加锁。
+# 旧实现里 `if path not in _INITIALIZED_PATHS: init_db(path)` 不是原子的——
+# 两个线程首次打开同一个库时会**同时**跑 init_db：CREATE TABLE IF NOT EXISTS
+# 本身幂等，但 _migrate_tick_table 是 RENAME→CREATE→INSERT→DROP 的迁移序列，
+# 两个线程交错执行会出现「表被搬走/被删」的中间态。
+# 现在用一把进程内锁把「首次初始化」串行化。
+_INIT_LOCK = threading.Lock()
+
 # 连接忙等：读端等写端最多 30s（cron 抓 24 页最坏 ~40s 时不至于 500）
 _BUSY_TIMEOUT_MS = int(os.environ.get("NT_SQLITE_BUSY_MS", "30000"))
 
 
 def init_db(path: str = DB_PATH):
-    conn = sqlite3.connect(path)
+    """建表 / 迁移 + **设置 WAL 日志模式**（每个库只做一次，见 _conn 的说明）。"""
+    conn = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_MS / 1000.0)
+    try:
+        # ⚠️ WAL 只在这里设一次，**绝不能**在每次 _conn 里设：
+        #   PRAGMA journal_mode=WAL 需要短暂独占锁把库文件头改成 WAL 标志。
+        #   多线程并发建连接时，这个 PRAGMA 会互相打架；失败的那条连接会
+        #   停留在旧的 rollback 日志模式，而库文件已是 WAL → 之后写入直接报
+        #   「attempt to write a readonly database」（SQLITE_READONLY）。
+        #   单应用形态（WorkBuddy）首启有两条线程同时写库，必然踩中。
+        #   WAL 是持久化在库文件头里的，只要库已是 WAL 模式，
+        #   之后每个新连接都会自动沿用，无需再设。
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.OperationalError:
+        # 只读文件系统 / 老 SQLite：忽略，退回默认日志模式
+        pass
     cur = conn.cursor()
     cur.execute(
         """CREATE TABLE IF NOT EXISTS etf_daily(
@@ -139,11 +163,16 @@ def _conn(path: str = DB_PATH):
       比默认 FULL 快 3-5 倍；对小规格 VPS 尤其重要。
     """
     if path not in _INITIALIZED_PATHS:
-        init_db(path)
-        _INITIALIZED_PATHS.add(path)
+        with _INIT_LOCK:
+            if path not in _INITIALIZED_PATHS:   # 双检：别让第二个线程重复初始化
+                init_db(path)
+                _INITIALIZED_PATHS.add(path)
     conn = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_MS / 1000.0)
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
+        # ⚠️ 这里**不再**设 journal_mode —— 已在 init_db 里设过一次。
+        #   每次建连接都设一次会引发并发竞争（见 init_db 的注释）：
+        #   竞争失败的连接停在旧日志模式，写库时报 SQLITE_READONLY。
+        #   库已是 WAL 模式时，新连接会自动沿用，无需重复设置。
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=%d" % _BUSY_TIMEOUT_MS)
     except sqlite3.OperationalError:
@@ -152,6 +181,64 @@ def _conn(path: str = DB_PATH):
     return conn
 
 
+# ---------------- 写库瞬时错误重试（2026-11-02 加） ----------------
+# 现象：**同进程内**有第二个连接在读写同一个 SQLite 文件时，某一条新开的
+# 连接上的第一条 DML 会偶发报：
+#     sqlite3.OperationalError: attempt to write a readonly database
+# 实测特征（本地复现矩阵）：
+#     1 写 0 读 → 正常；0 写 2 读 → 正常；
+#     1 写 1 读 → 复现；2 写 0 读 → 复现。
+#   与日志模式无关（WAL / DELETE / mmap_size=0 三种配置都会复现），
+#   失败后**立刻**用新连接写又是正常的（文件属性、query_only 均正常）。
+#   → 判定为 SQLite/文件层的**瞬时**状态，而非库损坏或权限问题。
+#
+# 处理：写库函数整体重试（每次重试都会**新开一条连接**）。
+#   退避 50ms → 100ms → 150ms…最多 6 次，累计不到 1s。
+#   只对「瞬时类」错误重试；语法错、约束错等确定性错误立即抛出，
+#   绝不掩盖真实 bug。
+_WRITE_RETRY_MAX = int(os.environ.get("NT_SQLITE_RETRY_MAX", "6"))
+_WRITE_RETRY_SLEEP = 0.05
+_TRANSIENT_SQLITE_ERRORS = (
+    "attempt to write a readonly database",   # SQLITE_READONLY
+    "database is locked",                     # SQLITE_BUSY
+    "database table is locked",               # SQLITE_LOCKED
+    "database schema is locked",
+)
+
+
+def _is_transient_sqlite_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(k in msg for k in _TRANSIENT_SQLITE_ERRORS)
+
+
+def retry_write(fn):
+    """写库函数的瞬时错误重试装饰器。
+
+    被装饰的函数每次调用都会自己开连接、写、提交、关连接；
+    因此重试 = 把整个函数再跑一遍，天然拿到一条**新连接**。
+    """
+    import functools
+    import time as _time
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        last = None
+        for attempt in range(max(1, _WRITE_RETRY_MAX)):
+            try:
+                return fn(*args, **kwargs)
+            except sqlite3.OperationalError as e:
+                if not _is_transient_sqlite_error(e):
+                    raise
+                last = e
+                if attempt == max(1, _WRITE_RETRY_MAX) - 1:
+                    break
+                _time.sleep(_WRITE_RETRY_SLEEP * (attempt + 1))
+        raise last
+
+    return wrapper
+
+
+@retry_write
 def save_etf_daily(date: str, rows: list, path: str = DB_PATH):
     conn = _conn(path)
     cur = conn.cursor()
@@ -168,6 +255,7 @@ def save_etf_daily(date: str, rows: list, path: str = DB_PATH):
     conn.close()
 
 
+@retry_write
 def upsert_etf_rows(date: str, rows: list, path: str = DB_PATH) -> int:
     """按行写入（UPSERT），**不删除**该日已有行，且**空值不覆盖旧值**。
 
@@ -203,6 +291,7 @@ def upsert_etf_rows(date: str, rows: list, path: str = DB_PATH) -> int:
     return n
 
 
+@retry_write
 def update_flow_rows(date: str, rows: list, path: str = DB_PATH) -> int:
     """只更新某日的资金流列（主力净 + 四档），不动价格/成交额/其它列。
 
@@ -227,6 +316,7 @@ def update_flow_rows(date: str, rows: list, path: str = DB_PATH) -> int:
 
 # ---------------- 分时（分钟级）归档与护盘/压盘信号 ----------------
 
+@retry_write
 def save_intraday_rows(date: str, rows: list, path: str = DB_PATH):
     """写入某日分钟级量额归档（来自腾讯分时接口）。
 
@@ -273,6 +363,7 @@ def get_intraday_dates(path: str = DB_PATH):
     return [r[0] for r in rows]
 
 
+@retry_write
 def save_intraday_signals(date: str, rows: list, path: str = DB_PATH):
     """写入某日的护盘/压盘信号。kind: support(护盘) / pressure(压盘)。"""
     conn = _conn(path)
@@ -303,6 +394,7 @@ def get_intraday_signals(date: str, cats=None, codes=None, path: str = DB_PATH):
     return [dict(zip(keys, r)) for r in rows]
 
 
+@retry_write
 def save_tick_rows(date: str, rows: list, path: str = DB_PATH):
     """写入某日逐笔大单归档（来自东财 stock/details/get）。
 
@@ -347,6 +439,7 @@ def get_tick_dates(path: str = DB_PATH):
     return [r[0] for r in rows]
 
 
+@retry_write
 def save_news(date: str, rows: list, path: str = DB_PATH):
     """覆盖式保存某日新闻（先删后插）。"""
     conn = _conn(path)
@@ -361,6 +454,7 @@ def save_news(date: str, rows: list, path: str = DB_PATH):
     conn.close()
 
 
+@retry_write
 def merge_news(date: str, rows: list, path: str = DB_PATH) -> int:
     """增量写入某日新闻：按标题去重，只补充库里没有的条目，返回新增条数。
 
@@ -390,6 +484,7 @@ def merge_news(date: str, rows: list, path: str = DB_PATH) -> int:
     return n
 
 
+@retry_write
 def set_meta(key: str, value: str, path: str = DB_PATH):
     conn = _conn(path)
     conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", (key, value))
@@ -472,6 +567,7 @@ def get_etf_by_date(date: str, cats=None, codes=None, path: str = DB_PATH):
 
 # ---------------- ETF 份额（一级市场申赎口径） ----------------
 
+@retry_write
 def save_share_rows(date: str, rows: list, path: str = DB_PATH):
     """写入某日份额快照。rows 每项含 code/name/cat/shares/nav/chg_shares/net_sub。"""
     conn = _conn(path)

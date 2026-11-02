@@ -46,7 +46,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT") or "5000")
 # 内部子进程端口：每次启动动态申请空闲端口，避免与历史部署遗留的孤儿子进程
 # 冲突；spawn 已挪进 main()，import 本模块不再抢端口。
-COMBO_VERSION = "v5-safe-spawn"
+COMBO_VERSION = "v6-seed-restore"
 
 PROC_DIAG = {
     "nt": {"proc": None, "alive": False, "returncode": None,
@@ -360,7 +360,17 @@ def main():
     # 子进程在 httpd 就绪后再 spawn：这样 /__diag 一被访问就能拿到状态，
     # 也不会出现「import 时就起两个服务、单测想 verify 语法就抢端口」的副作用。
     spawn("nt", "national_team/app.py",
-          {"NT_AUTO_ENSURE": "0", "PEER_URL": "/qdii"},
+          # NT_AUTO_ENSURE=0：单应用形态不做「请求时按需抓取」（那是 VPS/本地形态
+          #   的职责，会让每次打开页面都压上游）。
+          # NT_AUTO_REFRESH=1：单应用形态**没有 cron、SQLite 也不随部署走**，
+          #   库里只剩「用户手动刷新那一天」的 1 天数据 → 趋势图只有 1 个点、
+          #   份额列全是「—」、分时/逐笔/新闻整块空白。
+          #   由 NT 子进程自己承担「首启补数（从内置 docs/data.json 按日期增量
+          #   恢复 90 天历史/份额/新闻/逐笔）+ 周期刷新（收盘后全量、盘中 30 分钟
+          #   采样分时与逐笔大单）」，等价于 Actions 17:00 + scheduler 那套。
+          #   默认关闭 → 三种原部署方式（Windows 本地 / Linux 本地 / Linux VPS）
+          #   完全不受牵连。
+          {"NT_AUTO_ENSURE": "0", "NT_AUTO_REFRESH": "1", "PEER_URL": "/qdii"},
           "PORT", nt_port)
     spawn("qdii", "qdii/qdii_app.py",
           # QDII_AUTO_REFRESH：单应用部署没有 cron，靠进程内定时刷新保证
