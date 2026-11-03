@@ -2,12 +2,12 @@
 
 采纳的策略组合（用户确认）：
 - 骨架 = 固定周期 + 信号增强：固定每周投基准额，用信号微调当期额度。
-- 加仓量依据 = 跟跌加仓 + 估值百分位：跌越多/估值越低 → 倍数越高。
+- 加仓量依据 = 跟跌加仓：跌越多 → 倍数越高。
 - 防御开关 = 避险情绪：VIX（绝对水平/单日跳升）+ 美债10Y（单日上行 bp）任一极端
   → 临时减额（×0.5），软阈值只提示不减额。
 
 输入：基金申购状态/限额 + 美股信号(现货昨收/期货实时/美债10Y/VIX)
-      + 估值百分位 + 跟踪误差。
+      + 跟踪误差。
 输出：每只基金「建议投入倍数 + 理由」；大类维度另出「可买情况 + 倍数 + 理由」。
 """
 import os
@@ -98,8 +98,8 @@ def risk_off_status_text(vix=None, ust_bp=None, params=None):
 
 
 def recommend(ctx):
-    """ctx 含: code, sub_status, limit_amount, spx_chg, ndx_chg, vix, vix_chg, ust_bp,
-    valuation_pct。返回 {'multiple': float, 'reasons': [str]}。
+    """ctx 含: code, sub_status, limit_amount, spx_chg, ndx_chg, vix, vix_chg, ust_bp。
+    返回 {'multiple': float, 'reasons': [str]}。
     """
     P = C.STRATEGY_PARAMS
     reasons = []
@@ -127,17 +127,7 @@ def recommend(ctx):
     else:
         reasons.append("现货昨收涨 %.2f%%（非加仓区间）" % spot_chg)
 
-    # 3. 估值百分位（低估加 / 高估减）
-    vp = ctx.get("valuation_pct")
-    if vp is not None:
-        if vp < P["valuation_low"]:
-            multiple += 0.5
-            reasons.append("估值百分位 %.0f%% 偏低，+0.5" % vp)
-        elif vp > P["valuation_high"]:
-            multiple -= 0.5
-            reasons.append("估值百分位 %.0f%% 偏高，-0.5" % vp)
-
-    # 4. 避险情绪防御开关（VIX 绝对水平 / VIX 单日跳升 / 美债10Y 单日上行 bp）
+    # 3. 避险情绪防御开关（VIX 绝对水平 / VIX 单日跳升 / 美债10Y 单日上行 bp）
     factor, hits, warns = risk_off_assess(ctx.get("vix"), ctx.get("ust_bp"),
                                           ctx.get("vix_chg"))
     if factor < 1.0:
@@ -149,14 +139,14 @@ def recommend(ctx):
             reasons.append(ok)
     reasons.extend(warns)
 
-    # 5. 限额封顶（限大额时按限额/基准额封顶）
+    # 4. 限额封顶（限大额时按限额/基准额封顶）
     if sub == "LIMIT" and limit_amount > 0:
         cap = limit_amount / P["base_amount"]
         if multiple > cap:
             reasons.append("限大额 %.0f 元 → 倍数封顶 %.1f" % (limit_amount, cap))
             multiple = cap
 
-    # 6. 上下限裁剪
+    # 5. 上下限裁剪
     multiple = max(P["multiple_floor"], min(P["multiple_cap"], multiple))
     reasons.append("基准额 %.0f 元 × 倍数 %.2f = 建议投入 %.0f 元"
                    % (P["base_amount"], multiple, P["base_amount"] * multiple))
@@ -294,7 +284,7 @@ def _status_text(s):
     return " · ".join(parts)
 
 
-def recommend_category(cat, stats, us_map, valuation_pct=None):
+def recommend_category(cat, stats, us_map):
     """大类级建议：返回 {'multiple','status_text','reasons'}。"""
     P = C.STRATEGY_PARAMS
     st = _status_text(stats)
@@ -330,18 +320,7 @@ def recommend_category(cat, stats, us_map, valuation_pct=None):
         else:
             reasons.append("%s涨 %.2f%%，非加仓区间%s" % (prefix, chg, tail))
 
-    # 2) 估值：只有标普/纳指有维护值
-    if valuation_pct is not None:
-        if valuation_pct < P["valuation_low"]:
-            multiple += 0.5
-            reasons.append("PE 分位 %.0f%% 偏低（低估），+0.5 倍" % valuation_pct)
-        elif valuation_pct > P["valuation_high"]:
-            multiple -= 0.5
-            reasons.append("PE 分位 %.0f%% 偏高（高估），-0.5 倍" % valuation_pct)
-        else:
-            reasons.append("PE 分位 %.0f%%，估值中性" % valuation_pct)
-
-    # 3) 避险开关（VIX 绝对水平/跳升 + 美债10Y 单日上行 bp），谁触发写谁
+    # 2) 避险开关（VIX 绝对水平/跳升 + 美债10Y 单日上行 bp），谁触发写谁
     vix_row = us_map.get("VIX") or {}
     ust_row = us_map.get("UST10Y") or {}
     factor, hits, warns = risk_off_assess(vix_row.get("last_price"),
@@ -356,7 +335,7 @@ def recommend_category(cat, stats, us_map, valuation_pct=None):
             reasons.append(ok)
     reasons.extend(warns)
 
-    # 4) 可买性说明（不封顶倍数，只提示）
+    # 3) 可买性说明（不封顶倍数，只提示）
     if stats["limit"] and stats["min_limit"] is not None:
         amt = stats["min_limit"]
         if amt < 100:
@@ -387,7 +366,7 @@ def build_category_decisions(date: str = None, path: str = C.QDII_DB_PATH):
     cats += [c for c in stats if c not in cats]
     for cat in cats:
         s = stats[cat]
-        rec = recommend_category(cat, s, us_map, C.STATIC_VALUATION_PCT.get(cat))
+        rec = recommend_category(cat, s, us_map)
         out.append(dict(
             category=cat,
             multiple=rec["multiple"],
@@ -485,7 +464,6 @@ def build_contexts(date: str = None, path: str = C.QDII_DB_PATH):
             vix=vix_row.get("last_price"),
             vix_chg=vix_row.get("change_pct"),
             ust_bp=ust.get("change_bp"),
-            valuation_pct=C.STATIC_VALUATION_PCT.get(f["category"]),
         ))
     return ctxs
 
