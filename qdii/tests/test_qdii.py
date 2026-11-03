@@ -220,16 +220,6 @@ class StrategyTest(unittest.TestCase):
         # -2.5%（百分单位）应只拿到第一档 +0.5
         self.assertAlmostEqual(mult(-2.5), 1.5)
 
-    def test_valuation_adjust(self):
-        lo = C.STRATEGY_PARAMS["valuation_low"]
-        hi = C.STRATEGY_PARAMS["valuation_high"]
-        r = strategy.recommend({"code": "x", "sub_status": "OPEN",
-                                "valuation_pct": lo - 5})
-        self.assertAlmostEqual(r["multiple"], 1.5)      # 低估 +0.5
-        r = strategy.recommend({"code": "x", "sub_status": "OPEN",
-                                "valuation_pct": hi + 5})
-        self.assertAlmostEqual(r["multiple"], 0.5)      # 高估 -0.5
-
     def test_risk_off_halves(self):
         v = C.STRATEGY_PARAMS["risk_off_vix"]
         r = strategy.recommend({"code": "x", "sub_status": "OPEN", "vix": v + 1})
@@ -245,8 +235,7 @@ class StrategyTest(unittest.TestCase):
     def test_capped_and_clamped(self):
         cap = C.STRATEGY_PARAMS["multiple_cap"]
         r = strategy.recommend({"code": "x", "sub_status": "OPEN",
-                                "spx_chg": -50.0, "ndx_chg": -50.0,
-                                "valuation_pct": 0.0})
+                                "spx_chg": -50.0, "ndx_chg": -50.0})
         self.assertLessEqual(r["multiple"], cap)
 
 
@@ -266,37 +255,37 @@ class CategoryDecisionTest(unittest.TestCase):
 
     def test_all_suspend_gives_zero(self):
         r = strategy.recommend_category("纳斯达克100", self._stats(suspend=3, open_=0, limit=0),
-                                        self._us(), None)
+                                        self._us())
         self.assertEqual(r["multiple"], 0.0)
         self.assertEqual(r["status_text"], "全部暂停")
 
     def test_category_drop_tier_uses_own_index(self):
         # 标普跌 4.2% → 命中 -4% 档 +1.0；纳指涨，不能串用
         us = self._us(SPX={"symbol": "SPX", "name": "标普500现货", "change_pct": -4.2})
-        r = strategy.recommend_category("标普500", self._stats(), us, None)
+        r = strategy.recommend_category("标普500", self._stats(), us)
         self.assertAlmostEqual(r["multiple"], 2.0)
         self.assertTrue(any("跌 4.20%" in x for x in r["reasons"]))
 
     def test_unknown_category_says_no_signal(self):
         # 决策依据必须显式配置在 DECISION_BASIS（当日口径：现货实时 > 期货前瞻 >
         # 最后收盘）；没配置的类别要明说，不能悄悄拿某个指数算出一个倍数。
-        r = strategy.recommend_category("测试类", self._stats(), self._us(), None)
+        r = strategy.recommend_category("测试类", self._stats(), self._us())
         self.assertTrue(any("暂无对应指数信号" in x for x in r["reasons"]))
 
     def test_own_signal_not_labelled(self):
-        r = strategy.recommend_category("纳斯达克100", self._stats(), self._us(), None)
+        r = strategy.recommend_category("纳斯达克100", self._stats(), self._us())
         self.assertIsNotNone(r.get("basis"))
         self.assertIn(r["basis"]["kind"], ("spot_live", "future_proxy", "spot_prev"))
         self.assertTrue(any("纳指" in x for x in r["reasons"]))
 
     def test_no_amount_in_reasons(self):
         # 用户口径：决策不再落到金额
-        r = strategy.recommend_category("纳斯达克100", self._stats(), self._us(), 65.0)
+        r = strategy.recommend_category("纳斯达克100", self._stats(), self._us())
         self.assertFalse(any("建议投入" in x or "基准额" in x for x in r["reasons"]))
 
     def test_status_text_prefers_configurable_limit(self):
         r = strategy.recommend_category("纳斯达克100", self._stats(min_limit=10.0),
-                                        self._us(), None)
+                                        self._us())
         self.assertIn("限额 10 元", r["status_text"])
 
 
@@ -600,7 +589,7 @@ class RiskOffAssessTest(unittest.TestCase):
         us = {"IXIC": {"symbol": "IXIC", "name": "纳指现货", "change_pct": 0.4},
               "VIX": {"last_price": 15.0, "change_pct": 3.0},
               "UST10Y": {"last_price": 5.0, "change_bp": 40.0}}
-        r = strategy.recommend_category("纳斯达克100", stats, us, None)
+        r = strategy.recommend_category("纳斯达克100", stats, us)
         self.assertAlmostEqual(r["multiple"], 0.5)
         line = [x for x in r["reasons"] if "避险防御" in x]
         self.assertTrue(line)

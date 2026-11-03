@@ -43,7 +43,7 @@
   .note{font-size:12px;color:var(--t2);margin-top:8px;line-height:1.6;}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
   @media(max-width:860px){.grid2{grid-template-columns:1fr;}}
-  /* 理由列必须允许换行：全局 th,td 是 nowrap，而理由含「跌档+估值+避险+限额」多句，
+  /* 理由列必须允许换行：全局 th,td 是 nowrap，而理由含「跌档+避险+限额」多句，
      不换行会整行溢出卡片右侧被裁掉。不设 min-width——设大了窄屏会顶出横向滚动条，
      表格 width:100% 会把剩余宽度自然分给它。 */
   .reason{font-size:12px;color:var(--t2);white-space:normal;word-break:break-word;}
