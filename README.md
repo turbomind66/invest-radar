@@ -392,6 +392,7 @@ NPM（容器部署）则填 **gateway 容器 IP + 38881**，公网只走 443，�
 │   ├── ci.yml              # 语法检查 + 全部测试
 │   ├── daily.yml           # 每个交易日收盘后抓取并提交 docs/
 │   └── tick-sample.yml     # 盘中逐笔大单采样（cron-job.org 触发）
+├── CHANGELOG.md            # 历史版本说明（README 只保留当前版本）
 ├── requirements.txt
 └── LICENSE
 ```
