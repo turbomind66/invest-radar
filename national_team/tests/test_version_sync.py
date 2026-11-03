@@ -7,7 +7,7 @@
 这里直接从 CHANGELOG.md 解析最新版本号，断言两个常量都随之更新，
 以后发版只漏改就会被测试拦下。
 
-注：v2.8.5 起更新日志已从 README.md 迁到独立的 CHANGELOG.md（README 只保留
+注：v2.8.6 起更新日志已从 README.md 迁到独立的 CHANGELOG.md（README 只保留
 当前版本与指向链接），故数据源同步改为 CHANGELOG.md。
 """
 import os
