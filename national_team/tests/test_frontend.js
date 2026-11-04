@@ -71,6 +71,9 @@ const FETCH_STR = bjStr(Date.now() - 60 * 60 * 1000);   // 如 2026-10-31 21:05:
 const FETCH_MIN = FETCH_STR.slice(0, 16);               // 页面显示到分钟
 
 const FULL_TOTAL_YI = +(RAW.reduce((a, e) => a + e.main_net, 0) / 1e8).toFixed(2);  // -22.78
+// 头条口径（方案A）：全量净买入以一级净申购为准（份额数据全有）
+const FULL_HEADLINE_YI = +(RAW.reduce((a, e) => a + (e.net_sub || 0), 0).toFixed(2));
+const HS300_HEADLINE_YI = +(RAW.filter(e => e.cat === '沪深300').reduce((a, e) => a + (e.net_sub || 0), 0).toFixed(2));
 
 function buildData(url) {
   const q = new URLSearchParams(url.split('?')[1] || '');
@@ -149,8 +152,11 @@ function buildData(url) {
         .map(k => [k, tierSum(k) === null ? null : +(tierSum(k) / 1e8).toFixed(2)])),
       share_net_sub_yi: hasShare ? +shareSum.toFixed(2) : null,
       share_cover: shareCover,
+      headline_yi: hasShare ? +shareSum.toFixed(2) : (hasMain ? +(total / 1e8).toFixed(2) : null),
+      headline_source: hasShare ? "primary" : (hasMain ? "secondary" : null),
     },
-    signal: total > 0 ? ['净买入', 'buy'] : ['净卖出', 'sell'],
+    signal: (() => { const hv = hasShare ? shareSum : (hasMain ? total : null);
+      return hv > 0 ? ['净买入', 'buy'] : (hv < 0 ? ['净卖出', 'sell'] : ['基本中性', 'flat']); })(),
   };
 }
 global.fetch = async (url) => ({ json: async () => buildData(url) });
@@ -174,7 +180,7 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   await loadData(); await tick();
   chk(els['fresh-data'].textContent.includes('2026-10-27'), '时间戳条显示生效日期');
   chk(els['fresh-data'].textContent.includes('未生成'), '时间戳条提示自动回退原因');
-  chk(els['cards'].innerHTML.includes(String(FULL_TOTAL_YI)), `汇总卡片为全量合计 ${FULL_TOTAL_YI} 亿`);
+  chk(els['cards'].innerHTML.includes(String(FULL_HEADLINE_YI)), `汇总卡片(头条·一级净申购)为全量合计 ${FULL_HEADLINE_YI} 亿`);
   chk(els['f-cats'].innerHTML.includes('沪深300'), '类别 chips 已渲染');
   chk(chipCount('f-codes') === 5, `基金 chips = 全部 + 4 只（实际 ${chipCount('f-codes')}）`);
   chk(els['q_#tbl tbody'].innerHTML.includes('华泰柏瑞'), '明细表已渲染');
@@ -186,7 +192,7 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   chk(els['f-cats'].innerHTML.includes('chip on'), '类别 chip 呈选中态');
   chk(els['f-summary'].innerHTML.includes('沪深300'), '筛选摘要含类别');
   chk(rowCount() === 2, `明细过滤为 2 行（实际 ${rowCount()}）`);
-  chk(els['cards'].innerHTML.includes('-9.71'), '汇总按筛选重算为 -9.71 亿');
+  chk(els['cards'].innerHTML.includes(String(HS300_HEADLINE_YI)), `汇总按筛选重算(头条·一级净申购)为 ${HS300_HEADLINE_YI} 亿`);
   chk(optionLog['trend'] && optionLog['trend'].series[0].data.length === 3, '趋势图重绘为 3 个点');
   chk(optionLog['trend'] && optionLog['trend'].series[0].data[2] === null, '当日无数据点在趋势图中断线(null)');
   chk(chipCount('f-codes') === 3, `基金列表联动收敛为 全部+2 只（实际 ${chipCount('f-codes')}）`);
@@ -448,6 +454,24 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   await tick(120);
   chk(els['intraday-cards'].innerHTML.includes('暂无分时数据') ||
       els['intraday-cards'].innerHTML.includes('分时归档'), '无分时数据时显示占位文案');
+
+  console.log('\n[13] 头条回退提示（份额缺失→二级主力净流入；负值≠国家队在卖出）');
+  // 构造“份额缺失、回退二级主力净流入”场景：头条展示二级口径，需醒目提示避免误读为净卖出
+  const fb = buildData('');
+  fb.mainnet_ok = true; fb.partial_main = false;
+  fb.summary.headline_source = 'secondary';
+  fb.summary.headline_yi = -3.10;   // 制造负值，触发“负值≠国家队在卖出”澄清文案
+  render(fb); await tick(80);
+  chk(els['warn'].style.display === 'block', '份额缺失回退→显示醒目提示条');
+  chk(els['warn'].innerHTML.includes('二级主力净流入口径'), '提示说明当前为二级主力净流入口径');
+  chk(els['warn'].innerHTML.includes('负值≠国家队在卖出'), '提示明确：负值≠国家队在卖出');
+  chk(els['warn'].style.background === '#fff7e8', '提示条为琥珀色（与红色错误告警区分）');
+  // 份额齐全（primary）时不应出现该提示
+  const okp = buildData('');
+  okp.mainnet_ok = true; okp.partial_main = false;
+  okp.summary.headline_source = 'primary';
+  render(okp); await tick(80);
+  chk(els['warn'].style.display === 'none', '份额齐全（primary）时不显示回退提示');
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exit(fail === 0 ? 0 : 1);

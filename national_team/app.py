@@ -35,7 +35,7 @@ INDEX = os.path.join(BASE, "templates", "index.html")
 PORT = int(os.environ.get("PORT") or "5000")
 # 版本指纹：与 qdii 侧的 sig/codes 同用途，部署后 /api/status 里能一眼辨新旧代码。
 # 手动同步更新，或用 git rev-parse 生成一次写死。
-APP_VERSION = "v2.8.7-nt"
+APP_VERSION = "v2.8.8-nt"
 # 站点路径前缀：域名反代把本面板挂在子路径（如 /nt）时，若 Nginx/NPM 保留前缀不剥，
 # 就在这里声明（BASE_PATH=/nt），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
 BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")
@@ -188,6 +188,15 @@ def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
             "share_net_sub_yi": (round(cur["share_net_sub"], 2)
                                  if cur["share_net_sub"] is not None else None),
             "share_cover": cur["has_share"],
+            # 头条口径（方案A，2026-11-04）：国家队净买入应以「一级市场净申购」为准，
+            # 因为汇金护盘主要走一级申购，不进二级市场主力资金流。份额数据缺失时
+            # 回退到二级市场主力净流入（绝不会比现状更差）。headline_source 标注用的是哪条。
+            "headline_yi": (round(cur["share_net_sub"], 2)
+                            if cur["share_net_sub"] is not None
+                            else (round(cur["total_main_net"] / 1e8, 2)
+                                  if mainnet_ok else None)),
+            "headline_source": ("primary" if cur["share_net_sub"] is not None
+                                else ("secondary" if mainnet_ok else None)),
         },
     }
 
@@ -380,7 +389,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/data":
             auto_ensure()
             payload = build_payload(f_date, f_cats, f_codes)
-            payload["signal"] = signal_label(payload["summary"]["total_main_net_yi"])
+            payload["signal"] = signal_label(payload["summary"]["headline_yi"])
             self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                        head_only=head_only)
             return
@@ -403,7 +412,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             finally:
                 lk.release()
             payload = build_payload(f_date, f_cats, f_codes)
-            payload["signal"] = signal_label(payload["summary"]["total_main_net_yi"])
+            payload["signal"] = signal_label(payload["summary"]["headline_yi"])
             payload["fetch_result"] = res
             self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                        head_only=head_only)

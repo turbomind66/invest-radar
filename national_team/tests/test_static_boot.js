@@ -59,7 +59,13 @@ const validDates = (RAW.dates || []).filter((d) => hasMain(RAW.days[d]));
 const EXPECT_DATE = validDates[validDates.length - 1] || (RAW.dates || []).slice(-1)[0];
 const rowsOf = (d) => RAW.days[d] || [];
 const yi = (v) => (Math.round(v / 1e6) / 100).toFixed(2);
-const EXPECT_TOTAL = yi(rowsOf(EXPECT_DATE).reduce((a, e) => a + (e.main_net || 0), 0));
+const rowsExp = rowsOf(EXPECT_DATE);
+const totalMainExp = rowsExp.reduce((a, e) => a + (e.main_net || 0), 0);
+const shExp = (RAW.shares && RAW.shares[EXPECT_DATE]) || [];
+const shareSumExp = shExp.length ? shExp.reduce((a, e) => a + (e.net_sub || 0), 0) : null;
+// 头条口径（方案A）：份额净申购优先，缺失时回退主力净流入
+const headlineExp = shareSumExp !== null ? shareSumExp : totalMainExp;
+const EXPECT_TOTAL = yi(headlineExp);
 
 let pass = 0, fail = 0;
 const chk = (c, m) => { c ? (pass++, console.log('  \u2705 ' + m)) : (fail++, console.log('  \u274c ' + m)); };

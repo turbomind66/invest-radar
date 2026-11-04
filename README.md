@@ -534,7 +534,7 @@ docker compose up -d --build   # 一次性起 5 个服务
 
 ## 更新日志
 
-当前版本 **v2.8.7**。完整历史版本说明见 [CHANGELOG.md](CHANGELOG.md) 与 [Releases](https://github.com/turbomind66/invest-radar/releases)。
+当前版本 **v2.8.8**。完整历史版本说明见 [CHANGELOG.md](CHANGELOG.md) 与 [Releases](https://github.com/turbomind66/invest-radar/releases)。
 
 ## 免责声明
 

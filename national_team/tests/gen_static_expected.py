@@ -106,7 +106,7 @@ def main():
         cases = []
         for name, kw in CASES:
             p = app.build_payload(path=path, **kw)
-            p["signal"] = app.signal_label(p["summary"]["total_main_net_yi"])
+            p["signal"] = app.signal_label(p["summary"]["headline_yi"])
             cases.append({"name": name, "params": kw, "payload": p})
 
         json.dump({"raw": raw, "cases": cases}, sys.stdout, ensure_ascii=False)
