@@ -134,7 +134,7 @@
     .fresh .hint{display:none}.fresh .t{font-size:14.5px}.fresh .t b{font-size:15px}
   }
 </style>
-<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-11-04 10:06:17", "worker_url": "", "peer_url": "qdii/"};</script>
+<script>window.__STATIC__={"actions_url": "https://github.com/turbomind66/invest-radar/actions/workflows/daily.yml", "generated_at": "2026-11-04 10:34:29", "worker_url": "", "peer_url": "qdii/"};</script>
 <script>/* common/static_refresh.js — 静态托管站共享刷新逻辑（汪汪队 / QDII 复用）
  *
  * 由 national_team/app.py 与 qdii 的 render_index / staticsite 在「构建或响应时」
@@ -237,9 +237,9 @@
   </div>
 
   <div class="note">
-    <b>口径说明：</b>汪汪队（中央汇金、证金公司等）不逐日公开买卖明细。本工具以<b>宽基指数ETF（沪深300/中证500/中证1000/上证50/创业板/科创50/科创100/中证A500）的主力资金净流入</b>作为汪汪队护盘动向的核心代理指标——这些ETF是汪汪队进场的标准通道。数据每日收盘后（约16:05）自动抓取并归档，历史曲线随运行天数累积。新闻为服务端尽力抓取，若上游不通则显示提示。<br>
+    <b>口径说明：</b>汪汪队（中央汇金、证金公司等）不逐日公开买卖明细。本工具以<b>宽基指数ETF（沪深300/中证500/中证1000/上证50/创业板/科创50/科创100/中证A500）的一级市场净申购（份额口径）作为头条核心口径</b>——汇金护盘主要走一级申购通道；该数据缺失时回退到二级市场主力净流入。这些ETF是汪汪队进场的标准通道。数据每日收盘后（约16:05）自动抓取并归档，历史曲线随运行天数累积。新闻为服务端尽力抓取，若上游不通则显示提示。<br>
     <b>四档净额：</b>东财「主力净买」= 超大单净 + 大单净的<b>净额</b>——分时图上的大额买入可能被更大额的超大单卖出对冲，或被算法拆成中小单，表面上"没统计上"。明细表新增超大单/大单/中单/小单四档净额列，买入卖出毛向一目了然。<br>
-    <b>一级市场申赎（份额口径）：</b>ETF 的一级申购/赎回<b>不计入二级市场资金流</b>，是另一层证据。明细表的「份额日变动」为交易所公布的 ETF 份额变化（亿份），「一级净申购」≈ 份额日变动 × 单位净值（亿元），正=一级净申购。份额数据由 T+1 公布，最新交易日可能沿用上一日数值；该项为全市场机构与散户的合计申赎，<b>不等同于汪汪队专属行为</b>，与二级口径合看更稳妥。
+    <b>一级市场申赎（份额口径）：</b>ETF 的一级申购/赎回<b>不计入二级市场资金流</b>，是另一层证据。明细表的「份额日变动」为交易所公布的 ETF 份额变化（亿份），「一级净申购」≈ 份额日变动 × 单位净值（亿元），正=一级净申购。份额数据由 T+1 公布，最新交易日可能沿用上一日数值；该项为全市场机构与散户的合计申赎，<b>不等同于汪汪队专属行为</b>，与二级口径合看更稳妥。<b>本页头条“净买入合计”优先采用此一级净申购口径</b>，份额缺失时回退二级主力净流入并给出提示。
   </div>
 
   <div class="note" id="warn" style="display:none;background:#fff0f0;border-color:#f3c2c2;color:#a33"></div>
@@ -575,9 +575,15 @@ function computeStaticPayload(raw, date, cats, codes){
       share_net_sub_yi: (cur.share_net_sub===null || cur.share_net_sub===undefined)
         ? null : +cur.share_net_sub.toFixed(2),
       share_cover: cur.has_share,
+      // 头条口径（方案A）：国家队净买入以一级市场净申购为准，份额缺失时回退主力净流入
+      headline_yi: (cur.share_net_sub!==null && cur.share_net_sub!==undefined)
+        ? +cur.share_net_sub.toFixed(2)
+        : (mainOk ? +(cur.total_main_net/1e8).toFixed(2) : null),
+      headline_source: (cur.share_net_sub!==null && cur.share_net_sub!==undefined)
+        ? "primary" : (mainOk ? "secondary" : null),
     },
   };
-  payload.signal = signalLabel(payload.summary.total_main_net_yi);
+  payload.signal = signalLabel(payload.summary.headline_yi);
   return payload;
 }
 
@@ -693,20 +699,29 @@ function render(d){
   const warn = document.getElementById("warn");
   if(!d.mainnet_ok){
     warn.style.display = "block";
+    warn.style.background = "#fff0f0"; warn.style.borderColor = "#f3c2c2"; warn.style.color = "#a33";
     warn.innerHTML = "⚠️ <b>所选范围主力净流入数据暂不可用</b>。价格 / 涨跌 / 成交额仍为真实数据，仅“主力净买(亿)”显示为 —。";
   } else if(d.partial_main){
     warn.style.display = "block";
+    warn.style.background = "#fff0f0"; warn.style.borderColor = "#f3c2c2"; warn.style.color = "#a33";
     warn.innerHTML = "⚠️ <b>部分 ETF 主力净流入缺失</b>，合计值按已有数据累加，可能偏低。";
+  } else if(s.headline_source === "secondary"){
+    // 方案A 回退提示：头条是一级净申购缺失时回退到的二级主力净流入，负值≠国家队在卖
+    warn.style.display = "block";
+    warn.style.background = "#fff7e8"; warn.style.borderColor = "#f0a93c"; warn.style.color = "#8a4a06";
+    warn.style.fontWeight = "700";
+    warn.innerHTML = "⚠️ <b>头条“净买入合计”当前为二级主力净流入口径</b>：本日 ETF 一级市场净申购数据缺失，已自动回退。"
+      + "国家队护盘主要走<b>一级申购</b>通道，故<b>负值≠国家队在卖出</b>；份额数据（T+1）补齐后头条将切换为“一级净申购”口径，与新闻一致。";
   } else {
     warn.style.display = "none";
   }
 
   // 卡片
-  const netTxt = (d.mainnet_ok && s.total_main_net_yi!==null) ? fmt(s.total_main_net_yi)+" 亿" : "—";
+  const netTxt = (s.headline_yi!==null && s.headline_yi!==undefined) ? fmt(s.headline_yi)+" 亿" : "—";
   const fullTxt = (s.full_total_main_net_yi===null||s.full_total_main_net_yi===undefined) ? "—" : fmt(s.full_total_main_net_yi)+" 亿";
   const scopeSub = isFiltered
     ? `筛选 ${s.etf_count||0}/${s.full_etf_count||0} 只 · 全量 ${fullTxt}`
-    : (d.mainnet_ok ? sig[0] : "主力净流入暂不可用");
+    : (s.headline_source==="primary" ? "基于ETF一级净申购" : (s.headline_source==="secondary" ? "基于宽基ETF主力净流入" : "主力净流入暂不可用"));
   const catCount = Object.keys(s.by_cat_yi||{}).length;
   const cards = [
     {k:"汪汪队净买入合计", v:netTxt, sub:scopeSub, cls:sig[1]==="buy"?"red":(sig[1]==="sell"?"green":"amber")},
@@ -894,16 +909,17 @@ function renderSummary(d){
   }
   let line = "当前筛选：" + parts.join("　·　");
 
-  if(s.total_main_net_yi!==null && s.total_main_net_yi!==undefined){
-    const v = s.total_main_net_yi;
+  if(s.headline_yi!==null && s.headline_yi!==undefined){
+    const v = s.headline_yi;
     const cls = v>0?"r":(v<0?"g":"");
-    line += `　→　净买入合计 <span class="${cls}">${fmt(v)} 亿</span>`;
+    const src = s.headline_source==="primary" ? "（一级净申购）" : "（主力净流入）";
+    line += `　→　净买入合计 <span class="${cls}">${fmt(v)} 亿</span>${src}`;
     if(f.filtered && s.full_total_main_net_yi!==null && s.full_total_main_net_yi!==undefined){
       line += `（当日全量 ${fmt(s.full_total_main_net_yi)} 亿）`;
     }
     line += `　·　信号 <b>${sig[0]}</b>`;
   } else {
-    line += `　→　<span style="color:#a33">该范围主力净流入暂不可用</span>`;
+    line += `　→　<span style="color:#a33">该范围净买入数据暂不可用</span>`;
   }
   // 四档拆解：把"分时图大额买入 vs 主力净流入"的口径差摊开——
   // 大单净为正而主力净为负，即大额买入被超大单卖出对冲（不是没统计上）。
