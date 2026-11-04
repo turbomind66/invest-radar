@@ -36,6 +36,7 @@ if sys.path and sys.path[0] != _BASE:
 import db  # noqa: E402
 import intraday  # noqa: E402
 import fetcher  # noqa: E402
+import app  # noqa: E402  只取 APP_VERSION，供静态页页脚显示真实版本号
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 # 项目根：national_team 的父目录（容器里即 /app，本地即仓库根）。
@@ -389,6 +390,8 @@ def render_index(payload: dict, template: str = TEMPLATE) -> str:
     """
     with open(template, encoding="utf-8") as f:
         html = f.read()
+    # 页脚版本号：与服务端 render_index 同一口径，替换模板里的占位符。
+    html = html.replace("__APP_VERSION__", app.APP_VERSION)
     flag = {
         "actions_url": payload.get("actions_url", ""),
         "generated_at": payload.get("generated_at", ""),

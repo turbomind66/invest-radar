@@ -342,6 +342,8 @@ def render_index():
     """
     with open(INDEX, "rb") as f:
         html = f.read().decode("utf-8", "replace")
+    # 页脚版本号：模板里是 __APP_VERSION__ 占位符，服务端/静态导出各自替换。
+    html = html.replace("__APP_VERSION__", APP_VERSION)
     peer = (os.environ.get("PEER_URL") or "").strip()
     if peer:
         html = html.replace('<meta name="peer-url" content="">',

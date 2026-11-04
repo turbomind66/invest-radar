@@ -122,6 +122,8 @@ def render_index(payload: dict, template: str = TEMPLATE) -> str:
     """把 QDII 模板转成静态页：注入 window.__STATIC__ 标记 + 内联公共刷新逻辑。"""
     with open(template, encoding="utf-8") as f:
         html = f.read()
+    # 页脚版本号：与服务端 render_index 同一口径，替换模板里的占位符。
+    html = html.replace("__APP_VERSION__", qdii_app.APP_VERSION)
     flag = {
         "actions_url": ACTIONS_URL,
         "generated_at": payload.get("generated_at", ""),
