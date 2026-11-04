@@ -61,8 +61,12 @@ const rowsOf = (d) => RAW.days[d] || [];
 const yi = (v) => (Math.round(v / 1e6) / 100).toFixed(2);
 const rowsExp = rowsOf(EXPECT_DATE);
 const totalMainExp = rowsExp.reduce((a, e) => a + (e.main_net || 0), 0);
+// 头条口径（方案A）：与页面 sumRows 完全一致——
+// “有份额净申购”= shares[date] 中存在任意一条 net_sub 非 null，而非“数组非空”。
+// 若份额行在但 net_sub 全为空（数据未补齐），应视为无份额、回退二级主力净流入。
 const shExp = (RAW.shares && RAW.shares[EXPECT_DATE]) || [];
-const shareSumExp = shExp.length ? shExp.reduce((a, e) => a + (e.net_sub || 0), 0) : null;
+const shHas = shExp.some((e) => e.net_sub !== null && e.net_sub !== undefined);
+const shareSumExp = shHas ? shExp.reduce((a, e) => a + (e.net_sub || 0), 0) : null;
 // 头条口径（方案A）：份额净申购优先，缺失时回退主力净流入
 const headlineExp = shareSumExp !== null ? shareSumExp : totalMainExp;
 const EXPECT_TOTAL = yi(headlineExp);
