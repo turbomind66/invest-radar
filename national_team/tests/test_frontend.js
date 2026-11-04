@@ -280,7 +280,7 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
 
   console.log('\n[9] 类别净买入/净卖出双饼图（回归：负值类别不得被吞掉）');
   // 真实故障复现：8 类中 7 类为净卖出时，单张饼图只渲染唯一正值类别，
-  // 表现为"全是中证A500买入"。现拆成买入/卖出两张饼图：
+  // 表现为"全是中证2000买入"（当时误标为中证A500）。现拆成买入/卖出两张饼图：
   // 卖出图用绝对值画扇区角度（否则负值仍被压成 0），标签/tooltip 保留真实负号。
   render(buildData(''));
   await tick(150);
@@ -329,27 +329,28 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   chk(sellHtml.includes('华泰柏瑞') && sellHtml.includes('易方达'), '明细用公司短标签区分同指数基金');
   chk(sellHtml.includes('-8.61') && sellHtml.includes('-1.10'), '明细含类内逐只数值');
   chk(!buyHtml.includes('cat-sub'), '单基金类别（上证50）不展开明细');
-  // 真实故障场景重放（2026-10-27 中证1000 类）：类内 易方达 +0.17 被合计 -2.01 吞进卖出图，
+  // 真实故障场景重放（2026-10-27 中证1000 类）：类内 广发 +0.17 被合计 -2.01 吞进卖出图，
   // 改造后卖出图下方明细必须能看到这只逆势净买入基金。
-  drawCat({ '中证1000': -2.01, '中证A500': 0.43 }, [
-    { code: '560010', name: '易方达中证1000ETF', cat: '中证1000', main_net: 17498160 },
+  // 标签已按 2026-11-04 校准：560010=广发中证1000ETF，563300=华泰柏瑞中证2000ETF。
+  drawCat({ '中证1000': -2.01, '中证2000': 0.43 }, [
+    { code: '560010', name: '广发中证1000ETF', cat: '中证1000', main_net: 17498160 },
     { code: '159845', name: '华夏中证1000ETF', cat: '中证1000', main_net: -1574400 },
     { code: '512100', name: '南方中证1000ETF', cat: '中证1000', main_net: -216634432 },
-    { code: '563300', name: '中证A500ETF', cat: '中证A500', main_net: 42793296 },
+    { code: '563300', name: '华泰柏瑞中证2000ETF', cat: '中证2000', main_net: 42793296 },
   ]);
   const mixSell = els['cat-sell-list'].innerHTML;
   const mixBuy = els['cat-buy-list'].innerHTML;
-  chk(mixSell.includes('易方达') && mixSell.includes('+0.17'),
-      '卖出类别明细中可见类内正值「易方达 +0.17」');
+  chk(mixSell.includes('广发') && mixSell.includes('+0.17'),
+      '卖出类别明细中可见类内正值「广发 +0.17」');
   chk(mixSell.includes('<b class="r">+0.17</b>'), '类内正值标红（红=净买入全局语言）');
   chk(mixSell.includes('华夏') && mixSell.includes('-0.02') && mixSell.includes('南方') && mixSell.includes('-2.17'),
       '类内其余两只负值基金完整可见');
   chk(mixSell.includes('中证1000') && mixSell.includes('-2.01亿'), '类别行仍保留合计 -2.01亿');
-  chk(mixBuy.includes('中证A500') && mixBuy.includes('+0.43亿') && !mixBuy.includes('cat-sub'),
-      '单基金买入类别（中证A500）不展开明细');
+  chk(mixBuy.includes('中证2000') && mixBuy.includes('+0.43亿') && !mixBuy.includes('cat-sub'),
+      '单基金买入类别（中证2000）不展开明细');
   const tipTxt = String(optionLog['cat-sell'].tooltip.formatter(
     { name: '中证1000', percent: 4.7, data: { real: -2.01 } }));
-  chk(tipTxt.includes('易方达 +0.17') && tipTxt.includes('南方 -2.17'),
+  chk(tipTxt.includes('广发 +0.17') && tipTxt.includes('南方 -2.17'),
       'tooltip 同步展开类内明细');
 
   console.log('\n[11] 四档资金流列（回归：分时大额买入不得被主力净额口径吞掉）');
