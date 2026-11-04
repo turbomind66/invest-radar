@@ -68,8 +68,12 @@ const shExp = (RAW.shares && RAW.shares[EXPECT_DATE]) || [];
 const shHas = shExp.some((e) => e.net_sub !== null && e.net_sub !== undefined);
 const shareSumExp = shHas ? shExp.reduce((a, e) => a + (e.net_sub || 0), 0) : null;
 // 头条口径（方案A）：份额净申购优先，缺失时回退主力净流入
-const headlineExp = shareSumExp !== null ? shareSumExp : totalMainExp;
-const EXPECT_TOTAL = yi(headlineExp);
+// 单位注意：net_sub（份额净申购）单位已是“亿元”，不能再经 yi()（元→亿）换算；
+//           main_net（主力净流入）单位为“元”，必须经 yi() 转亿元。否则会双重换算得到 0.00。
+const headlineYi = shareSumExp !== null
+  ? +shareSumExp.toFixed(2)            // 已是亿元，直接用
+  : +(yi(totalMainExp));               // 元 → 亿元
+const EXPECT_TOTAL = headlineYi.toFixed(2);
 
 let pass = 0, fail = 0;
 const chk = (c, m) => { c ? (pass++, console.log('  \u2705 ' + m)) : (fail++, console.log('  \u274c ' + m)); };
