@@ -97,6 +97,14 @@
     border-radius:7px;padding:4px 9px;font-size:12px;font-weight:600}
   .news-range .nr-btn:hover{background:#f2f7ff}
   .news-range .nr-info{flex-basis:100%;font-size:11.5px;color:var(--sub);line-height:1.5}
+  /* 趋势图缩放工具 + 三张二级口径图的口径说明 */
+  .zoom-tools{display:inline-flex;align-items:center;gap:8px;margin-left:auto}
+  .zoom-hint{font-size:11.5px;color:var(--sub);font-weight:400;white-space:nowrap}
+  .trend-btn{cursor:pointer;border:1px solid #c9dcff;background:#fff;color:var(--blue);
+    border-radius:7px;padding:3px 9px;font-size:11.5px;font-weight:600}
+  .trend-btn:hover{background:#f2f7ff}
+  .scope-line{font-size:12px;color:var(--sub);line-height:1.6;margin:-6px 0 12px}
+  .scope-line b{color:var(--amber)}
   .news li.nd{padding:8px 0 2px;border-bottom:0;font-size:11.5px;font-weight:700;color:var(--blue)}
   .note{font-size:12px;color:var(--sub);background:#fff8ec;border:1px solid #f3e2bf;border-radius:10px;padding:10px 12px;margin-bottom:18px}
   .note b{color:var(--amber)}
@@ -315,7 +323,12 @@
 
   <div class="grid2" style="grid-template-columns:1.5fr 1fr">
     <div class="panel">
-      <h2>📈 汪汪队净买入历史趋势 <small id="trend-sub">单位：亿元（每日合计主力净流入）</small></h2>
+      <h2>📈 汪汪队净买入历史趋势 <small id="trend-sub">单位：亿元（每日合计主力净流入）</small>
+        <span class="zoom-tools">
+          <span class="zoom-hint">滚轮缩放 · 拖拽平移 · 底部滑块</span>
+          <button class="trend-btn" type="button" onclick="resetTrendZoom()">全览</button>
+        </span>
+      </h2>
       <div id="trend" class="chart"></div>
     </div>
     <div class="panel">
@@ -331,18 +344,19 @@
     </div>
   </div>
 
+  <div class="scope-line">⚠️ 下面三张图与明细表「主力净流入」均为<b>二级市场主力净流入口径</b>；头条「净买入合计」优先采用<b>一级市场净申购（份额口径）</b>，两者是不同层次的数据，<b>不可相加或直接比较</b>。一级数据见趋势图右轴与明细表「一级净申购」列。</div>
   <div class="grid3">
     <div class="panel">
-      <h2>🧭 各ETF净买入 <small>红色=净买入，绿色=净卖出（亿元）</small></h2>
+      <h2>🧭 各ETF净买入 <small>二级主力净流入口径｜红=净买入，绿=净卖出（亿元）</small></h2>
       <div id="bar" class="chart"></div>
     </div>
     <div class="panel">
-      <h2>🔴 类别净买入 <small>占净买入总额（亿元）</small></h2>
+      <h2>🔴 类别净买入 <small>二级主力净流入口径｜占净买入总额（亿元）</small></h2>
       <div id="cat-buy" class="chart sm"></div>
       <div class="cat-list" id="cat-buy-list"></div>
     </div>
     <div class="panel">
-      <h2>🟢 类别净卖出 <small>占净卖出总额（亿元）</small></h2>
+      <h2>🟢 类别净卖出 <small>二级主力净流入口径｜占净卖出总额（亿元）</small></h2>
       <div id="cat-sell" class="chart sm"></div>
       <div class="cat-list" id="cat-sell-list"></div>
     </div>
@@ -1468,6 +1482,32 @@ function renderTick(d){
   }
 }
 
+// ---------- 趋势图日期缩放 ----------
+// history_full 可达 366 个交易日（一级份额 366 天 / 二级资金流 121 天），
+// 全量平铺会把曲线挤成一条带子。默认只显示最近 90 天，滚轮缩放 / 拖拽平移 /
+// 底部滑块由 ECharts 的 dataZoom(inside + slider) 提供，纯前端、静态动态共用。
+// 下面 setOption 用 notMerge=true 全量重绘，故重绘前把用户当前窗口读回来回填，
+// 否则定时刷新或切换筛选会把缩放无声重置。
+const TREND_WINDOW_DAYS = 90;
+
+function trendZoomRange(n){
+  if(n <= TREND_WINDOW_DAYS) return {start:0, end:100};
+  let saved = null;
+  try{
+    const opt = trendChart && trendChart.getOption && trendChart.getOption();
+    const dz = opt && opt.dataZoom && opt.dataZoom[0];
+    if(dz && typeof dz.start === "number" && typeof dz.end === "number"
+       && dz.end > dz.start) saved = {start:dz.start, end:dz.end};
+  }catch(e){ /* 无 getOption 时退回默认窗口 */ }
+  return saved || {start:+((1 - TREND_WINDOW_DAYS / n) * 100).toFixed(4), end:100};
+}
+
+function resetTrendZoom(){
+  if(!trendChart || !trendChart.dispatchAction) return;
+  try{ trendChart.dispatchAction({type:"dataZoom", start:0, end:100}); }
+  catch(e){}
+}
+
 function drawTrend(history){
   if(!trendChart) trendChart = echarts.init(document.getElementById("trend"));
   if(!history.length){
@@ -1488,11 +1528,19 @@ function drawTrend(history){
     return (v===null||v===undefined) ? null : +v.toFixed(2);
   });
   const hasShare = shareVals.some(v=>v!==null);
+  const zoom = trendZoomRange(dates.length);
   trendChart.setOption({
     tooltip:{trigger:"axis",valueFormatter:v=>(v===null||v===undefined)?"无数据":(v+" 亿")},
     legend:{data:["二级主力净流入","一级市场净申购"],top:0,itemGap:16,
             textStyle:{fontSize:12,color:"#6b7a8d"}},
-    grid:{left:50,right:hasShare?58:20,top:38,bottom:40},
+    grid:{left:50,right:hasShare?58:20,top:38,bottom:78},
+    dataZoom:[
+      {type:"inside",xAxisIndex:0,start:zoom.start,end:zoom.end,
+       zoomOnMouseWheel:true,moveOnMouseMove:true,moveOnMouseWheel:false},
+      {type:"slider",xAxisIndex:0,start:zoom.start,end:zoom.end,
+       bottom:8,height:18,borderColor:"#d9e2ef",fillerColor:"rgba(37,99,235,.12)",
+       handleStyle:{color:"#2563eb"},textStyle:{color:"#6b7a8d",fontSize:10}}
+    ],
     xAxis:{type:"category",data:dates,
       axisLabel:{rotate: dates.length>60?0:(dates.length>10?40:0)}},
     yAxis:[{type:"value",name:"亿元",axisLabel:{formatter:"{value}"}}]
