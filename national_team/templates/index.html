@@ -25,6 +25,24 @@
   .btn:active{transform:translateY(1px)}
   .btn.ghost{background:#fff;color:var(--blue);border:1px solid #c9dcff;padding:7px 13px;font-size:13px}
   .btn.ghost:hover{background:#f2f7ff}
+  /* 数据源增强（fuyao）：默认折叠，不填 key 时界面与之前完全一致 */
+  .fy{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    margin-bottom:18px;padding:10px 14px;box-shadow:0 1px 3px rgba(20,40,80,.04)}
+  .fy>summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--sub);
+    list-style:none;display:flex;align-items:center;gap:7px}
+  .fy>summary::-webkit-details-marker{display:none}
+  .fy>summary:hover{color:var(--blue)}
+  .fy>summary .fy-dot{width:7px;height:7px;border-radius:50%;background:#cbd5e1;display:inline-block}
+  .fy>summary .fy-dot.on{background:#16a34a}
+  .fy-body{padding-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
+  .fy-body label{font-size:12px;color:var(--sub);display:block;margin-bottom:4px}
+  .fy-body input{width:100%;box-sizing:border-box;padding:7px 9px;font-size:13px;
+    border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--ink)}
+  .fy-actions{grid-column:1/-1;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .fy-status{grid-column:1/-1;font-size:12px;color:var(--sub);line-height:1.6}
+  .fy-note{grid-column:1/-1;font-size:12px;color:var(--sub);background:var(--chip);
+    border-radius:8px;padding:8px 10px;line-height:1.6}
+  @media(max-width:640px){.fy-body{grid-template-columns:1fr}}
   /* 面板选项卡：同一域名下「汪汪队 / QDII」两个面板互切。
      当前面板用 span 承载（不可点），对端面板用 a#peerTab（地址由 PEER_URL 或端口±1 推断）。
      对端不可达（静态站 / file://）时整条隐藏，不给死链。 */
@@ -163,6 +181,27 @@
     <span class="sync" id="fresh-sync" title="最近一次自动同步的执行结果"></span>
   </div>
 
+  <details class="fy" id="fy-panel">
+    <summary><span class="fy-dot" id="fy-dot"></span>⚙ 数据源增强（可选 · 同花顺 fuyao API）<span id="fy-summary-tip">未启用</span></summary>
+    <div class="fy-body">
+      <div>
+        <label for="fy-key">API Key（填了才启用，留空即完全不用）</label>
+        <input id="fy-key" type="password" autocomplete="off" placeholder="sk-fuyao-…" />
+      </div>
+      <div>
+        <label for="fy-env">或填「系统环境变量名称」（由服务端读取）</label>
+        <input id="fy-env" type="text" autocomplete="off" placeholder="invest-radar-fuyaokey" />
+      </div>
+      <div class="fy-actions">
+        <button class="btn ghost" type="button" onclick="fySave()">保存并生效</button>
+        <button class="btn ghost" type="button" onclick="fyCheck()">测试连接</button>
+        <button class="btn ghost" type="button" onclick="fyClear()">清除</button>
+      </div>
+      <div class="fy-status" id="fy-status"></div>
+      <div class="fy-note" id="fy-note">增强源只补齐「新闻 / ETF 行情」，主力净额、逐笔大单与 QDII 海外信号仍走原方案；接口异常会自动回退，不影响原有数据。Key 仅保存在本浏览器，不会写入页面源码或公开快照。</div>
+    </div>
+  </details>
+
   <div class="note">
     <b>口径说明：</b>汪汪队（中央汇金、证金公司等）不逐日公开买卖明细。本工具以<b>宽基指数ETF（沪深300/中证500/中证1000/上证50/创业板/科创50/科创100/中证A500）的一级市场净申购（份额口径）作为头条核心口径</b>——汇金护盘主要走一级申购通道；该数据缺失时回退到二级市场主力净流入。这些ETF是汪汪队进场的标准通道。数据每日收盘后（约16:05）自动抓取并归档，历史曲线随运行天数累积。新闻为服务端尽力抓取，若上游不通则显示提示。<br>
     <b>四档净额：</b>东财「主力净买」= 超大单净 + 大单净的<b>净额</b>——分时图上的大额买入可能被更大额的超大单卖出对冲，或被算法拆成中小单，表面上"没统计上"。明细表新增超大单/大单/中单/小单四档净额列，买入卖出毛向一目了然。<br>
@@ -297,6 +336,138 @@ const state = { date:"", cats:new Set(), codes:new Set() };
 // 数据来自同目录 data.json，筛选在浏览器本地计算（无需后端）。
 const STATIC = !!window.__STATIC__;
 let STATIC_RAW = null;   // 全量快照缓存，只拉一次
+
+// ---------- 数据源增强（fuyao，可选）----------
+// 定位：增强源而非唯一源。不填 key ⇒ fyCfg() 返回空 ⇒ 零额外请求、行为与之前一致。
+// 服务端模式：通过请求头把 key / 环境变量名交给后端（反代已透传自定义头）。
+// 静态站模式：浏览器直连 fuyao（实测 CORS 允许 x-api-key），仅在「刷新当日行情」
+//   时补齐新浪缺失的价格；绝不改写已发布的 data.json，双端一致性不受影响。
+const FY_BASE = "https://fuyao.aicubes.cn";
+const FY_LS_KEY = "invest-radar-fuyaokey";
+const FY_LS_ENV = "invest-radar-fuyaoenv";
+
+function fyCfg(){
+  try{
+    if(typeof localStorage === "undefined") return {key:"", env:""};
+    return {
+      key: (localStorage.getItem(FY_LS_KEY) || "").trim(),
+      env: (localStorage.getItem(FY_LS_ENV) || "").trim()
+    };
+  }catch(e){ return {key:"", env:""}; }
+}
+
+function fyHeaders(){
+  const c = fyCfg(), h = {};
+  if(c.key) h["X-Fuyao-Key"] = c.key;
+  if(c.env) h["X-Fuyao-Env"] = c.env;
+  return h;
+}
+
+function fySetStatus(msg, ok){
+  const st = document.getElementById("fy-status");
+  if(st){ st.textContent = msg || ""; st.style.color = ok === true ? "#16a34a"
+      : (ok === false ? "#dc2626" : ""); }
+  const dot = document.getElementById("fy-dot");
+  const tip = document.getElementById("fy-summary-tip");
+  const c = fyCfg();
+  if(dot) dot.className = "fy-dot" + (c.key || c.env ? " on" : "");
+  if(tip) tip.textContent = c.key || c.env ? "已配置" : "未启用";
+}
+
+function fySave(){
+  const k = document.getElementById("fy-key");
+  const e = document.getElementById("fy-env");
+  try{
+    const c = fyCfg();
+    const key = k ? k.value.trim() : c.key;
+    const env = e ? e.value.trim() : c.env;
+    if(key) localStorage.setItem(FY_LS_KEY, key); else localStorage.removeItem(FY_LS_KEY);
+    if(env) localStorage.setItem(FY_LS_ENV, env); else localStorage.removeItem(FY_LS_ENV);
+    fySetStatus(key || env ? "已保存，正在生效…" : "已清空，增强源关闭。", true);
+    if(typeof loadData === "function") loadData();
+  }catch(err){ fySetStatus("保存失败：" + err, false); }
+}
+
+function fyClear(){
+  const k = document.getElementById("fy-key");
+  const e = document.getElementById("fy-env");
+  if(k) k.value = "";
+  if(e) e.value = "";
+  try{ localStorage.removeItem(FY_LS_KEY); localStorage.removeItem(FY_LS_ENV); }catch(err){}
+  fySetStatus("已清除，增强源关闭（原抓取链不变）。", true);
+  if(typeof loadData === "function") loadData();
+}
+
+async function fyCheck(){
+  const c = fyCfg();
+  if(!c.key && !c.env){ fySetStatus("请先填写 API Key 或环境变量名并保存。", false); return; }
+  fySetStatus("正在测试连接…");
+  try{
+    if(!STATIC){
+      const r = await fetch(siteBase() + "api/fuyao/check", {headers: fyHeaders()});
+      const d = await r.json();
+      if(d.ok) fySetStatus("连接成功：沪深300ETF 最新价 " + (d.sample && d.sample.price)
+        + " 元，增强源已启用（仅补新闻/ETF行情）。", true);
+      else fySetStatus(d.enabled ? "调用失败：" + (d.error || "未知错误")
+        + "，已自动回退原抓取链。" : "服务端未取到 Key（检查环境变量名是否正确）。", false);
+    }else{
+      if(!c.key){ fySetStatus("静态站无法读取服务端环境变量，请直接填 API Key。", false); return; }
+      const r = await fetch(FY_BASE + "/api/fund/market/snapshot?thscode=510300.SH",
+                            {headers: {"X-api-key": c.key}});
+      const d = await r.json();
+      if(d && d.code === 0) fySetStatus("连接成功：Key 有效，可用于「刷新当日行情」补价。", true);
+      else fySetStatus("调用失败：code=" + (d && d.code) + " " + (d && d.message || ""), false);
+    }
+  }catch(err){ fySetStatus("连接失败：" + err + "，已自动回退原抓取链。", false); }
+}
+
+// 静态站「刷新当日行情」的补源：仅对新浪缺失的 code 逐只查 fuyao 基金快照。
+// fuyao 一次只支持 1 只（逗号分隔会报 1002），故正常全绿时零额外请求。
+function fyThscode(code){ return code + ((code[0] === "5" || code[0] === "6") ? ".SH" : ".SZ"); }
+
+function fyQuote(code, key){
+  return fetch(FY_BASE + "/api/fund/market/snapshot?thscode=" + fyThscode(code),
+               {headers: {"X-api-key": key}})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      const it = d && d.code === 0 && d.data && d.data.item && d.data.item[0];
+      if(!it || !(it.last_price > 0)) return null;
+      return {price: it.last_price, prevClose: it.prev_price, amount: it.turnover};
+    })
+    .catch(function(){ return null; });
+}
+
+function fyFillToday(out, resolve){
+  const c = fyCfg();
+  if(!c.key){ resolve(out); return; }          // 不填 key ⇒ 原行为
+  const missing = Object.keys(out).filter(function(k){
+    return !(out[k] && out[k].price > 0);
+  });
+  const codes = missing.length ? missing : [];
+  if(!codes.length){ resolve(out); return; }   // 原源全绿 ⇒ 零额外请求
+  Promise.all(codes.slice(0, 14).map(function(k){ return fyQuote(k, c.key); }))
+    .then(function(rows){
+      codes.forEach(function(k, i){
+        if(rows[i]) out[k] = Object.assign({}, out[k] || {}, rows[i]);
+      });
+      resolve(out);
+    }).catch(function(){ resolve(out); });     // 增强失败静默降级
+}
+
+(function initFuyao(){
+  try{
+    if(typeof document === "undefined") return;
+    const c = fyCfg();
+    const k = document.getElementById("fy-key");
+    const e = document.getElementById("fy-env");
+    if(k) k.value = c.key;
+    if(e) e.value = c.env;
+    const note = document.getElementById("fy-note");
+    if(note && STATIC) note.textContent =
+      "静态站为已发布快照：此处填 Key 仅在点击「刷新当日行情」时用同花顺官方行情补齐新浪缺失的价格，不会改写 data.json。环境变量名只在服务端模式有效。主力净额/逐笔/QDII 仍走原方案。";
+    fySetStatus("");
+  }catch(err){}
+})();
 
 // 站点路径前缀：域名反代时两个面板可能挂在同一域名的不同路径下（/nt/、/qdii/），
 // 页面里所有接口 / 数据文件都必须带上该前缀，否则请求会落到根路径、命中另一个面板。
@@ -529,7 +700,8 @@ async function loadData(){
   try{
     const d = STATIC
       ? await staticPayload()
-      : await (await fetch(siteBase() + "api/data" + buildQuery())).json();
+      : await (await fetch(siteBase() + "api/data" + buildQuery(),
+                           {headers: fyHeaders()})).json();
     if(seq !== reqSeq) return;          // 丢弃过期响应
     DATA = d;
     // 仅在“手动选了不存在的日期”时重置；自动模式(空)保持不变，
@@ -1249,7 +1421,8 @@ async function refresh(){
   const btn = document.querySelector(".btn:not(.ghost)");
   btn.disabled=true; const old=btn.textContent; btn.textContent="抓取中…";
   try{
-    const r = await fetch(siteBase() + "api/refresh" + buildQuery());
+    const r = await fetch(siteBase() + "api/refresh" + buildQuery(),
+                          {headers: fyHeaders()});
     const d = await r.json();
     DATA = d;
     state.date = d.filters?.date || "";
@@ -1282,10 +1455,10 @@ function ntTodayFetcher(){
       fetchEmFlows(codes).then(function(flows){
         var out = {};
         codes.forEach(function(c){ out[c] = Object.assign({}, prices[c] || {}, flows[c] || {}); });
-        resolve(out);
+        fyFillToday(out, resolve);   // 有 key 且原源缺价时才补，否则原样 resolve
       }).catch(function(){   // 资金流失败：仅返回价/昨收，至少刷新涨跌幅
         var out = {}; codes.forEach(function(c){ out[c] = prices[c] || {}; });
-        resolve(out);
+        fyFillToday(out, resolve);
       });
     }).catch(function(e){ reject(e); });
   });

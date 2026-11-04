@@ -30,6 +30,11 @@ jobs:
           python-version: "3.11"
 
       - name: 抓取并导出静态数据（汪汪队）
+        # fuyao 增强源（可选）：站主在仓库 Secrets 配 FUYAO_API_KEY 后，
+        # 生成 data.json 时会用同花顺官方源补齐新闻/ETF行情；未配置时为空
+        # ⇒ resolve_key() 取不到 key ⇒ 增强完全关闭、零额外请求（默认行为不变）。
+        env:
+          FUYAO_API_KEY: ${{ secrets.FUYAO_API_KEY }}
         run: python national_team/staticsite.py
 
       # QDII 静态站导出前必须先抓数据。qdii.db 被 .gitignore 排除，

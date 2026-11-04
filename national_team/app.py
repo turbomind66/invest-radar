@@ -48,6 +48,32 @@ def strip_base(path):
     return path
 
 
+def _fuyao_module():
+    """延迟取 common.fuyao；不可用返回 None（增强关闭，零影响）。"""
+    try:
+        from common import fuyao
+        return fuyao
+    except ImportError:
+        return None
+
+
+def _fuyao_apply_headers(headers):
+    """把页面填写的 API Key / 环境变量名注入本次请求（thread-local）。
+
+    请求头 X-Fuyao-Key / X-Fuyao-Env 由反代（gateway / combo_app）原样透传。
+    不填时两个值都是 None ⇒ 增强只认服务器环境变量，行为与之前完全一致。
+    """
+    fy = _fuyao_module()
+    if fy is None:
+        return None
+    try:
+        fy.set_request_override(headers.get("X-Fuyao-Key"),
+                                headers.get("X-Fuyao-Env"))
+    except Exception:  # noqa: BLE001
+        fy.clear_request_override()
+    return fy
+
+
 def _auto_refresh_state():
     """单应用形态（WorkBuddy）自动补数的运行状态；未启用返回 None。
 
@@ -340,6 +366,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # handle_error 断连。断连在 Docker gateway 里会被包成 502「无法连接上游」、
         # WorkBuddy combo_app 里会被吞成 200「服务预热中」→ 上层健康检查永远绿、
         # 真实错误被完全吞掉（v2.6.1 修 QDII 时踩过一模一样的坑）。
+        _fy = _fuyao_apply_headers(self.headers)
         try:
             self._do_GET(head_only=False)
         except Exception as e:  # noqa: BLE001
@@ -351,10 +378,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                      "msg": str(e)[:300]}, ensure_ascii=False).encode("utf-8"))
             except Exception:
                 pass
+        finally:
+            # 清理 thread-local，避免连接复用时把上一个访客的 key 带给下一个
+            if _fy is not None:
+                _fy.clear_request_override()
 
     def do_HEAD(self):
         # HEAD 走同一路由，但只发头不发体，让 Docker healthcheck / 外部监控
         # 可以 HEAD /api/status 而不是必须 GET（旧实现直接 501 Unsupported method）。
+        _fy = _fuyao_apply_headers(self.headers)
         try:
             self._do_GET(head_only=True)
         except Exception:
@@ -364,6 +396,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
             except Exception:
                 pass
+        finally:
+            if _fy is not None:
+                _fy.clear_request_override()
 
     def _do_GET(self, head_only=False):
         parsed = urllib.parse.urlparse(self.path)
@@ -438,12 +473,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 # （见 v2.6.1 修「部署后线上跑旧代码」根因）
                 "app_version": APP_VERSION,
             }
+            # fuyao 增强源状态（可选）：enabled / source / 最近错误 / 本次增强条数。
+            # 模块不可用时整段为 {"enabled": false}，不暴露任何 key 内容。
+            fy = _fuyao_module()
+            payload["fuyao"] = fy.status() if fy is not None else {
+                "enabled": False, "source": "off", "last_error": None,
+                "enhanced_news": 0, "enhanced_quotes": 0}
             # 单应用形态（WorkBuddy）的自动补数状态：没启用就是 None，
             # 启用后能看到「首启恢复补了多少、当前在哪个阶段、最近一次错误」。
             ar = _auto_refresh_state()
             if ar:
                 payload["auto_refresh"] = ar
             self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                       head_only=head_only)
+            return
+        if path == "/api/fuyao/check":
+            # 页面填完 key 后的连通性自检：只打 1 个轻量端点，返回布尔与错误码，
+            # **绝不回显 key**。无 key 时直接返回未启用，不发任何网络请求。
+            fy = _fuyao_module()
+            out = {"enabled": False, "ok": False, "error": None,
+                   "sample": None}
+            if fy is not None and fy.enabled():
+                out["enabled"] = True
+                try:
+                    row = fy.fund_snapshot("510300.SH")
+                    out["ok"] = bool(row)
+                    if row:
+                        out["sample"] = {
+                            "code": "510300",
+                            "price": row.get("last_price"),
+                            "chg": row.get("price_change_ratio_pct"),
+                        }
+                except Exception as e:  # noqa: BLE001
+                    out["error"] = getattr(e, "args", [""])[0] if getattr(
+                        e, "args", None) else type(e).__name__
+            self._send(200, json.dumps(out, ensure_ascii=False).encode("utf-8"),
                        head_only=head_only)
             return
         if path == "/echarts.min.js":

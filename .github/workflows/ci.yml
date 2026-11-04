@@ -34,6 +34,7 @@ jobs:
             qdii/tracking_error.py qdii/strategy.py \
             qdii/qdii_scheduler.py qdii/staticsite.py \
             common/http.py common/lock.py common/market_calendar.py \
+            common/fuyao.py \
             docker/healthcheck.py gateway.py combo_app.py
 
       - name: QDII 静态导出（同时验证 allow_nan=False / 空覆盖保护可用）

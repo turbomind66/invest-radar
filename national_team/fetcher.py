@@ -10,6 +10,34 @@ import os
 
 import db
 
+# ---- fuyao 增强源（可选，2026-11-04）------------------------------------
+# 懒加载：模块加载期绝不因为 common/fuyao 不可用而报错（三种原部署零影响）。
+# 无 key 时 _fuyao_mod().enabled() 返回 False，所有接入点直接短路、零额外请求。
+_FUYAO = None
+_FUYAO_TRIED = False
+
+
+def _fuyao_mod():
+    """返回 common.fuyao 模块，或 None（不可用 = 增强关闭）。"""
+    global _FUYAO, _FUYAO_TRIED
+    if _FUYAO_TRIED:
+        return _FUYAO
+    _FUYAO_TRIED = True
+    try:
+        from common import fuyao as _m
+    except ImportError:
+        try:  # 兼容被直接 exec / sys.path 里没有项目根的入口
+            import sys as _sys
+            _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if _root not in _sys.path:
+                _sys.path.insert(0, _root)
+            from common import fuyao as _m
+        except ImportError:
+            _m = None
+    _FUYAO = _m
+    return _FUYAO
+
+
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
 CTX.verify_mode = ssl.CERT_NONE
@@ -177,7 +205,7 @@ def fetch_sina_etfs() -> dict:
     try:
         txt = _get_sina(url)
     except Exception:
-        return out
+        txt = ""  # 新浪挂了不直接返回，后面还有 fuyao 增强源可补缺
     for line in txt.replace("\n", ";").split(";"):
         if "hq_str_" not in line:
             continue
@@ -197,6 +225,23 @@ def fetch_sina_etfs() -> dict:
             }
         except Exception:
             continue
+
+    # fuyao 增强（可选，2026-11-04）：**仅补缺** —— 新浪限流/断连导致部分或全部
+    # 观察池没拿到行情时，用同花顺官方快照补上缺失的 code。有 key 才启用；
+    # 正常环境 14/14 全绿 ⇒ 零额外请求。任何异常静默降级，绝不阻断主流程。
+    fy = _fuyao_mod()
+    if fy is not None and fy.enabled() and len(out) < len(WATCHLIST):
+        missing = [c for c, _, _ in WATCHLIST if c not in out]
+        if missing:
+            try:
+                extra = fy.etf_quotes(missing)
+                out.update(extra)
+                fy.STATE["enhanced_quotes"] = len(extra)
+                if extra:
+                    print("[fuyao] ETF行情补齐 %d/%d 只（新浪缺失 %d 只）"
+                          % (len(extra), len(WATCHLIST), len(missing)))
+            except Exception as e:  # noqa: BLE001
+                print("[fuyao] ETF行情增强跳过：%s" % type(e).__name__)
     return out
 
 
@@ -676,6 +721,29 @@ def fetch_news() -> list:
         except Exception as e:
             report.append((src, 0, 0, type(e).__name__))
             continue
+
+    # fuyao 增强源（可选，2026-11-04）：作为**第 4 个候选源**并入同一套打分/去重，
+    # 有 key 才启用。入榜仍一律走 _news_score()，口径与原三源完全一致，不会因
+    # 新增源放宽标准；key 无效 / 2004 / 限流 / 网络异常一律静默降级。
+    fy = _fuyao_mod()
+    if fy is not None and fy.enabled():
+        try:
+            items = fy.news_items()
+            hit = 0
+            for it in items:
+                sc = _news_score(it["title"])
+                if sc <= 0:
+                    continue
+                it["_score"] = sc
+                scored.append(it)
+                hit += 1
+            report.append(("同花顺API", len(items), hit, None))
+            fy.STATE["enhanced_news"] = hit
+            if hit:
+                print("[fuyao] 新闻候选 %d 条，相关入榜 %d 条" % (len(items), hit))
+        except Exception as e:  # noqa: BLE001
+            report.append(("同花顺API", 0, 0, type(e).__name__))
+            print("[fuyao] 新闻增强跳过：%s" % type(e).__name__)
     fetch_news.last_report = report
 
     # 兜底（v2.7.1）：本地最终条数 < 快照条数时，借差量补齐，让所有部署形态新闻一致。
@@ -915,6 +983,11 @@ def fetch_and_save(force: bool = False) -> dict:
     """
     today = datetime.date.today().strftime("%Y-%m-%d")
     trading = is_trading_day()
+
+    # 本次抓取的增强计数重置（供 /api/status 展示；模块不可用则跳过）
+    fy = _fuyao_mod()
+    if fy is not None:
+        fy.reset_counters()
 
     # 新闻：无论是否交易日都抓（周末也有国家队/汇金相关新闻），先入库
     news = fetch_news()

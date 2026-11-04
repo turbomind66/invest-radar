@@ -318,6 +318,12 @@ NPM（容器部署）则填 **gateway 容器 IP + 38881**，公网只走 443，�
 
 均为公开接口，无需 API Key。生产环境每天只抓一次，不会触发上游限流；开发期高频探测可能被临时限制。
 
+### 可选数据源增强（同花顺 fuyao API）
+
+页面页头「⚙ 数据源增强」可**选填** API Key 或系统环境变量名，用于把「新闻 / ETF 行情」从被风控的新浪、东财部分切到同花顺官方源。定位是**增强源而非唯一源**：不填则完全关闭、零额外请求；填了也只在原源缺数据时补齐，接口异常自动静默回退。主力资金、逐笔大单与 QDII 海外信号仍走原方案——fuyao 的这几类接口实测被锁在同花顺 AI 客户端（`code=2004`），且没有海外行情数据。
+
+Key 可放在环境变量 `invest-radar-fuyaokey` 或 `FUYAO_API_KEY`（见 `.env.example`）；静态站由站点维护者在仓库 Secrets 配 `FUYAO_API_KEY` 后重新生成快照。该服务当前免费但无 SLA 承诺。完整实测记录、字段映射与接入设计见 [FUYAO_INTEGRATION.md](FUYAO_INTEGRATION.md)。
+
 ## HTTP 接口
 
 | 接口 | 说明 |
@@ -326,7 +332,8 @@ NPM（容器部署）则填 **gateway 容器 IP + 38881**，公网只走 443，�
 | `GET /api/data` | 数据 + 历史（JSON），支持筛选参数 |
 | `GET /api/options` | 筛选项清单（可选日期 / 类别 / 基金） |
 | `GET /api/refresh` | 立即抓取并刷新 |
-| `GET /api/status` | 最近抓取状态 |
+| `GET /api/status` | 最近抓取状态（含 `fuyao` 增强状态，不含 Key） |
+| `GET /api/fuyao/check` | 增强源连通性自检（无 Key 时不发网络请求） |
 
 筛选参数（可组合）：
 
@@ -346,7 +353,8 @@ NPM（容器部署）则填 **gateway 容器 IP + 38881**，公网只走 443，�
 ├── common/                 # 两模块共用（重构抽取的公共层）
 │   ├── http.py             # 代理感知抓取：本地自动直连、公网走环境代理
 │   ├── lock.py             # 跨进程文件锁（fcntl），保证任务互斥抢写
-│   └── market_calendar.py  # 双市场交易日判定：A 股日历 / 美股日历
+│   ├── market_calendar.py  # 双市场交易日判定：A 股日历 / 美股日历
+│   └── fuyao.py            # 可选增强源客户端（同花顺 API，无 Key 即关闭）
 ├── national_team/          # ① 汪汪队买卖A股日报
 │   ├── app.py              # HTTP 服务 + 路由 + 数据组装
 │   ├── db.py               # SQLite 存储层（data.db）
@@ -387,12 +395,14 @@ NPM（容器部署）则填 **gateway 容器 IP + 38881**，公网只走 443，�
 │   ├── test_frontend.js    # 前端渲染逻辑测试（DOM 桩件，离线）
 │   ├── test_static.js      # 双模式一致性测试（前端筛选 vs 服务端逻辑）
 │   ├── test_static_boot.js # 静态站产物启动测试（加载 docs/index.html 实跑）
+│   ├── test_fuyao.py       # 可选增强源：Key 解析 / 降级 / 字段映射（离线）
 │   └── gen_static_expected.py  # 为上面的一致性测试生成服务端期望值
 ├── .github/workflows/
 │   ├── ci.yml              # 语法检查 + 全部测试
 │   ├── daily.yml           # 每个交易日收盘后抓取并提交 docs/
 │   └── tick-sample.yml     # 盘中逐笔大单采样（cron-job.org 触发）
 ├── CHANGELOG.md            # 历史版本说明（README 只保留当前版本）
+├── FUYAO_INTEGRATION.md    # 可选数据源增强：实测结论 / 字段映射 / 接入方案
 ├── requirements.txt
 └── LICENSE
 ```
