@@ -118,6 +118,37 @@ def _summarize(rows):
     }
 
 
+def _parse_iso_date(s):
+    """严格解析 YYYY-MM-DD；非法返回 None。
+
+    date.fromisoformat 在 3.11+ 也接受 20261104 这类紧凑格式，故限定长度
+    并回比 isoformat()，避免 URL 里混入怪格式后被当成合法日期。
+    """
+    if not s or len(s) != 10:
+        return None
+    try:
+        d = datetime.date.fromisoformat(s)
+    except ValueError:
+        return None
+    return d if d.isoformat() == s else None
+
+
+def build_news_payload(date_from, date_to, path=db.DB_PATH):
+    """新闻日期段查询：闭区间内全部新闻（含日期、已去敏），按时间倒序。
+
+    独立成函数便于离线单测；/api/data 的当日 news 字段语义保持不变。
+    注意只能列出库里已归档的条目——上游是滚动窗口，历史抓漏的补不回来。
+    """
+    items = fetcher.mask_news_items(db.get_news_range(date_from, date_to, path))
+    return {
+        "from": date_from,
+        "to": date_to,
+        "count": len(items),
+        "items": items,
+        "news_ok": db.get_meta("news_ok", "1", path) == "1",
+    }
+
+
 def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
     """组装前端数据。支持按 日期 / 类别 / 基金代码 三个维度筛选。
 
@@ -427,6 +458,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
             payload["signal"] = signal_label(payload["summary"]["headline_yi"])
             self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                        head_only=head_only)
+            return
+        if path == "/api/news":
+            # 新闻日期段查询：?from=YYYY-MM-DD&to=YYYY-MM-DD（闭区间）。
+            # 两端都省略时退化为「当前所选日期单日」，与旧新闻栏行为一致。
+            # 数据库里没有的历史新闻不会凭空出现（上游滚动窗口不可回溯）。
+            n_from, n_to = qone("from"), qone("to")
+            if not n_from and not n_to:
+                n_from = n_to = f_date or datetime.date.today().isoformat()
+            elif not n_from:
+                n_from = n_to
+            elif not n_to:
+                n_to = n_from
+            df, dt = _parse_iso_date(n_from), _parse_iso_date(n_to)
+            if df is None or dt is None or df > dt or (dt - df).days > 3660:
+                body = json.dumps({
+                    "error": "bad_range",
+                    "msg": "需要合法的 from/to（YYYY-MM-DD），且 from<=to、跨度不超过 3660 天",
+                }, ensure_ascii=False).encode("utf-8")
+                self._send(400, body, head_only=head_only)
+            else:
+                payload = build_news_payload(n_from, n_to)
+                self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                           head_only=head_only)
             return
         if path == "/api/refresh":
             # 手动刷新仍然允许，但要跟 cron / 上一次点击串行：拿不到锁说明

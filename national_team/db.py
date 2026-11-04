@@ -619,6 +619,25 @@ def get_news_by_date(date: str, path: str = DB_PATH):
     return [{"time": r[0], "title": r[1], "url": r[2], "src": r[3]} for r in rows]
 
 
+def get_news_range(date_from: str, date_to: str, path: str = DB_PATH):
+    """按发布日期区间返回新闻（闭区间，含 date 字段，按时间倒序）。
+
+    供新闻栏「自选日期 / 日期段」查询使用。与 get_news_by_date 的区别：
+      - 多带一个 date，前端要按日期分组展示；
+      - 跨天按 time 倒序（新的在前），同一时刻用 id DESC 保持与单日视图一致。
+    纯读取，不改动任何数据；区间为空时返回 []。
+    """
+    conn = _conn(path)
+    rows = conn.execute(
+        "SELECT date,time,title,url,src FROM news "
+        "WHERE date>=? AND date<=? ORDER BY time DESC, id DESC",
+        (date_from, date_to),
+    ).fetchall()
+    conn.close()
+    return [{"date": r[0], "time": r[1], "title": r[2],
+             "url": r[3], "src": r[4]} for r in rows]
+
+
 def get_news_dates(path: str = DB_PATH):
     """所有有新闻记录的日期（降序）。"""
     conn = _conn(path)

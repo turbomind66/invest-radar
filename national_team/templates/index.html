@@ -88,6 +88,16 @@
   .news a:hover{color:var(--blue)}
   .news .t{font-size:12px;color:var(--sub);margin-top:3px}
   .news .src{display:inline-block;font-size:11px;background:var(--chip);color:var(--sub);padding:1px 6px;border-radius:5px;margin-left:6px}
+  /* 新闻日期段：起止日期 + 查询；区间结果按日期分组 */
+  .news-range{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:-4px 0 10px;font-size:12px;color:var(--sub)}
+  .news-range label{display:inline-flex;align-items:center;gap:4px}
+  .news-range input[type=date]{width:128px;border:1px solid var(--line);border-radius:7px;
+    padding:4px 6px;font-size:12px;color:var(--ink);background:#fff}
+  .news-range .nr-btn{cursor:pointer;border:1px solid #c9dcff;background:#fff;color:var(--blue);
+    border-radius:7px;padding:4px 9px;font-size:12px;font-weight:600}
+  .news-range .nr-btn:hover{background:#f2f7ff}
+  .news-range .nr-info{flex-basis:100%;font-size:11.5px;color:var(--sub);line-height:1.5}
+  .news li.nd{padding:8px 0 2px;border-bottom:0;font-size:11.5px;font-weight:700;color:var(--blue)}
   .note{font-size:12px;color:var(--sub);background:#fff8ec;border:1px solid #f3e2bf;border-radius:10px;padding:10px 12px;margin-bottom:18px}
   .note b{color:var(--amber)}
   .empty{color:var(--sub);font-size:13px;padding:14px 0}
@@ -237,6 +247,13 @@
     </div>
     <div class="panel">
       <h2>📰 汪汪队相关新闻</h2>
+      <div class="news-range">
+        <label>起 <input type="date" id="news-from" aria-label="新闻起始日期"></label>
+        <label>止 <input type="date" id="news-to" aria-label="新闻结束日期"></label>
+        <button class="nr-btn" type="button" onclick="onNewsQuery()">查询</button>
+        <button class="nr-btn" type="button" onclick="onNewsFollow()">跟随日期</button>
+        <span class="nr-info" id="news-range-info"></span>
+      </div>
       <ul class="news" id="news"></ul>
     </div>
   </div>
@@ -336,6 +353,12 @@ const state = { date:"", cats:new Set(), codes:new Set() };
 // 数据来自同目录 data.json，筛选在浏览器本地计算（无需后端）。
 const STATIC = !!window.__STATIC__;
 let STATIC_RAW = null;   // 全量快照缓存，只拉一次
+
+// 新闻栏日期段：null = 跟随上方全局日期（原单日行为）；否则为 {from, to}。
+// newsSeq 防异步竞态；newsCache 避免切换类别/基金时重复请求同一区间。
+let newsRange = null;
+let newsSeq = 0;
+let newsCache = null;
 
 // ---------- 数据源增强（fuyao，可选）----------
 // 定位：增强源而非唯一源。不填 key ⇒ fyCfg() 返回空 ⇒ 零额外请求、行为与之前一致。
@@ -783,6 +806,131 @@ function resetFilters(){
   loadData();
 }
 
+// ---------- 新闻栏：单日跟随 / 自定义日期段 ----------
+function newsFollowDate(d){
+  return (d && d.filters && d.filters.date) || (d && d.latest_date) || "";
+}
+function setNewsInfo(t){
+  const el = document.getElementById("news-range-info");
+  if(el) el.textContent = t;
+}
+function syncNewsInputs(d){
+  const a = document.getElementById("news-from"), b = document.getElementById("news-to");
+  if(!a || !b) return;
+  // 用户正在改日期但还没点「查询」时不要覆盖输入（定时刷新会重进 render）
+  const act = document.activeElement;
+  if(act === a || act === b) return;
+  const day = newsFollowDate(d);
+  a.value = newsRange ? newsRange.from : day;
+  b.value = newsRange ? newsRange.to : day;
+}
+function newsLi(n){
+  return `<li>
+      <a href="${esc(n.url||'#')}" target="_blank" rel="noopener">${esc(n.title)}</a>
+      <div class="t">${esc(n.time||"")}<span class="src">${esc(n.src||"")}</span></div></li>`;
+}
+function onNewsQuery(){
+  const from = (document.getElementById("news-from")||{}).value || "";
+  const to   = (document.getElementById("news-to")||{}).value || "";
+  if(!from || !to){ setNewsInfo("请同时选择起始和结束日期"); return; }
+  if(from > to){ setNewsInfo("起始日期不能晚于结束日期"); return; }
+  newsRange = {from:from, to:to};
+  newsCache = null;
+  renderNews(DATA, true);
+}
+function onNewsFollow(){
+  newsRange = null;
+  newsCache = null;
+  renderNews(DATA, true);
+}
+// 静态站：data.json 里已有全量「按日期」新闻字典，本地过滤即可，无需后端。
+function newsStaticRange(from, to){
+  const raw = (STATIC_RAW && STATIC_RAW.news) || {};
+  const out = [];
+  Object.keys(raw).forEach(d=>{
+    if(d < from || d > to) return;
+    (raw[d]||[]).forEach(n=>{ out.push(Object.assign({}, n, {date:d})); });
+  });
+  out.sort((a,b)=> String(b.time||b.date).localeCompare(String(a.time||a.date)));
+  return out;
+}
+function renderNewsGrouped(items, from, to){
+  const nl = document.getElementById("news");
+  if(!nl) return;
+  if(!items.length){
+    nl.innerHTML = `<li class="empty">${esc(from)} ~ ${esc(to)} 区间内没有已归档的新闻。<br>库里只保留抓取入选的条目，历史抓漏的无法回补。</li>`;
+    return;
+  }
+  const byDate = {};
+  items.forEach(n=>{
+    const d = n.date || String(n.time||"").slice(0,10) || "未知日期";
+    (byDate[d] = byDate[d] || []).push(n);
+  });
+  nl.innerHTML = Object.keys(byDate).sort().reverse().map(d=>
+    `<li class="nd">${esc(d)}　<span style="font-weight:500;color:var(--sub)">${byDate[d].length} 条</span></li>`
+    + byDate[d].map(newsLi).join("")
+  ).join("");
+}
+async function renderNews(d, force){
+  if(!d) return;
+  const nl = document.getElementById("news");
+  if(!nl) return;
+  syncNewsInputs(d);
+  const seq = ++newsSeq;
+
+  // 默认：跟随上方全局日期，完整保留原「当日新闻 + 无新闻时兜底最近一天」行为
+  if(!newsRange){
+    const day = newsFollowDate(d);
+    const isHistory = d.dates && d.dates.length && d.filters
+      && d.filters.date !== d.dates[d.dates.length-1];
+    setNewsInfo("跟随上方所选日期（当前 " + (day||"—") + "）；改起止日期后点「查询」可看日期段。");
+    if(!d.news_ok){
+      nl.innerHTML = `<li class="empty">新闻源暂未连通（上游接口限制），核心净买入数据不受影响。</li>`;
+    } else if(!d.news || !d.news.length){
+      const fb = d.news_fallback;
+      if(fb && fb.items && fb.items.length){
+        nl.innerHTML = fb.items.map(newsLi).join("")
+          + `<li class="empty" style="border:0;padding-top:6px">（该日期无新闻，以上为 ${esc(fb.date||"")} 的记录）</li>`;
+      } else {
+        nl.innerHTML = `<li class="empty">${isHistory?"该历史日期无新闻记录（历史补数不回溯新闻）。":"今日暂无匹配“汪汪队/汇金/证金/增持”的新闻。"}</li>`;
+      }
+    } else {
+      nl.innerHTML = d.news.map(newsLi).join("");
+    }
+    return;
+  }
+
+  // 自定义日期段：静态站读本地快照，动态站走 /api/news
+  const from = newsRange.from, to = newsRange.to, key = from + "~" + to;
+  if(!force && newsCache && newsCache.key === key){
+    setNewsInfo((from===to?from:from+" ~ "+to) + "：共 " + newsCache.items.length + " 条（按日期分组）");
+    renderNewsGrouped(newsCache.items, from, to);
+    return;
+  }
+  setNewsInfo("正在查询 " + from + " ~ " + to + " …");
+  nl.innerHTML = `<li class="empty">正在读取该日期段的新闻…</li>`;
+  let items = [];
+  try{
+    if(STATIC){
+      items = newsStaticRange(from, to);
+    } else {
+      const resp = await fetch(siteBase() + "api/news?from=" + encodeURIComponent(from)
+                    + "&to=" + encodeURIComponent(to), {headers: fyHeaders(), cache:"no-cache"});
+      const j = await resp.json();
+      if(!resp.ok) throw new Error(j.msg || j.error || ("HTTP " + resp.status));
+      items = j.items || [];
+    }
+  }catch(e){
+    if(seq === newsSeq)
+      nl.innerHTML = `<li class="empty">新闻日期段查询失败：${esc(e && e.message || e)}</li>`;
+    return;
+  }
+  if(seq !== newsSeq) return;       // 丢弃过期响应
+  newsCache = {key:key, items:items};
+  setNewsInfo((from===to?from:from+" ~ "+to) + "：共 " + items.length + " 条（按日期分组）");
+  renderNewsGrouped(items, from, to);
+}
+
 // ---------- 主体渲染 ----------
 function render(d){
   const s = d.summary || {};
@@ -891,26 +1039,8 @@ function render(d){
     ? "单位：亿元（当前筛选范围的每日合计；左轴=二级主力净流入，右轴=一级市场净申购）"
     : "单位：亿元（左轴=二级主力净流入，右轴=一级市场净申购）";
 
-  // 新闻
-  const nl = document.getElementById("news");
-  if(!d.news_ok){
-    nl.innerHTML = `<li class="empty">新闻源暂未连通（上游接口限制），核心净买入数据不受影响。</li>`;
-  } else if(!d.news || !d.news.length){
-    // 所选日期没有新闻 → 展示最近有新闻的一天（并标注日期），而不是整块留空
-    const fb = d.news_fallback;
-    if(fb && fb.items && fb.items.length){
-      nl.innerHTML = fb.items.map(n=>`<li>
-        <a href="${esc(n.url||'#')}" target="_blank" rel="noopener">${esc(n.title)}</a>
-        <div class="t">${esc(n.time||"")}<span class="src">${esc(n.src||"")}</span></div></li>`).join("")
-        + `<li class="empty" style="border:0;padding-top:6px">（该日期无新闻，以上为 ${esc(fb.date||"")} 的记录）</li>`;
-    } else {
-      nl.innerHTML = `<li class="empty">${isHistory?"该历史日期无新闻记录（历史补数不回溯新闻）。":"今日暂无匹配“汪汪队/汇金/证金/增持”的新闻。"}</li>`;
-    }
-  } else {
-    nl.innerHTML = d.news.map(n=>`<li>
-      <a href="${esc(n.url||'#')}" target="_blank" rel="noopener">${esc(n.title)}</a>
-      <div class="t">${esc(n.time||"")}<span class="src">${esc(n.src||"")}</span></div></li>`).join("");
-  }
+  // 新闻（单日跟随 / 自定义日期段，逻辑见 renderNews）
+  renderNews(d);
 
   renderIntraday(d);
   renderTick(d);
