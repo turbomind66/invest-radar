@@ -1277,6 +1277,154 @@ function renderSummary(d){
 }
 
 // ---------- 疑似护盘 / 疑似压盘（分时放量识别，独立口径） ----------
+// 「🕵️ 疑似护盘 / 疑似压盘」与「💰 逐笔大额买单 / 集中扫货」两张表：
+// 默认按「时段」从早到晚，点任意列表头可改按该列排序，再点一次切换升 / 降序。
+// window 形如 "0930"/"1455"（也可能带冒号或结束时间），归一成纯数字串后字典序即时间序。
+function winKey(w){
+  return String(w || "").replace(/[^0-9]/g, "").padStart(4, "0");
+}
+// slice() 避免就地排序改写 DATA —— 切换日期 / 定时刷新会复用同一份视图数据。
+function sortByWindow(rows){
+  return (rows || []).slice().sort((a, b) =>
+    winKey(a.window).localeCompare(winKey(b.window)) ||
+    String(a.code || a.name || "").localeCompare(String(b.code || b.name || "")));
+}
+
+// 表格行数据与排序状态：TABLE_ROWS 恒为「默认时段升序」的原始顺序，
+// 视图排序只是它的一个变换，切回时段列 / 刷新都不会丢数据。
+const TABLE_SORT_DEFAULT = { col: 0, dir: 1 };   // col 0 = 时段，dir 1 = 从早到晚
+const TABLE_ROWS = { "intraday-events": [], "tick-events": [] };
+const TABLE_SORT = {};
+const SORT_SPEC = {
+  "intraday-events": {
+    labels: ["时段", "阶段", "方向", "只数", "护/压", "合计成交额(亿)", "最大倍数", "全池共振", "已印证"],
+    cols: [
+      { get: e => winKey(e.window) },
+      { get: e => e.segment || "" },
+      { get: e => e.kind === "support" ? "疑似护盘" : "疑似压盘" },
+      { get: e => +(e.funds || 0), num: true },
+      { get: e => +(e.support || 0), num: true },
+      { get: e => +(e.amount || 0), num: true },
+      { get: e => +(e.max_ratio || 0), num: true },
+      { get: e => +(e.max_cover || 0), num: true },
+      { get: e => +(e.confirmed || 0), num: true },
+    ],
+    empty: "当日未识别到符合四条件的放量事件",
+    row: (e) => {
+      const kindTxt = e.kind === "support"
+        ? `<span class="num red">疑似护盘</span>`
+        : `<span class="num green">疑似压盘</span>`;
+      return `<tr>
+          <td>${esc(e.window)}–${esc(e.end)}</td>
+          <td>${esc(e.segment)}</td>
+          <td>${kindTxt}</td>
+          <td>${e.funds}</td>
+          <td>${e.support}/${e.pressure}</td>
+          <td class="num">${fmt(e.amount/1e8)}</td>
+          <td class="num">${fmt(e.max_ratio,1)}×</td>
+          <td class="num">${fmt(e.max_cover,1)}×</td>
+          <td>${e.confirmed ? `<span class="num red">${e.confirmed}</span>` : "—"}</td>
+        </tr>`;
+    },
+  },
+  "tick-events": {
+    labels: ["时段", "基金", "方向", "大买单额(亿)", "大卖单额(亿)", "方向未知(亿)", "净买(亿)", "买单占比", "价格涨跌"],
+    cols: [
+      { get: e => winKey(e.window) },
+      { get: e => e.name || e.code || "" },
+      { get: e => ({ tick_buy: "集中扫货", tick_sell: "集中抛压", neutral: "未达阈值" })[e.kind] || "" },
+      { get: e => +(e.buy || 0), num: true },
+      { get: e => +(e.sell || 0), num: true },
+      { get: e => +(e.neutral || 0), num: true },
+      { get: e => +(e.net || 0), num: true },
+      { get: e => +(e.buy_ratio || 0), num: true },
+      { get: e => +(e.up_pct || 0), num: true },
+    ],
+    empty: "当日未抓到符合阈值的大单",
+    row: (e) => {
+      let kindTxt;
+      if(e.kind==="tick_buy") kindTxt = `<span class="num red">集中扫货</span>`;
+      else if(e.kind==="tick_sell") kindTxt = `<span class="num green">集中抛压</span>`;
+      else kindTxt = `<span class="num" style="color:#94a3b8">未达阈值</span>`;
+      // 方向未知的大单（历史归档口径修正前抓的）单列展示，
+      // 避免「有行但买卖金额全是 0」的误读。
+      const neu = e.neutral || 0;
+      return `<tr>
+          <td>${esc(e.window)}</td>
+          <td>${esc(e.name||e.code)}（${esc(e.code)}）</td>
+          <td>${kindTxt}</td>
+          <td class="num">${fmt(e.buy/1e8)}</td>
+          <td class="num">${fmt(e.sell/1e8)}</td>
+          <td class="num" style="color:#94a3b8">${neu>0?fmt(neu/1e8):'—'}</td>
+          <td class="num ${e.net>=0?'red':'green'}">${e.net>=0?'+':''}${fmt(e.net/1e8)}</td>
+          <td class="num">${fmt(e.buy_ratio*100,0)}%</td>
+          <td class="num ${e.up_pct>=0?'red':'green'}">${(e.up_pct>=0?'+':'')}${fmt(e.up_pct,2)}%</td>
+        </tr>`;
+    },
+  },
+};
+
+// 纯函数：按当前排序列生成新数组（数值列比数值，文本列按中文排序）。
+// 值相同则用时点 + 基金代码稳定兜底，该兜底不随主排序方向反转。
+function sortTableRows(rows, spec, state){
+  const st = state || TABLE_SORT_DEFAULT;
+  const col = spec.cols[st.col] || spec.cols[0];
+  return (rows || []).slice().sort((a, b) => {
+    const va = col.get(a), vb = col.get(b);
+    const r = col.num
+      ? ((+va || 0) - (+vb || 0))
+      : String(va == null ? "" : va).localeCompare(String(vb == null ? "" : vb), "zh-CN");
+    if(r !== 0) return r * st.dir;
+    return winKey(a.window).localeCompare(winKey(b.window)) ||
+           String(a.code || a.name || "").localeCompare(String(b.code || b.name || ""));
+  });
+}
+function drawTableRows(id){
+  const spec = SORT_SPEC[id];
+  const tbody = document.querySelector("#" + id + " tbody");
+  if(!spec || !tbody) return;
+  const rows = TABLE_ROWS[id] || [];
+  tbody.innerHTML = rows.length
+    ? sortTableRows(rows, spec, TABLE_SORT[id]).map(spec.row).join("")
+    : `<tr><td colspan="9" class="empty">${esc(spec.empty)}</td></tr>`;
+  markSortHeader(id);
+}
+// 表头标 ▲/▼，让人一眼看出当前按哪列、哪个方向排
+function markSortHeader(id){
+  const spec = SORT_SPEC[id];
+  const ths = document.querySelectorAll("#" + id + " thead th");
+  const st = TABLE_SORT[id] || TABLE_SORT_DEFAULT;
+  ths.forEach((th, i) => {
+    const label = spec.labels[i];
+    if(label === undefined) return;
+    const mark = (i === st.col)
+      ? ` <span style="color:#2563eb">${st.dir > 0 ? "▲" : "▼"}</span>` : "";
+    th.innerHTML = esc(label) + mark;
+  });
+}
+function onSortHeaderClick(id, col){
+  const spec = SORT_SPEC[id];
+  if(!spec || !spec.cols[col]) return;
+  const st = TABLE_SORT[id] || TABLE_SORT_DEFAULT;
+  // 同一列再点 → 反向；换新列 → 数值列默认降序（先看大额），时段 / 文本列默认升序
+  const dir = (st.col === col) ? -st.dir : (spec.cols[col].num ? -1 : 1);
+  TABLE_SORT[id] = { col, dir };
+  drawTableRows(id);
+}
+function initSortableTables(){
+  Object.keys(SORT_SPEC).forEach(id => {
+    TABLE_SORT[id] = { col: 0, dir: 1 };   // 默认：时段从早到晚
+    const ths = document.querySelectorAll("#" + id + " thead th");
+    ths.forEach((th, i) => {
+      if(!SORT_SPEC[id].cols[i]) return;
+      th.style.cursor = "pointer";
+      th.style.userSelect = "none";
+      th.title = "点击按此列排序，再点一次切换升序 / 降序";
+      th.addEventListener("click", () => onSortHeaderClick(id, i));
+    });
+    markSortHeader(id);
+  });
+}
 let intradayChart = null;
 function renderIntraday(d){
   const iv = d.intraday || null;
@@ -1286,6 +1434,7 @@ function renderIntraday(d){
   const fundSel = document.getElementById("intraday-fund");
   const note = document.getElementById("intraday-note");
   if(!iv || !iv.has_data){
+    TABLE_ROWS["intraday-events"] = [];
     if(sub) sub.textContent = "暂无分时数据（每个交易日收盘后自动归档）";
     if(cards) cards.innerHTML = `<div class="card"><div class="k">分时归档</div>
       <div class="v amber">—</div><div class="sub">首次运行后开始积累</div></div>`;
@@ -1295,7 +1444,7 @@ function renderIntraday(d){
     if(fundSel) fundSel.innerHTML = "";
     return;
   }
-  const ev = iv.events || [];
+  const ev = sortByWindow(iv.events || []);
   const supAmt = (iv.support_amount||0)/1e8, preAmt = (iv.pressure_amount||0)/1e8;
   if(sub) sub.textContent = `分时放量识别 · ${iv.fund_count} 只宽基 · ${ev.length} 个放量事件`;
   if(cards){
@@ -1310,25 +1459,12 @@ function renderIntraday(d){
       <div class="v ${c.cls}">${c.v}</div><div class="sub">${c.sub}</div></div>`).join("");
   }
   if(tbody){
+    // TABLE_ROWS 恒存「默认时段升序」，界面排序由 drawTableRows 按表头点击状态变换
+    TABLE_ROWS["intraday-events"] = ev;
     if(!ev.length){
-      tbody.innerHTML = `<tr><td colspan="9" class="empty">当日未识别到符合四条件的放量事件</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="9" class="empty">${esc(SORT_SPEC["intraday-events"].empty)}</td></tr>`;
     } else {
-      tbody.innerHTML = ev.map(e=>{
-        const kindTxt = e.kind==="support"
-          ? `<span class="num red">疑似护盘</span>`
-          : `<span class="num green">疑似压盘</span>`;
-        return `<tr>
-          <td>${esc(e.window)}–${esc(e.end)}</td>
-          <td>${esc(e.segment)}</td>
-          <td>${kindTxt}</td>
-          <td>${e.funds}</td>
-          <td>${e.support}/${e.pressure}</td>
-          <td class="num">${fmt(e.amount/1e8)}</td>
-          <td class="num">${fmt(e.max_ratio,1)}×</td>
-          <td class="num">${fmt(e.max_cover,1)}×</td>
-          <td>${e.confirmed ? `<span class="num red">${e.confirmed}</span>` : "—"}</td>
-        </tr>`;
-      }).join("");
+      drawTableRows("intraday-events");
     }
   }
   // 分时图：柱=分钟成交额，线=价格，红点=护盘候选，绿点=压盘候选
@@ -1402,6 +1538,7 @@ function renderTick(d){
   const tbody = document.querySelector("#tick-events tbody");
   const note = document.getElementById("tick-note");
   if(!tk || !tk.has_data){
+    TABLE_ROWS["tick-events"] = [];
     // 逐笔来自东财滚动窗口（pos=-1 无日期参数），错过当天即永久缺失、无法回补；
     // 这里明确指向「往前最近一个有数据的日子」，避免"暂无"被误读成功能故障。
     const fb = d.tick_fallback || null;
@@ -1420,7 +1557,7 @@ function renderTick(d){
     return;
   }
   const ev = tk.events || [];
-  const wins = tk.windows || ev || [];
+  const wins = sortByWindow(tk.windows || ev);
   if(sub) sub.textContent = `逐笔大单识别 · ${tk.big_count} 笔大单 · ${wins.length} 个大单时段 · ${ev.length} 个集中事件`;
   if(cards){
     const th = tk.thresholds || {};
@@ -1452,30 +1589,11 @@ function renderTick(d){
     // 表格列本就是「窗口聚合」口径（时段/基金/方向/买卖额/净买/占比/涨跌），
     // 因此展示**所有含大单的窗口**，用「方向」列区分是否达集中阈值 ——
     // 只展示达标事件时，盘后快照下表格会整表空白（看不到已抓到的大单）。
-    const wins = tk.windows || tk.events || [];
+    TABLE_ROWS["tick-events"] = wins;
     if(!wins.length){
-      tbody.innerHTML = `<tr><td colspan="9" class="empty">当日未抓到符合阈值的大单</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="9" class="empty">${esc(SORT_SPEC["tick-events"].empty)}</td></tr>`;
     } else {
-      tbody.innerHTML = wins.map(e=>{
-        let kindTxt;
-        if(e.kind==="tick_buy") kindTxt = `<span class="num red">集中扫货</span>`;
-        else if(e.kind==="tick_sell") kindTxt = `<span class="num green">集中抛压</span>`;
-        else kindTxt = `<span class="num" style="color:#94a3b8">未达阈值</span>`;
-        // 方向未知的大单（历史归档口径修正前抓的）单列展示，
-        // 避免「有行但买卖金额全是 0」的误读。
-        const neu = e.neutral || 0;
-        return `<tr>
-          <td>${esc(e.window)}</td>
-          <td>${esc(e.name||e.code)}（${esc(e.code)}）</td>
-          <td>${kindTxt}</td>
-          <td class="num">${fmt(e.buy/1e8)}</td>
-          <td class="num">${fmt(e.sell/1e8)}</td>
-          <td class="num" style="color:#94a3b8">${neu>0?fmt(neu/1e8):'—'}</td>
-          <td class="num ${e.net>=0?'red':'green'}">${e.net>=0?'+':''}${fmt(e.net/1e8)}</td>
-          <td class="num">${fmt(e.buy_ratio*100,0)}%</td>
-          <td class="num ${e.up_pct>=0?'red':'green'}">${(e.up_pct>=0?'+':'')}${fmt(e.up_pct,2)}%</td>
-        </tr>`;
-      }).join("");
+      drawTableRows("tick-events");
     }
   }
   if(note){
@@ -1824,6 +1942,8 @@ if(!STATIC){
   var _tb = document.getElementById("refresh-today-btn");
   if(_tb) _tb.style.display = "none";
 }
+// 两张表默认按「时段」从早到晚，点表头可切换排序列 / 升降序
+initSortableTables();
 loadData();
 </script>
 <footer class="site-foot">

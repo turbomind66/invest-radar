@@ -451,6 +451,63 @@ const chipCount = (id) => (els[id].innerHTML.match(/class="chip/g) || []).length
   const inote = els['intraday-note'].innerHTML;
   chk(inote.includes('放量不等于汪汪队'), '口径说明强调放量≠汪汪队');
   chk(inote.includes('四条件'), '口径说明列出四条件');
+  // 表格行按时段从早到晚（构造「大额晚时段 + 小额早时段」的乱序数据）
+  const ord = buildData('');
+  ord.intraday.events = [
+    { window: '1450', end: '1455', segment: '尾盘', funds: 8, support: 0, pressure: 8,
+      amount: 9e9, max_ratio: 9, max_cover: 4, confirmed: 0, kind: 'pressure', codes: [] },
+    { window: '0935', end: '0940', segment: '开盘', funds: 6, support: 6, pressure: 0,
+      amount: 1e8, max_ratio: 5, max_cover: 3, confirmed: 0, kind: 'support', codes: [] },
+  ];
+  render(ord); await tick(120);
+  const ordBody = els['q_#intraday-events tbody'].innerHTML;
+  chk(ordBody.indexOf('0935') < ordBody.indexOf('1450'),
+      '放量事件表按时段从早到晚（大额晚时段不抢前）');
+  const sw = sortByWindow([
+    { window: '1455', code: '510300' }, { window: '0935', code: '510050' },
+    { window: '0935', code: '159915' }, { window: '09:40', code: '510300' },
+  ]);
+  chk(sw.map(x => x.window).join(',') === '0935,0935,09:40,1455' &&
+      sw[0].code === '159915' && sw[1].code === '510050',
+      '时段格式归一 + 同时段按基金代码升序');
+  chk(ord.intraday.events[0].window === '1450', '排序不就地改写原始视图数据');
+
+  // 点表头排序：数值列首次点击降序，再点反向；点回「时段」恢复默认
+  onSortHeaderClick('intraday-events', 5);   // 合计成交额(亿)
+  const byAmt = els['q_#intraday-events tbody'].innerHTML;
+  chk(byAmt.indexOf('1450') < byAmt.indexOf('0935'), '点「合计成交额」表头 → 大额在前');
+  onSortHeaderClick('intraday-events', 5);
+  const byAmtAsc = els['q_#intraday-events tbody'].innerHTML;
+  chk(byAmtAsc.indexOf('0935') < byAmtAsc.indexOf('1450'), '再点一次 → 反向为升序');
+  onSortHeaderClick('intraday-events', 0);
+  chk(els['q_#intraday-events tbody'].innerHTML.indexOf('0935') <
+      els['q_#intraday-events tbody'].innerHTML.indexOf('1450'),
+      '点回「时段」表头 → 恢复默认从早到晚');
+
+  // 逐笔大单表同样支持点表头排序
+  const tkData = buildData('');
+  tkData.intraday.tick = {
+    has_data: true, big_count: 2, buy_events: 1, sell_events: 0,
+    buy_amount: 1e9, sell_amount: 0, neutral_amount: 0,
+    thresholds: { big: 1e6, buy_ratio: 0.7, min_win_amt: 2e6 },
+    events: [{ window: '1455', code: '510300', kind: 'tick_buy' }],
+    windows: [
+      { window: '1455', code: '510300', name: '沪深300ETF', kind: 'tick_buy',
+        buy: 9e8, sell: 0, net: 9e8, neutral: 0, buy_ratio: 1, up_pct: 1.2 },
+      { window: '0935', code: '510050', name: '上证50ETF', kind: 'neutral',
+        buy: 1e8, sell: 0, net: 1e8, neutral: 0, buy_ratio: 1, up_pct: 0 },
+    ],
+  };
+  render(tkData); await tick(120);
+  const tkDefault = els['q_#tick-events tbody'].innerHTML;
+  chk(tkDefault.indexOf('0935') < tkDefault.indexOf('1455'), '逐笔大单表默认按时段从早到晚');
+  onSortHeaderClick('tick-events', 3);   // 大买单额(亿)
+  const tkByBuy = els['q_#tick-events tbody'].innerHTML;
+  chk(tkByBuy.indexOf('1455') < tkByBuy.indexOf('0935'), '点「大买单额」表头 → 大额在前');
+  onSortHeaderClick('tick-events', 0);
+  chk(els['q_#tick-events tbody'].innerHTML.indexOf('0935') <
+      els['q_#tick-events tbody'].innerHTML.indexOf('1455'),
+      '逐笔大单点回「时段」→ 恢复默认');
   // 无分时数据时的兜底
   const base2 = buildData('');
   render({ ...base2, intraday: null });

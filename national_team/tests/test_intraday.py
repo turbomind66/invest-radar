@@ -134,9 +134,9 @@ class TestIntradayDetect(unittest.TestCase):
         view = intraday.build_view(D1, path=self.path)
         ev = view["events"]
         self.assertTrue(ev)
-        # 事件按金额倒序
-        amounts = [e["amount"] for e in ev]
-        self.assertEqual(amounts, sorted(amounts, reverse=True))
+        # 事件按「时段」从早到晚（2026-11-05 起，不再按金额倒序）
+        windows = [e["window"] for e in ev]
+        self.assertEqual(windows, sorted(windows))
         for e in ev:
             self.assertGreaterEqual(e["funds"], intraday.BREADTH_MIN)
             self.assertIn(e["kind"], ("support", "pressure"))
@@ -375,6 +375,29 @@ class TestTickDetect(unittest.TestCase):
             # events 仍只含达标的（供信号联动用）
             self.assertEqual(len(v["events"]), 1)
             self.assertEqual(v["events"][0]["window"], "0930")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_tick_windows_sorted_by_time_not_amount(self):
+        """回归（2026-11-05）：表格行按时段从早到晚，大额晚时段不得抢在早时段前。
+
+        旧口径为「集中事件优先 + 金额绝对值降序」，14:55 的大额集中扫货会排在
+        09:35 的小额未达阈值窗口前面，全天时点在表里跳来跳去。
+        """
+        tmp = tempfile.mkdtemp()
+        try:
+            p = os.path.join(tmp, "s.db")
+            db.init_db(p)
+            _tick(p, D1, "510300", "沪深300ETF", "沪深300", [
+                ("09:36:00", 1.00, 1000, 1, 100e4),    # 0935：小额、未达阈值
+                ("14:56:00", 1.00, 10000, 1, 1000e4),  # 1455：大额集中扫货
+                ("14:57:00", 1.02, 10000, 1, 1020e4),
+                ("14:58:00", 1.05, 10000, 1, 1050e4),
+            ])
+            wins = intraday.compute_tick_windows(D1, path=p)
+            self.assertEqual([w["window"] for w in wins], ["0935", "1455"])
+            self.assertEqual(wins[1]["kind"], "tick_buy",
+                             "大额晚时段仍应识别为集中扫货，只是不再排在前面")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

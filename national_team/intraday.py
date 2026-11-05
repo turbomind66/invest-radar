@@ -382,7 +382,9 @@ def _events(signals, window: int = 5, min_funds: int = 3):
             "kind": "support" if len(sup) >= len(pre) else "pressure",
             "codes": sorted(funds),
         })
-    out.sort(key=lambda e: -e["amount"])
+    # 表格按「时段」从早到晚展示（window 形如 "0930"，字典序即时间序）。
+    # 旧口径按金额倒序，会把 14:35 的大额事件排到 09:35 前面，时点跳跃不好读。
+    out.sort(key=lambda e: e["window"])
     return out
 
 
@@ -595,8 +597,10 @@ def compute_tick_windows(date: str, path: str = db.DB_PATH):
             "kind": kind,
             "amount": round(abs(net) if net else (b["buy"] + b["sell"] + b["neutral"])),
         })
-    # 排序：先按是否达阈值（集中事件优先），再按金额绝对值降序
-    out.sort(key=lambda e: (0 if e["kind"] != "neutral" else 1, -e["amount"]))
+    # 排序：按「时段」从早到晚；同一时段内按基金代码升序，顺序稳定。
+    # 旧口径是「集中事件优先 + 金额绝对值降序」，表格里 14:35 会排在 09:35 前面；
+    # 「方向」列已能区分是否达标，无需再用行序表达优先级。
+    out.sort(key=lambda e: (e["window"], e["code"]))
     return out
 
 
