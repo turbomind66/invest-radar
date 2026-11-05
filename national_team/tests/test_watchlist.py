@@ -54,9 +54,34 @@ class TestWatchlist(unittest.TestCase):
         self.assertEqual(self.w["159629"], ("富国中证1000ETF", "中证1000"))
 
     def test_snapshot_has_no_stale_labels(self):
-        for stale in ('"name":"中证A500ETF"', '"cat":"中证A500"',
+        # 2026-11-05 修订：中证A500 现在是**合法类别**（563360 华泰柏瑞中证A500ETF），
+        # 旧版一刀切禁止 '"cat":"中证A500"' 会把 daily-update 新快照里的合法行判成
+        # stale（11-05 CI 假阳性）。改为按 code 精确检查三只曾错标的基金是否复活旧标签。
+        for stale in ('"name":"中证A500ETF"',
                       '"name":"易方达中证1000ETF"', '"name":"博时科创100ETF"'):
             self.assertNotIn(stale, self.raw_json, "线上快照仍有旧标签 %s" % stale)
+        stale_pairs = {
+            "563300": ("中证A500ETF", "中证A500"),          # 实为中证2000ETF
+            "560010": ("易方达中证1000ETF", "中证1000"),    # 实为广发
+            "588800": ("博时科创100ETF", "科创100"),        # 实为华夏
+        }
+        rows = list(self.snapshot.get("funds") or [])
+        for section in ("days", "shares"):
+            for _day, day_rows in (self.snapshot.get(section) or {}).items():
+                rows.extend(day_rows)
+        checked = 0
+        for r in rows:
+            old = stale_pairs.get(r.get("code"))
+            if not old:
+                continue
+            checked += 1
+            pair = (r.get("name"), r.get("cat"))
+            self.assertNotEqual(pair, old,
+                                "线上快照 %s 又出现旧标签 %s" % (r["code"], pair))
+            if r["code"] == "563300":
+                self.assertNotEqual(r.get("cat"), "中证A500",
+                                    "563300 又被归进中证A500（旧口径复活）")
+        self.assertGreater(checked, 0, "快照里应仍含被校准过的三只基金")
 
     def test_snapshot_funds_match_watchlist(self):
         for f in self.snapshot["funds"]:
