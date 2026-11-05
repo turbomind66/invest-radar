@@ -17,7 +17,9 @@ const HTML = path.join(__dirname, '..', 'templates', 'index.html');
 
 function extractScript(html) {
   // 取最后一个内联 <script> 块（页面主逻辑），并剥掉末尾自动入口调用
-  const m = html.match(/<script>([\s\S]*?)<\/script>\s*<\/body>/);
+  // 取最后一段内联脚本；允许 </script> 与 </body> 之间有页脚等静态标签（v2.8.12 起 .site-foot）
+  const blocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  const m = blocks[blocks.length - 1];
   if (!m) throw new Error('未能在 qdii/templates/index.html 中定位内联脚本');
   return m[1].replace(/if\(STATIC\)\{ loadStatic\(\); \} else \{ loadAll\(\); \}\s*$/, '\n');
 }

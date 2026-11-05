@@ -40,7 +40,9 @@ const { raw, cases } = JSON.parse(gen.stdout);
 
 // ---------------- 桩件 ----------------
 function extractScript(html) {
-  const m = html.match(/<script>([\s\S]*?)<\/script>\s*<\/body>/);
+  // 取最后一段内联脚本；允许 </script> 与 </body> 之间有页脚等静态标签（v2.8.12 起 .site-foot）
+  const blocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  const m = blocks[blocks.length - 1];
   if (!m) throw new Error('未能在 index.html 中定位内联脚本');
   return m[1].replace(/\nloadData\(\);\s*$/, '\n');
 }
