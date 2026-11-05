@@ -40,7 +40,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs
+          # 只提交数据快照：docs/*.html 是模板渲染产物，浅克隆可能基于旧模板，
+          # 而下面 `git reset --mixed` 会保留工作区里刚生成的旧版 HTML ——
+          # 一并提交会把页脚版本号等静态内容回退（2026-11-05 v2.8.13 事故）。
+          # HTML 由发版流程 / daily.yml 全量导出维护；页面数据始终读 docs/data.json。
+          git add docs/data.json
           if git diff --staged --quiet; then
             echo "无变更，跳过提交"
             exit 0
@@ -52,7 +56,7 @@ jobs:
           # 且不依赖 merge-base（浅克隆下 rebase 可能因历史不全失败）。
           git fetch origin "${GITHUB_REF_NAME}"
           git reset --mixed "origin/${GITHUB_REF_NAME}"
-          git add docs
+          git add docs/data.json
           if git diff --staged --quiet; then
             echo "远端已包含相同快照，跳过提交"
             exit 0
