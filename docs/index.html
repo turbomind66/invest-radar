@@ -21,10 +21,15 @@
   h1{font-size:22px;font-weight:700;display:flex;align-items:center;gap:8px}
   .tag{font-size:12px;font-weight:500;color:var(--sub);background:var(--chip);padding:3px 9px;border-radius:20px}
   .meta{font-size:13px;color:var(--sub);text-align:right}
-  /* 页脚：版本号 + GitHub 仓库入口（v2.8.14-nt 占位符由各渲染端替换成实际版本） */
-  .site-foot{display:flex;justify-content:center;align-items:center;gap:10px;
+  /* 免责提示：顶部醒目条 + 页脚重复声明，长页面滚动到底也能看到 */
+  .disclaimer-bar{margin:12px 0 0;padding:8px 12px;border:1px solid #fde68a;border-radius:8px;
+    background:#fffbeb;color:#92400e;font-size:12px;line-height:1.6;text-align:center}
+  .disclaimer-bar b{color:#b45309}
+  /* 页脚：版本号 + GitHub 仓库入口（v2.8.15-nt 占位符由各渲染端替换成实际版本） */
+  .site-foot{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:10px;
     padding:10px 0 2px;font-size:12px;color:var(--sub)}
   .site-foot .ver{background:var(--chip);border-radius:10px;padding:2px 9px;font-variant-numeric:tabular-nums}
+  .site-foot .disc{flex:0 0 100%;text-align:center;color:#92400e;line-height:1.6}
   .site-foot a.gh{display:inline-flex;align-items:center;gap:5px;color:var(--sub);text-decoration:none}
   .site-foot a.gh:hover{color:var(--blue)}
   .site-foot a.gh svg{width:14px;height:14px;fill:currentColor}
@@ -268,6 +273,8 @@
       </div>
     </div>
   </header>
+
+  <div class="disclaimer-bar" role="note">⚠️ 免责提示：本页数据与信号由公开信息整理，<b>仅作参考</b>，不构成任何投资建议；据此操作，风险自担。</div>
 
   <div class="fresh" id="fresh">
     <span class="dot"></span>
@@ -1947,7 +1954,8 @@ initSortableTables();
 loadData();
 </script>
 <footer class="site-foot">
-  <span class="ver">v2.8.14-nt</span>
+  <span class="disc">仅作参考 · 不构成投资建议 · 据此操作风险自担</span>
+  <span class="ver">v2.8.15-nt</span>
   <a class="gh" href="https://github.com/turbomind66/invest-radar" target="_blank" rel="noopener" title="GitHub 仓库：turbomind66/invest-radar">
     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
     turbomind

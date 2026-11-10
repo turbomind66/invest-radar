@@ -9,6 +9,10 @@
 
 注：v2.8.6 起更新日志已从 README.md 迁到独立的 CHANGELOG.md（README 只保留
 当前版本与指向链接），故数据源同步改为 CHANGELOG.md。
+
+v2.8.15 起另附免责提示守卫：静态页由模板重导生成，历史上出现过盘中采样把
+静态 HTML 覆盖回旧模板的事故（v2.8.13），这里守住「两个模板 + 两份静态页 +
+配置速查页」都必须带「仅作参考」声明。
 """
 import os
 import re
@@ -40,6 +44,56 @@ def const_version(path: str) -> str:
     if not m:
         raise AssertionError("在 %s 里找不到 APP_VERSION 常量" % path)
     return m.group(1)
+
+
+PANEL_PAGES = (
+    ("NT 模板", "national_team", "templates", "index.html"),
+    ("QDII 模板", "qdii", "templates", "index.html"),
+    ("NT 静态页", "docs", "index.html"),
+    ("QDII 静态页", "docs", "qdii", "index.html"),
+)
+SETUP_PAGE = os.path.join(BASE, "cron_trigger_setup.html")
+
+
+def read_page(rel_parts) -> str:
+    with open(os.path.join(BASE, *rel_parts), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def disclaimer_bar(html: str) -> str:
+    """取出顶部免责条整段，用于比对模板与静态页是否同版。"""
+    m = re.search(r'<div class="disclaimer-bar"[^>]*>.*?</div>', html, re.S)
+    return m.group(0) if m else ""
+
+
+class TestDisclaimer(unittest.TestCase):
+    def test_every_panel_has_top_and_footer_disclaimer(self):
+        for label, *parts in PANEL_PAGES:
+            with self.subTest(page=label):
+                html = read_page(tuple(parts))
+                self.assertTrue(disclaimer_bar(html), "%s 缺少顶部免责条" % label)
+                self.assertIn("仅作参考", html, "%s 免责条缺少「仅作参考」" % label)
+                self.assertIn("不构成任何投资建议", html, "%s 免责条缺少投资建议声明" % label)
+                self.assertIn('class="disc"', html, "%s 缺少页脚免责声明" % label)
+                self.assertIn("据此操作", html, "%s 缺少风险自担声明" % label)
+                self.assertIn("风险自担", html, "%s 缺少风险自担声明" % label)
+
+    def test_static_pages_mirror_template_disclaimer(self):
+        """静态页必须由含免责条的新模板重导，防止被旧模板覆盖回去。"""
+        nt_tpl = disclaimer_bar(read_page(("national_team", "templates", "index.html")))
+        qdii_tpl = disclaimer_bar(read_page(("qdii", "templates", "index.html")))
+        self.assertEqual(disclaimer_bar(read_page(("docs", "index.html"))), nt_tpl)
+        self.assertEqual(disclaimer_bar(read_page(("docs", "qdii", "index.html"))), qdii_tpl)
+
+    def test_setup_page_has_disclaimer(self):
+        # cron_trigger_setup.html 被 .gitignore 排除（含内部信息，不进公开仓库），
+        # CI checkout 后不存在；只在本地/部署副本存在时校验，避免 CI 误红。
+        if not os.path.exists(SETUP_PAGE):
+            self.skipTest("cron_trigger_setup.html 未纳入仓库，跳过")
+        with open(SETUP_PAGE, encoding="utf-8") as fh:
+            html = fh.read()
+        self.assertIn("仅作参考", html)
+        self.assertIn("不构成投资建议", html)
 
 
 class TestVersionSync(unittest.TestCase):
