@@ -49,7 +49,7 @@ INDEX = os.path.join(TEMPLATES, "index.html")
 # ValueError 让子进程起不来（combo_app 那边就表现为「预热中」永不结束）。
 PORT = int(os.environ.get("QDII_PORT") or "5001")
 # 版本指纹：/api/qdii/status 里带回，配合 sig/codes 让部署后一眼辨新/旧代码。
-APP_VERSION = "v2.8.16-qdii"
+APP_VERSION = "v2.8.17-qdii"
 # 站点路径前缀：域名反代把本面板挂在子路径（如 /qdii）时，若 Nginx/NPM 保留前缀不剥，
 # 就在这里声明（BASE_PATH=/qdii），服务端匹配路由前先剥掉。默认空 = 行为与之前完全一致。
 BASE_PATH = (os.environ.get("BASE_PATH") or "").strip().rstrip("/")
@@ -263,6 +263,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body_bytes)))
+        # 行情/净值类接口与页面本身绝不能被浏览器或中间网关缓存：
+        # 之前没有任何 Cache-Control，页面会一直停在打开那一刻的旧快照
+        # （后端已抓到新数据、页面仍显示「折算溢价 —」，2026-11-17 现象）。
+        # 静态资源（echarts.min.js）保留默认缓存，避免每次重下 3MB。
+        if "javascript" not in content_type:
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
         self.end_headers()
         self.wfile.write(body_bytes)
 

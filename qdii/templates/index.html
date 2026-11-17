@@ -724,6 +724,19 @@ if(!STATIC){
 }
 
 if(STATIC){ loadStatic(); } else { loadAll(); }
+
+// 服务端模式：页面每 5 分钟自动重载一次数据。
+// 后端盘中每 10 分钟抓一次，而页面原先是「打开时一次性渲染」，之后再不更新——
+// 一旦打开时那批数据有问题（如折算溢价为空），界面会一直停在那里，看起来像功能坏了。
+// 页面不可见时跳过，避免后台标签白耗请求。
+// 只在真实浏览器里挂定时器：DOM 桩件测试的 window 没有 setInterval，
+// 无条件 setInterval 会让 node 进程被定时器拖住不退出（测试超时）。
+if(!STATIC && typeof window!=='undefined' && typeof window.setInterval==='function'){
+  window.setInterval(function(){
+    if(document.hidden) return;
+    loadAll();
+  }, 300000);
+}
 </script>
 <footer class="site-foot">
   <span class="disc">仅作参考 · 不构成投资建议 · 据此操作风险自担</span>
