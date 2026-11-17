@@ -412,6 +412,22 @@ class PremiumAdjustedTest(unittest.TestCase):
         self.assertAlmostEqual(ratio, 1.0, places=9)
         self.assertEqual(asof, "2026-10-28")
 
+    def test_nav_newer_than_bench_uses_ratio_one(self):
+        """净值日期领先指数最新日 → 按 ratio=1，而不是整列折算溢价变空。
+
+        真实场景（2026-11-17）：周二上午 QDII 净值已更新到周一，而新浪美股日线
+        还停在上一交易日 → 区间为空。旧实现返回 None，22 只 ETF 的折算溢价
+        全部显示「—」。
+        """
+        ratio, asof = self.fp.index_cum_ratio(("sina_us", ".NDX"), "2026-10-29")
+        self.assertAlmostEqual(ratio, 1.0, places=9)
+        self.assertEqual(asof, "2026-10-29")
+
+    def test_stale_bench_still_returns_none(self):
+        """指数源断更超过容忍天数时仍留空，不能用陈旧基准假装折算。"""
+        self.assertEqual(
+            self.fp.index_cum_ratio(("sina_us", ".NDX"), "2026-12-31"), (None, None))
+
     def test_missing_bench_returns_none(self):
         self.assertEqual(self.fp.index_cum_ratio(None, "2026-10-27"), (None, None))
         self.assertEqual(self.fp.index_cum_ratio(("sina_us", ".NDX"), None), (None, None))

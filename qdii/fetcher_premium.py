@@ -78,6 +78,10 @@ def fetch_nav(code):
     return float(data["DWJZ"]), data.get("FSRQ")
 
 
+# 净值日期领先指数最新收盘日时，最多容忍指数源滞后多少天仍按「不折算」处理。
+# 超过这个天数说明指数日线已经断更，宁可留空也不能拿陈旧基准假装折算。
+MAX_BENCH_LAG_DAYS = 10
+
 _FUT_BENCH_CACHE = {}
 URL_SINA_FUT_KLINE = ("https://stock.finance.sina.com.cn/futures/api/jsonp.php/"
                       "var%20_=/GlobalFuturesService.getGlobalFuturesDailyKLine?symbol=")
@@ -134,7 +138,24 @@ def index_cum_ratio(bench, nav_date):
         return None, None
     win = [(d, c) for d, c in series if d >= nav_date and c]
     if not win:
-        return None, None
+        # 净值日期已追平/领先指数最新收盘日 —— QDII 净值披露常常快于指数日线：
+        # 比如周二上午净值已更新到周一，而新浪美股日线还停在上一交易日。
+        # 此时区间内没有任何可折算的指数变动，应视为 ratio=1 直接沿用净值。
+        # ⚠️ 旧实现一律返回 None，会让「折算溢价」**整列同时变空**（2026-11-17 线上现象：
+        #    22 只 ETF 全部显示「—」，而溢价率列正常）。
+        last_d, last_c = series[-1]
+        if not last_c or last_c <= 0:
+            return None, None
+        try:
+            gap = (datetime.date.fromisoformat(str(nav_date))
+                   - datetime.date.fromisoformat(str(last_d))).days
+        except (TypeError, ValueError):
+            return None, None
+        if gap <= 0 or gap > MAX_BENCH_LAG_DAYS:
+            # gap<=0：净值日期并不比指数新，属于其它异常（如日期格式不一致），保持留空
+            # gap>MAX：指数源断更，用陈旧基准折算会造假，宁可留空
+            return None, None
+        return 1.0, nav_date
     base = win[0][1]
     asof, last = win[-1]
     if not base or base <= 0:
