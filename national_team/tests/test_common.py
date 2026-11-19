@@ -183,5 +183,167 @@ class ComboPickBackendTest(unittest.TestCase):
         self.assertIsNone(combo_app.PROC_DIAG["qdii"]["proc"])
 
 
+class _FakeClock(object):
+    """可控时钟：单测里推进时间而不真的 sleep。"""
+
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, delta):
+        self.t += delta
+
+
+class HostRateLimiterTests(unittest.TestCase):
+    """按主机滑动窗口限流（默认关闭，显式开启才生效）。"""
+
+    def test_disabled_limit_never_blocks(self):
+        lim = http_mod._HostRateLimiter(0, clock_fn=_FakeClock())
+        for _ in range(100):
+            lim.acquire("push2.eastmoney.com")  # 不抛、不阻塞
+
+    def test_blocks_after_limit_then_frees_after_window(self):
+        clock = _FakeClock()
+        sleeps = []
+
+        def fake_sleep(sec):
+            sleeps.append(sec)
+            clock.advance(sec)
+
+        lim = http_mod._HostRateLimiter(2, window=60.0,
+                                        sleep_fn=fake_sleep, clock_fn=clock)
+        lim.acquire("h")
+        lim.acquire("h")
+        self.assertEqual(sleeps, [], "未到上限不应等待")
+        lim.acquire("h")  # 第 3 次：满 2 → 触发等待到窗口滑出
+        self.assertEqual(len(sleeps), 1, "越过上限必须等待")
+        self.assertGreater(sleeps[0], 59.0, "应等到最早一次请求滑出 60s 窗口")
+
+    def test_limit_is_per_host(self):
+        clock = _FakeClock()
+        sleeps = []
+        lim = http_mod._HostRateLimiter(1, window=60.0,
+                                        sleep_fn=lambda s: sleeps.append(s),
+                                        clock_fn=clock)
+        lim.acquire("host-a")
+        lim.acquire("host-b")  # 另一台主机有独立配额
+        self.assertEqual(sleeps, [], "不同主机不应互相阻塞")
+
+
+class HostCooldownTests(unittest.TestCase):
+    """失败主机冷却表（熔断切源，默认关闭）。"""
+
+    def test_disabled_cooldown_never_cold(self):
+        cd = http_mod._HostCooldown(0, clock_fn=_FakeClock())
+        cd.mark("h")
+        self.assertFalse(cd.is_cold("h"))
+
+    def test_mark_then_expire(self):
+        clock = _FakeClock()
+        cd = http_mod._HostCooldown(10.0, clock_fn=clock)
+        self.assertFalse(cd.is_cold("h"))
+        cd.mark("h")
+        self.assertTrue(cd.is_cold("h"), "mark 后应处于冷却")
+        clock.advance(5)
+        self.assertTrue(cd.is_cold("h"))
+        clock.advance(6)
+        self.assertFalse(cd.is_cold("h"), "超过冷却时长应自动解除")
+
+    def test_clear_removes_cooldown(self):
+        cd = http_mod._HostCooldown(10.0, clock_fn=_FakeClock())
+        cd.mark("h")
+        cd.clear("h")
+        self.assertFalse(cd.is_cold("h"))
+
+
+class OpenerReuseTests(unittest.TestCase):
+    """opener 复用（默认关闭，开启后同 use_proxy 复用同一实例）。"""
+
+    def test_default_builds_new_opener_each_call(self):
+        import urllib.request
+        calls = []
+        orig = urllib.request.build_opener
+
+        def spy(*a, **k):
+            calls.append(1)
+            return orig(*a, **k)
+
+        old = http_mod._OPENER_REUSE
+        http_mod._OPENER_REUSE = False
+        try:
+            urllib.request.build_opener = spy
+            http_mod._get_opener(False)
+            http_mod._get_opener(False)
+            self.assertEqual(len(calls), 2, "默认每次都重建 opener")
+        finally:
+            urllib.request.build_opener = orig
+            http_mod._OPENER_REUSE = old
+
+    def test_reuse_same_instance_per_proxy_flag(self):
+        import urllib.request
+        calls = []
+        orig = urllib.request.build_opener
+
+        def spy(*a, **k):
+            calls.append(1)
+            return orig(*a, **k)
+
+        old_flag = http_mod._OPENER_REUSE
+        http_mod._OPENER_REUSE = True
+        http_mod._opener_cache.clear()
+        try:
+            urllib.request.build_opener = spy
+            o1 = http_mod._get_opener(False)
+            o2 = http_mod._get_opener(False)
+            self.assertIs(o1, o2, "同 use_proxy 应复用同一 opener")
+            self.assertEqual(len(calls), 1)
+            o3 = http_mod._get_opener(True)
+            self.assertIsNot(o1, o3, "直连/代理是不同 key，不应共用")
+            self.assertEqual(len(calls), 2)
+        finally:
+            urllib.request.build_opener = orig
+            http_mod._OPENER_REUSE = old_flag
+            http_mod._opener_cache.clear()
+
+
+class FetchTextCooldownIntegrationTests(unittest.TestCase):
+    """fetch_text 命中失败 → 标记该主机 → 下次轮换跳过（熔断切源）。"""
+
+    def test_failed_host_is_cooled_and_skipped_next_call(self):
+        import urllib.request
+        attempted = []
+        orig = urllib.request.build_opener
+        old_sec, old_obj = http_mod._HOST_COOLDOWN, http_mod._host_cooldown
+        http_mod._HOST_COOLDOWN = 3600.0
+        http_mod._host_cooldown = http_mod._HostCooldown(3600.0)
+
+        def spy(*a, **k):
+            opener = orig(*a, **k)
+
+            def failing_open(req, *a2, **k2):
+                attempted.append(req.full_url.split("/")[2])
+                raise OSError("simulated RemoteDisconnected")
+
+            opener.open = failing_open
+            return opener
+
+        url = "https://push2his.eastmoney.com/api/qt/x"
+        try:
+            urllib.request.build_opener = spy
+            with self.assertRaises(OSError):
+                http_mod.fetch_text(url, retries=0, rotate_hosts=True)
+            self.assertEqual(attempted[-1], "push2his.eastmoney.com")
+            # 主域名已冷却 → 第二次应从第一台镜像开始
+            with self.assertRaises(OSError):
+                http_mod.fetch_text(url, retries=0, rotate_hosts=True)
+            self.assertEqual(attempted[-1], "1.push2his.eastmoney.com",
+                             "冷却中的主机必须在下次请求被跳过，实际：%s" % attempted)
+        finally:
+            urllib.request.build_opener = orig
+            http_mod._HOST_COOLDOWN, http_mod._host_cooldown = old_sec, old_obj
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
