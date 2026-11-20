@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>📉 回撤全景 · 宽基指数与场内ETF历史回撤修复</title>
+<script src="echarts.min.js"></script>
+<style>
+  :root{--bg:#f5f6f8;--card:#fff;--ink:#1b1f24;--sub:#5b6470;--line:#e3e6ea;--up:#d92b2b;--down:#12924a;--accent:#2f5fd0}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif}
+  .wrap{max-width:1400px;margin:0 auto;padding:18px}
+  header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+  .htitle h1{font-size:20px;margin:0 0 8px}
+  .tag{font-size:12px;font-weight:400;color:var(--sub);background:#eef1f5;padding:2px 8px;border-radius:10px;margin-left:6px}
+  .tabbar{display:flex;gap:6px;flex-wrap:wrap}
+  .tab{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--sub);text-decoration:none;font-size:13px}
+  .tab:hover{border-color:var(--accent);color:var(--accent)}
+  .tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .disclaimer-bar{background:#fff7e6;border:1px solid #ffe0a3;color:#8a5b00;padding:8px 12px;border-radius:8px;margin-bottom:14px;font-size:12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+  .card h2{font-size:15px;margin:0 0 12px;font-weight:600}
+  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  .row label{font-size:12px;color:var(--sub)}
+  select,input[type=date],button{font:13px inherit;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink)}
+  button{cursor:pointer}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .chip{padding:4px 10px;border:1px solid var(--line);border-radius:16px;background:#fff;color:var(--sub);font-size:12px;cursor:pointer;user-select:none}
+  .chip.on{background:#e8efff;border-color:var(--accent);color:var(--accent)}
+  .chip.ready{border-left:3px solid var(--down)}
+  .chip.empty{border-left:3px solid #ccc;opacity:.6}
+  #chart{width:100%;height:460px}
+  .signals{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin-top:6px}
+  .sig{border:1px solid var(--line);border-radius:10px;padding:12px}
+  .sig h3{margin:0 0 6px;font-size:14px}
+  .sig .big{font-size:24px;font-weight:700;color:var(--down)}
+  .sig .big.deep{color:var(--up)}
+  .sig dl{margin:8px 0 0;display:grid;grid-template-columns:auto 1fr;gap:2px 8px;font-size:12px}
+  .sig dt{color:var(--sub)} .sig dd{margin:0;text-align:right}
+  .sig .hint{margin-top:8px;font-size:12px;color:var(--sub);border-top:1px dashed var(--line);padding-top:6px}
+  .toggle{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--sub);cursor:pointer}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  thead th{background:#f7f8fa;color:var(--sub);font-weight:600;position:sticky;top:0;cursor:pointer}
+  thead th:hover{color:var(--accent)}
+  .up{color:var(--up)} .down{color:var(--down)}
+  .tbl-wrap{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+  .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px;font-size:12px;color:var(--sub)}
+  .muted{color:var(--sub);font-size:12px}
+  .loading{padding:40px;text-align:center;color:var(--sub)}
+  footer{text-align:center;color:var(--sub);font-size:12px;padding:16px}
+</style>
+<script>window.__STATIC__={"data_base": "", "static": true};</script>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="htitle">
+      <h1>📉 回撤全景 <span class="tag">宽基指数与场内ETF · 全历史回撤与修复</span></h1>
+      <nav class="tabbar" id="tabbar">
+        <a class="tab" href="./" title="汪汪队 A股日报">🛡️ 汪汪队 A股</a>
+        <a class="tab" href="../qdii/" title="QDII 定投面板">📈 全球 QDII 定投</a>
+        <span class="tab active">📉 回撤全景</span>
+      </nav>
+    </div>
+    <div class="meta"><div class="muted" id="freshness">数据载入中…</div></div>
+  </header>
+
+  <div class="disclaimer-bar" role="note">⚠️ 本页历史回撤按<b>收盘价 vs 历史最高收盘价</b>计算，仅作复盘参考，<b>不构成投资建议</b>；据此操作，风险自担。</div>
+
+  <div class="card">
+    <h2>① 选择标的（可多选叠加）</h2>
+    <div class="row">
+      <label>周期 <select id="gran"><option value="day">日</option><option value="week">周</option><option value="month">月</option><option value="quarter">季</option><option value="year">年</option></select></label>
+      <label>起 <input type="date" id="dfrom"></label>
+      <label>止 <input type="date" id="dto"></label>
+      <button class="primary" id="apply">应用筛选</button>
+      <button id="reset">重置</button>
+      <label class="toggle"><input type="checkbox" id="fxAdjust"> 剔除汇率/溢价（还原真实涨跌，二期）</label>
+    </div>
+    <div id="groups"></div>
+  </div>
+
+  <div class="card">
+    <h2>② 走势与回撤 <span class="muted" id="chartHint">拖动下方滑块或滚轮缩放，点标记看大事件</span></h2>
+    <div id="chart"><div class="loading">图表载入中…</div></div>
+  </div>
+
+  <div class="card">
+    <h2>③ 今日信号（客观指标，非买卖建议）</h2>
+    <div class="signals" id="signals"></div>
+  </div>
+
+  <div class="card">
+    <h2>④ 回撤明细 <span class="muted" id="tableHint"></span></h2>
+    <div class="row" style="margin-bottom:10px">
+      <button id="view-period" class="primary">周期汇总</button>
+      <button id="view-daily">日明细</button>
+      <button id="view-events">回撤事件</button>
+      <span class="muted" id="linkNote">与上方图表时间窗口联动</span>
+    </div>
+    <div class="tbl-wrap"><table id="tbl"><thead></thead><tbody></tbody></table></div>
+    <div class="pager"><span id="pageInfo"></span><button id="prev">上一页</button><button id="next">下一页</button></div>
+  </div>
+
+  <footer>回撤全景 vv2.8.18-nt · 数据来自公开行情接口，历史起点以各标的实际上市/发布日为准</footer>
+</div>
+
+<script>
+"use strict";
+var CHART = null, STATE = {ids:[],gran:"day",dfrom:"",dto:"",view:"period",page:0,fx:false};
+var PAYLOAD = null, CATALOG = null, SERIES = null, TABLE = null;
+
+function api(path){
+  var base = (window.__STATIC__ && window.__STATIC__.data_base) || "";
+  if(window.__STATIC__){ return base + "data.json"; }
+  return "api/dd/" + path;
+}
+function money(v){return v==null?"—":Number(v).toFixed(4)}
+function pct(v){return v==null?"—":Number(v).toFixed(2)+"%"}
+function cls(v){return v>0?"up":(v<0?"down":"")}
+
+function renderGroups(cat){
+  CATALOG = cat;
+  var box = document.getElementById("groups"); box.innerHTML="";
+  cat.groups.forEach(function(g){
+    var wrap = document.createElement("div"); wrap.style.marginTop="8px";
+    var lab = document.createElement("label"); lab.textContent = g.label+"："; wrap.appendChild(lab);
+    var chips = document.createElement("div"); chips.className="chips";
+    var byId = {}; cat.assets.forEach(function(a){byId[a.id]=a});
+    g.ids.forEach(function(id){
+      var a = byId[id]; if(!a) return;
+      var c = document.createElement("span");
+      c.className = "chip " + (a.ready?"ready":"empty") + (STATE.ids.indexOf(id)>=0?" on":"");
+      c.textContent = a.name + (a.ready?"":"（无数据）");
+      c.title = a.name + " · 数据 " + (a.actual_from||"—") + " 起 " + (a.points||0) + " 点";
+      c.onclick = function(){
+        var i = STATE.ids.indexOf(id);
+        if(i>=0){ if(STATE.ids.length>1) STATE.ids.splice(i,1); }
+        else STATE.ids.push(id);
+        c.classList.toggle("on");
+        refreshAll();
+      };
+      chips.appendChild(c);
+    });
+    wrap.appendChild(chips); box.appendChild(wrap);
+  });
+}
+
+function renderSignals(sigs){
+  var box = document.getElementById("signals"); box.innerHTML="";
+  if(!sigs || !sigs.length){box.innerHTML='<div class="muted">暂无信号数据（请先回补历史）</div>';return}
+  sigs.forEach(function(s){
+    var d = document.createElement("div"); d.className="sig";
+    var deep = (s.dd_rank_pct!=null && s.dd_rank_pct>=90)?" deep":"";
+    d.innerHTML = '<h3>'+s.name+'</h3>'
+      + '<div class="big'+deep+'">'+pct(s.dd_pct)+'</div>'
+      + '<div class="muted">当前距历史高点回撤</div>'
+      + '<dl>'
+      + '<dt>最新收盘</dt><dd>'+money(s.close)+'</dd>'
+      + '<dt>历史高点</dt><dd>'+money(s.peak)+' ('+(s.peak_date||"—")+')</dd>'
+      + '<dt>回撤分位</dt><dd>'+(s.dd_rank_pct==null?"—":s.dd_rank_pct+"%")+'</dd>'
+      + '<dt>距高点</dt><dd>'+(s.days_since_peak==null?"—":s.days_since_peak+" 天")+'</dd>'
+      + '<dt>类似回撤修复中位数</dt><dd>'+(s.recover_days_median==null?"—":s.recover_days_median+" 天")+'</dd>'
+      + '</dl><div class="hint">'+ (s.hint||"") +'</div>';
+    box.appendChild(d);
+  });
+}
+
+function renderChart(s){
+  var el = document.getElementById("chart");
+  if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
+  var series = [], legend = [];
+  s.series.forEach(function(line){
+    legend.push(line.name);
+    series.push({
+      name: line.name, type:"line", data: line.line,
+      xAxisIndex:0, yAxisIndex:0, showSymbol:false,
+      sampling:"lttb", smooth:false,
+      lineStyle:{width:1.5},
+      tooltip:{valueFormatter:function(v){return money(v[1])}}
+    });
+  });
+  var ddSeries = [];
+  s.series.forEach(function(line){
+    ddSeries.push({
+      name: line.name+" 回撤%", type:"line", data: line.dd,
+      xAxisIndex:1, yAxisIndex:1, showSymbol:false, sampling:"lttb",
+      lineStyle:{width:1,type:"dashed",opacity:.7}
+    });
+  });
+  var marks = [];
+  (s.events||[]).forEach(function(e){
+    var hit = s.series.find(function(x){return x.id===e.target});
+    if(!hit) return;
+    var pt = hit.line.find(function(p){return p[0]>=e.date});
+    if(!pt) return;
+    marks.push({coord:[pt[0],pt[1]],name:e.title,
+      symbol:"pin",symbolSize:e.side==="crash"?14:12,
+      itemStyle:{color:e.side==="crash"?"#d92b2b":"#12924a"},
+      label:{show:false},
+      tooltip:{formatter:'<b>'+e.title+'</b><br/>'+e.date+'<br/>'+e.desc}});
+  });
+  if(marks.length) series.push({name:"大事件",type:"line",data:[],markPoint:{data:marks}});
+  var option = {
+    animation:false,
+    legend:{data:legend,top:0},
+    tooltip:{trigger:"axis",axisPointer:{type:"cross"}},
+    grid:[{left:60,right:24,top:34,height:"46%"},{left:60,right:24,top:"62%",height:"22%"}],
+    xAxis:[
+      {type:"time",gridIndex:0,axisLabel:{show:false}},
+      {type:"time",gridIndex:1}
+    ],
+    yAxis:[
+      {type:"value",scale:true,gridIndex:0,name:"点位/价格"},
+      {type:"value",max:0,gridIndex:1,name:"回撤%"}
+    ],
+    dataZoom:[
+      {type:"inside",xAxisIndex:[0,1],start:0,end:100},
+      {type:"slider",xAxisIndex:[0,1],bottom:0,height:20,start:0,end:100}
+    ],
+    series: series.concat(ddSeries)
+  };
+  CHART.setOption(option,true);
+  CHART.off("datazoom");
+  CHART.on("datazoom",function(){
+    if(!CHART) return;
+    var op = CHART.getOption();
+    var dz = (op.dataZoom&&op.dataZoom[0])||{};
+    if(dz.startValue!=null && dz.endValue!=null){
+      var f = new Date(dz.startValue).toISOString().slice(0,10);
+      var t = new Date(dz.endValue).toISOString().slice(0,10);
+      STATE.dfrom=f; STATE.dto=t;
+      document.getElementById("dfrom").value=f; document.getElementById("dto").value=t;
+      loadTable(true);
+    }
+  });
+}
+
+var COLS = {
+  period:[["period","区间"],["start","起"],["end","止"],["close","期末收"],["dd_pct","期末回撤%"],["deepest_pct","最深回撤%"],["deepest_date","最深日"],["peak","历史峰值"],["days_since_peak","距高点(天)"]],
+  daily:[["date","日期"],["close","收盘"],["peak","峰值"],["peak_date","峰值日"],["dd_pct","回撤%"],["days_since_peak","距高点(天)"],["state","状态"]],
+  events:[["peak_date","峰值日"],["trough_date","谷值日"],["recover_date","修复日"],["drop_pct","跌幅%"],["recover_days","修复天数"],["ongoing","未修复"]]
+};
+var ROWS=[], PAGE_SIZE=60;
+
+function renderTable(){
+  var cols = COLS[STATE.view]||COLS.period;
+  var thead = document.querySelector("#tbl thead"), tbody=document.querySelector("#tbl tbody");
+  thead.innerHTML="<tr>"+cols.map(function(c){return "<th data-k='"+c[0]+"'>"+c[1]+"</th>"}).join("")+"</tr>";
+  var start=STATE.page*PAGE_SIZE, page=ROWS.slice(start,start+PAGE_SIZE);
+  tbody.innerHTML = page.map(function(r){
+    return "<tr>"+cols.map(function(c){
+      var v=r[c[0]];
+      if(c[0].indexOf("pct")>=0 || c[0]==="drop_pct") return "<td class='"+cls(v)+"'>"+pct(v)+"</td>";
+      if(c[0]==="close"||c[0]==="peak") return "<td>"+money(v)+"</td>";
+      if(c[0]==="ongoing") return "<td>"+(v?"是":"—")+"</td>";
+      return "<td>"+(v==null?"—":v)+"</td>";
+    }).join("")+"</tr>";
+  }).join("") || "<tr><td colspan='"+cols.length+"'>无数据</td></tr>";
+  document.getElementById("pageInfo").textContent="第 "+(STATE.page+1)+" 页 / 共 "+Math.ceil(ROWS.length/PAGE_SIZE)+" 页（"+ROWS.length+" 行）";
+}
+
+function loadTable(reset){
+  if(reset) STATE.page=0;
+  var q = "id="+encodeURIComponent(STATE.ids[0])+"&gran="+STATE.gran
+    +(STATE.dfrom?"&from="+STATE.dfrom:"")+(STATE.dto?"&to="+STATE.dto:"");
+  fetch(api("table?"+q)).then(function(r){return r.json()}).then(function(d){
+    TABLE = d;
+    applyTable();
+  }).catch(function(e){document.getElementById("tableHint").textContent="表格载入失败："+e});
+}
+
+function applyTable(){
+  if(!TABLE) return;
+  ROWS = STATE.view==="period"?(TABLE.periods||[]):STATE.view==="events"?(TABLE.events||[]):(TABLE.daily||[]);
+  document.getElementById("tableHint").textContent=(TABLE.name||"")+" · "+ROWS.length+" 行";
+  renderTable();
+}
+
+function refreshAll(){
+  var q="ids="+encodeURIComponent(STATE.ids.join(","))
+    +(STATE.dfrom?"&from="+STATE.dfrom:"")+(STATE.dto?"&to="+STATE.dto:"");
+  fetch(api("series?"+q)).then(function(r){return r.json()}).then(function(d){
+    SERIES=d; renderChart(d);
+    document.getElementById("chartHint").textContent="共 "+d.series.reduce(function(a,x){return a+x.points},0)+" 个数据点（已降采样）";
+  }).catch(function(e){document.getElementById("chartHint").textContent="图表载入失败："+e});
+  fetch(api("signals?ids="+encodeURIComponent(STATE.ids.join(",")))).then(function(r){return r.json()}).then(function(d){renderSignals(d.signals)}).catch(function(){});
+  loadTable(true);
+}
+
+function boot(){
+  fetch(api("payload")).then(function(r){return r.json()}).then(function(d){
+    PAYLOAD=d;
+    STATE.ids=(d.catalog.default_ids||[]).filter(function(id){var a=d.catalog.assets.find(function(x){return x.id===id});return a&&a.ready});
+    if(!STATE.ids.length){var r=d.catalog.assets.filter(function(a){return a.ready});STATE.ids=r.slice(0,4).map(function(a){return a.id})}
+    renderGroups(d.catalog);
+    renderSignals(d.signals);
+    SERIES=d.series; renderChart(d.series);
+    TABLE=d.table; applyTable();
+    document.getElementById("freshness").textContent="抓取："+(d.catalog.last_fetch||"—")+" · 重算："+(d.catalog.last_rebuild||"—");
+    document.getElementById("dfrom").value=d.catalog.assets.find(a=>a.id===STATE.ids[0]).actual_from||"";
+  }).catch(function(e){
+    document.getElementById("freshness").textContent="数据载入失败："+e;
+  });
+}
+
+document.getElementById("apply").onclick=function(){
+  STATE.dfrom=document.getElementById("dfrom").value;
+  STATE.dto=document.getElementById("dto").value;
+  refreshAll();
+};
+document.getElementById("reset").onclick=function(){
+  STATE.dfrom=STATE.dto="";
+  document.getElementById("dfrom").value=document.getElementById("dto").value="";
+  refreshAll();
+};
+["period","daily","events"].forEach(function(v){
+  var b=document.getElementById("view-"+v);
+  if(b) b.onclick=function(){
+    STATE.view=v; STATE.page=0;
+    ["period","daily","events"].forEach(function(x){var el=document.getElementById("view-"+x);if(el)el.classList.toggle("primary",x===v)});
+    applyTable();
+  };
+});
+document.getElementById("prev").onclick=function(){if(STATE.page>0){STATE.page--;renderTable()}};
+document.getElementById("next").onclick=function(){if((STATE.page+1)*PAGE_SIZE<ROWS.length){STATE.page++;renderTable()}};
+document.getElementById("fxAdjust").onchange=function(){STATE.fx=this.checked;document.getElementById("chartHint").textContent=STATE.fx?"已勾选还原（当前版本仅标注差额，二期实现精确还原）":"拖动下方滑块或滚轮缩放"};
+
+boot();
+</script>
+</body>
+</html>

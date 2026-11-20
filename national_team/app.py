@@ -32,6 +32,19 @@ import fetcher  # noqa: E402
 import intraday  # noqa: E402
 
 INDEX = os.path.join(BASE, "templates", "index.html")
+# 回撤全景页（独立页面，挂在 NT 子进程，零新增常驻进程）。
+# 用函数内延迟导入 + try/except：dd 模块缺失或语法错时只让 /dd 报 503，
+# 不影响主页与其余 API（三种原部署形态行为完全不变）。
+DD_TEMPLATE = os.path.join(ROOT, "drawdown", "templates", "index.html")
+
+
+def _dd_module():
+    """延迟取 drawdown 包；不可用返回 None（/dd 返回 503，主页零影响）。"""
+    try:
+        import drawdown.api as dd_api
+        return dd_api
+    except Exception:  # noqa: BLE001
+        return None
 PORT = int(os.environ.get("PORT") or "5000")
 # 版本指纹：与 qdii 侧的 sig/codes 同用途，部署后 /api/status 里能一眼辨新旧代码。
 # 手动同步更新，或用 git rev-parse 生成一次写死。
@@ -258,6 +271,13 @@ def build_payload(date=None, cats=None, codes=None, path=db.DB_PATH):
     }
 
 
+def build_dd_payload(dd, qone):
+    """把 /api/dd/payload 的查询串装箱给 dd.build_payload（与静态快照同源）。"""
+    ids = [x for x in (qone("ids") or "").split(",") if x]
+    return dd.build_payload(ids=ids or None, gran=qone("gran") or "day",
+                            dfrom=qone("from") or None, dto=qone("to") or None)
+
+
 def signal_label(yi):
     if yi is None:
         return ("主力净流入暂不可用", "flat")
@@ -451,6 +471,53 @@ class Handler(http.server.BaseHTTPRequestHandler):
                            head_only=head_only)
             except Exception as e:
                 self._send(500, str(e).encode("utf-8"), head_only=head_only)
+            return
+        # ---- 回撤全景页（独立页面 /dd + 同源 API /api/dd/*）----
+        # combo_app / gateway 只把 /qdii* 转给 QDII，其余默认落 NT，
+        # 故 /dd 天然走本子进程，无需新增端口或进程，三种原部署零牵连。
+        if path == "/dd":
+            try:
+                with open(DD_TEMPLATE, "rb") as f:
+                    html = f.read().decode("utf-8", "replace")
+                html = html.replace("__APP_VERSION__", APP_VERSION)
+                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8",
+                           head_only=head_only)
+            except Exception as e:
+                body = json.dumps({"error": "dd_frontend_missing", "msg": str(e)[:200]},
+                                  ensure_ascii=False).encode("utf-8")
+                self._send(503, body, head_only=head_only)
+            return
+        if path.startswith("/api/dd/"):
+            dd = _dd_module()
+            if dd is None:
+                self._send(503, b'{"error":"dd_module_unavailable"}', head_only=head_only)
+                return
+            try:
+                api_path = path[len("/api/dd"):]  # /catalog /series /table /signals /payload
+                if api_path == "/catalog":
+                    data = dd.catalog()
+                elif api_path == "/series":
+                    ids = [x for x in qone("ids").split(",") if x]
+                    data = dd.series(ids, qone("from") or None, qone("to") or None)
+                elif api_path == "/table":
+                    data = dd.table(qone("id") or (qone("ids").split(",") or [None])[0],
+                                    qone("gran") or "day", qone("from") or None,
+                                    qone("to") or None)
+                elif api_path == "/signals":
+                    ids = [x for x in qone("ids").split(",") if x]
+                    data = dd.signals(ids)
+                elif api_path == "/payload":
+                    data = build_dd_payload(dd, qone)
+                else:
+                    self._send(404, b'{"error":"dd_api_not_found"}', head_only=head_only)
+                    return
+                self._send(200, json.dumps(data, ensure_ascii=False, allow_nan=False,
+                                           default=str).encode("utf-8"),
+                           head_only=head_only)
+            except Exception as e:
+                body = json.dumps({"error": "dd_api_error", "type": type(e).__name__,
+                                   "msg": str(e)[:200]}, ensure_ascii=False).encode("utf-8")
+                self._send(500, body, head_only=head_only)
             return
         if path == "/api/data":
             auto_ensure()

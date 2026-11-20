@@ -7,6 +7,10 @@ qdii.db
 qdii.db-journal
 qdii.db-wal
 qdii.db-shm
+dd.db
+dd.db-journal
+dd.db-wal
+dd.db-shm
 
 # ---- 部署配置（含本机端口等私密设置；模板 .env.example 仍需入库）----
 .env

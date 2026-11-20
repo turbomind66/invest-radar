@@ -35,6 +35,8 @@ jobs:
             qdii/qdii_scheduler.py qdii/staticsite.py \
             common/http.py common/lock.py common/market_calendar.py \
             common/fuyao.py \
+            drawdown/constants.py drawdown/db.py drawdown/fetcher.py \
+            drawdown/engine.py drawdown/api.py drawdown/backfill.py \
             docker/healthcheck.py gateway.py combo_app.py
 
       - name: QDII 静态导出（同时验证 allow_nan=False / 空覆盖保护可用）
@@ -42,6 +44,9 @@ jobs:
 
       - name: 数据层单元测试（离线）
         run: python -m unittest discover -s national_team/tests -p "test_*.py" -v
+
+      - name: 回撤引擎单元测试（离线）
+        run: python -m unittest discover -s drawdown/tests -p "test_*.py" -v
 
       - name: QDII 单元测试（离线，含跟踪误差合成序列）
         run: python -m unittest discover -s qdii/tests -p "test_*.py" -v

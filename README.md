@@ -3,6 +3,8 @@
 > 两个独立模块的「定投 / 盯盘」看板，共用一套零依赖基础设施：
 > **① 汪汪队买卖A股日报**（@ A 股宽基 ETF 主力资金 / 份额申赎） + **② 海外 QDII 定投决策面板**（场外 QDII 限额 · 多平台费率 · 跟踪误差 · 场内溢价 · 美股信号 · 定投建议）。
 >
+> **③ 回撤全景**（`/dd`，挂在汪汪队同一服务，零新增进程）：宽基指数与场内 ETF 的全历史回撤与修复复盘，可缩放折线 + 大事件标注 + 日/周/月/季/年三视图表格 + 今日客观信号。代码在 `drawdown/`，回补命令见下文。
+>
 > 仓库原名 `ashare-national-team-tracker`，因新增 QDII 模块并规划更多品种（含个股监控）而更名；两个模块代码分别在 `national_team/` 与 `qdii/`，共用代码在 `common/`。
 >
 > **Zero-dependency** Python dashboards — no `pip install` required, standard library only.
@@ -381,7 +383,16 @@ Key 可放在环境变量 `invest-radar-fuyaokey` 或 `FUYAO_API_KEY`（见 `.en
 │   ├── templates/index.html
 │   ├── tests/
 │   └── 开发文档.md          # 需求 / 数据源实测结论 / 开发步骤
-├── docs/                   # Pages 产物（data.json / index.html）
+├── drawdown/               # ③ 回撤全景（/dd，挂 NT 子进程，零新增进程）
+│   ├── constants.py        # 标的清单（A股指数/场内ETF/海外指数/汇率）+ 事件种子
+│   ├── db.py               # 独立 SQLite（dd.db，与 data.db / qdii.db 分离）
+│   ├── fetcher.py          # 全历史抓取（东财 7 镜像轮换 + 新浪备源 + 断点续传）
+│   ├── engine.py           # 回撤计算（收盘价历史峰值口径）+ 事件识别 + 三视图
+│   ├── api.py              # 服务端与静态站同源的数据装配
+│   ├── backfill.py         # 回补入口：python -m drawdown.backfill [--force] [--export]
+│   ├── templates/index.html
+│   └── tests/
+├── docs/                   # Pages 产物（data.json / index.html / dd/）
 ├── Dockerfile              # 容器镜像（python:3.12-slim，非 root，含 tzdata）
 ├── docker-compose.yml      # 4 个服务：web / cron / qdii-web / qdii-cron
 ├── docker/entrypoint.sh    # 容器入口：按 APP_ROLE 起对应进程
