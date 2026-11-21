@@ -12,6 +12,7 @@ import re
 import ssl
 import time
 import urllib.request
+import urllib.parse
 
 from . import constants as C
 from . import db
@@ -149,21 +150,148 @@ def fetch_sina_a(symbol, retries=2):
     return []
 
 
+def fetch_tencent_a(symbol, retries=2, max_rounds=15, pause=0.5):
+    """腾讯财经 A股/ETF 日K全历史（end 参数向前翻页，每页640~1000根）。
+
+    东财 push2his 被封后的 A股/ETF 主源。腾讯单次有根数上限，需用 end 参数
+    逐页往前翻，直到无新日期。实测：上证 1990-12 起 8595 根、510300 2012 起 3520 根。
+    返回升序 [(date, close)]，已去重。
+    """
+    import datetime
+    all_rows = {}
+    for _ in range(retries):
+        all_rows = {}
+        end = time.strftime("%Y-%m-%d")
+        for _r in range(max_rounds):
+            url = ("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+                   "?param=%s,day,1990-01-01,%s,1000,qfq" % (symbol, end))
+            try:
+                txt = _get(url, timeout=15)
+                obj = json.loads(txt)
+                data = (obj.get("data") or {}).get(symbol, {})
+            except Exception:
+                break
+            key = next((k for k in ("qfqday", "day") if k in data), None)
+            kl = data.get(key, []) if key else []
+            if not kl:
+                break
+            dates = [str(x[0]) for x in kl]
+            new_cnt = 0
+            for row in kl:
+                d = str(row[0])
+                if d not in all_rows and len(row) >= 3:
+                    try:
+                        all_rows[d] = float(row[2])  # 第3列=收盘
+                        new_cnt += 1
+                    except (ValueError, TypeError):
+                        pass
+            if new_cnt == 0:
+                break
+            earliest = min(dates)
+            try:
+                prev = datetime.date.fromisoformat(earliest) - datetime.timedelta(days=1)
+                end = prev.isoformat()
+            except ValueError:
+                break
+            time.sleep(pause)
+        if all_rows:
+            break
+        time.sleep(0.6)
+    return [(d, all_rows[d]) for d in sorted(all_rows)]
+
+
+def fetch_tigzig(symbol, retries=2):
+    """TigZig 免费 yfinance 包装器（无 key），海外指数全历史日线。
+
+    东财 push2his 被按 IP 封禁时的替代源，实测 1990 起、零空洞、每日更新。
+    返回结构：{"YYYY-MM-DD": {"^N225": close, ...}, ...}
+    返回升序 [(date, close)]。
+    """
+    url = ("https://yfin-h.tigzig.com/v1/get-adj-close/?tickers=%s"
+           "&start_date=1990-01-01&end_date=2050-12-31"
+           % urllib.parse.quote(symbol, safe=""))
+    for _ in range(retries):
+        try:
+            txt = _get(url, timeout=30)
+            obj = json.loads(txt)
+            out = []
+            for d in sorted(obj.keys()):
+                v = obj[d]
+                c = v.get(symbol) if isinstance(v, dict) else None
+                if c is not None:
+                    try:
+                        out.append((d, float(c)))
+                    except (ValueError, TypeError):
+                        pass
+            if out:
+                return out
+        except Exception:
+            pass
+        time.sleep(1.0)
+    return []
+
+
+def fetch_csindex(code, retries=2):
+    """中证指数官网 perf API（中证红利低波等中证自有指数，东财外唯一权威源）。
+
+    GET https://www.csindex.com.cn/csindex-home/perf/index-perf
+        ?indexCode=H30269&startDate=19900101&endDate=20261121
+    返回 {"data": [{"tradeDate":"20200104","close":8549.43, ...}, ...]}
+    注意：官网首行是基日占位（如 19900101），值与真实起点次日相同，需剔除，
+    避免图上多一段虚假平台。返回升序 [(date, close)]。
+    """
+    today = time.strftime("%Y%m%d")
+    url = ("https://www.csindex.com.cn/csindex-home/perf/index-perf"
+           "?indexCode=%s&startDate=19900101&endDate=%s" % (code, today))
+    for _ in range(retries):
+        try:
+            txt = _get(url, ref="https://www.csindex.com.cn/", timeout=30)
+            obj = json.loads(txt)
+            data = obj.get("data") or []
+            out = []
+            for x in data:
+                d, c = x.get("tradeDate"), x.get("close")
+                if d and c is not None:
+                    # 剔除基日占位行：日期为 19900101 且值与次日相同
+                    if str(d) == "19900101":
+                        continue
+                    try:
+                        out.append(("%s-%s-%s" % (str(d)[:4], str(d)[4:6], str(d)[6:8]),
+                                    float(c)))
+                    except (ValueError, TypeError):
+                        pass
+            out.sort(key=lambda x: x[0])
+            if out:
+                return out
+        except Exception:
+            pass
+        time.sleep(0.8)
+    return []
+
+
 def fetch_asset(asset):
     src, code = asset["src"], asset["code"]
     rows = []
     if src == "em":
         rows = fetch_em_kline(code)
+    elif src == "tencent":
+        rows = fetch_tencent_a(code)
     elif src == "sina_us":
         rows = fetch_sina_us(code)
     elif src == "sina_fx":
         rows = fetch_sina_fx(code)
+    elif src == "tigzig":
+        rows = fetch_tigzig(code)
+    elif src == "csindex":
+        rows = fetch_csindex(code)
     # 备源回退：东财限流时用新浪（A股/ETF 近4年，美股 2004 起）
     if not rows:
         if asset.get("alt_src") == "sina_us":
             rows = fetch_sina_us(asset["alt_code"])
         elif asset.get("alt_src") == "sina_a":
             rows = fetch_sina_a(asset["alt_code"] or asset["id"])
+        elif asset.get("alt_src") == "tigzig":
+            rows = fetch_tigzig(asset["alt_code"])
     return rows
 
 
