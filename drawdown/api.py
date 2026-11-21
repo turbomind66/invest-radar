@@ -298,16 +298,22 @@ def export_static(out_dir, path=db.DB_PATH):
         if _t.get(_k):
             _t[_k] = [{k: v for k, v in r.items() if not k.startswith("w")}
                       for r in _t[_k]]
-    # 静态站的还原模式也带上全部可还原标的（6 只，合计约 1.3MB）：
-    # 只放 current 会让 GitHub Pages 勾选后永远只出首只（用户报「只显示纳指ETF」），
-    # 而静态站没有 /api/dd/reconstruct 可现取。
+    # 静态站没有 /api/dd/reconstruct：把每只可还原标的单独写一个 recon/<etf>.json
+    # （单只 140~300KB），勾选还原时按需取，首屏 data.json 不背这 1.3MB。
+    # 只把 current 放 data.json 会让 GitHub Pages 永远只出首只（用户报「只显示纳指ETF」）。
     _rc = payload.get("reconstruct") or {}
-    _by = {}
+    recon_dir = os.path.join(out_dir, "recon")
+    os.makedirs(recon_dir, exist_ok=True)
     for _r in _rc.get("available") or []:
         _one = RC.reconstruct(_r["etf"], path)
-        if not _one.get("error"):
-            _by[_r["etf"]] = _one
-    _rc["by_etf"] = _by
+        if _one.get("error"):
+            continue
+        _fp = os.path.join(recon_dir, _r["etf"] + ".json")
+        _tmp3 = _fp + ".tmp"
+        with open(_tmp3, "w", encoding="utf-8") as _f:
+            json.dump(_one, _f, ensure_ascii=False, allow_nan=False, default=str,
+                      separators=(",", ":"))
+        os.replace(_tmp3, _fp)
     os.makedirs(out_dir, exist_ok=True)
     # data.json（原子写）
     data_file = os.path.join(out_dir, "data.json")

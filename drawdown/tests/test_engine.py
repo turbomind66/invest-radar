@@ -298,11 +298,12 @@ class TestDBAndAPI(unittest.TestCase):
         self.assertIn("table", p)
         self.assertEqual(p["series"]["series"][0]["points"], 2)
 
-    def test_export_static_carries_every_reconstructable_etf(self):
-        """静态站必须打包全部可还原标的（reconstruct.by_etf）。
+    def test_export_static_splits_reconstruct_curves(self):
+        """静态站的还原曲线按需分片（recon/<etf>.json），不塞进 data.json。
 
         只放 current 会让 GitHub Pages 勾选「剔除汇率/溢价」后永远只出首只
-        （用户报「只显示纳指ETF国泰 vs 纳斯达克100」），静态站又没有 API 可现取。
+        （用户报「只显示纳指ETF国泰 vs 纳斯达克100」）；而 6 只全塞进 data.json
+        会把首屏从 4.2MB 顶到 5.6MB。分片是按需取，首屏不膨胀。
         """
         r = C.RECONSTRUCT[0]
         days = ["2020-01-02", "2020-01-03", "2020-01-06"]
@@ -316,16 +317,16 @@ class TestDBAndAPI(unittest.TestCase):
         with open(os.path.join(out, "data.json"), encoding="utf-8") as f:
             p = json.load(f)
         rc = p["reconstruct"]
-        self.assertIn("by_etf", rc)
-        self.assertIn(r["etf"], rc["by_etf"])
-        one = rc["by_etf"][r["etf"]]
+        self.assertIn("current", rc)                  # 首屏仍可直接画首只
+        self.assertNotIn("by_etf", rc)                # 不许内联 6 只（首屏会 +1.3MB）
+        one = json.load(open(os.path.join(out, "recon", r["etf"] + ".json"),
+                             encoding="utf-8"))
         self.assertEqual(one["etf"], r["etf"])
         self.assertEqual(one["points"], 3)
         for k in ("price", "nav", "restored", "bench"):
             self.assertIn(k, one["curves"])
-        self.assertIn("current", rc)              # 旧字段保留，兼容首屏
         html = open(os.path.join(out, "index.html"), encoding="utf-8").read()
-        self.assertIn("__STATIC__", html)         # 前端据此走本地数据分支
+        self.assertIn("__STATIC__", html)             # 前端据此走本地数据分支
 
     def _seed_window(self):
         """三段行情：先创新高、再落、再反弹但未收复 → 全历史与区间口径必然不同。"""

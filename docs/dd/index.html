@@ -971,37 +971,54 @@ function showRcNote(txt){
 
 function loadReconstruct(){
   if(window.__STATIC__){
-    // 静态快照现在带全部可还原标的（data.json 的 reconstruct.by_etf），
-    // 分派规则与服务端一致：叠加里命中 1 只→四曲线、命中多只→叠加对比、
-    // 一只都不命中→用下拉选（并说明「当前叠加无海外敞口」）。
-    var d = (PAYLOAD&&PAYLOAD.reconstruct)||{};
+    // 静态站的还原曲线按需取：data.json 只带首只（current），其余在 recon/<etf>.json
+    // （每只 140~300KB）。全部塞进 data.json 会让首屏从 4.2MB 涨到 5.6MB，
+    // GitHub Pages 上明显变慢；而只给 current 又会导致「勾选谁都是纳指ETF」。
+    // data.json 若内联了 by_etf 则直接用（兼容旧快照）。
+    var d = (PAYLOAD && PAYLOAD.reconstruct) || {};
     var bag = d.by_etf || {};
-    var hits = reconHits().filter(function(h){ return !!bag[h.etf]; });
-    if(hits.length === 1){
-      STATE.rcEtf = hits[0].etf; syncRcSel(); rcSelWrap(false);
-      RECON = bag[hits[0].etf]; renderReconstruct(RECON);
-      return;
+    var seq = ++RC_SEQ;
+    function pick(etf){
+      if(bag[etf]) return Promise.resolve(bag[etf]);
+      if(RC_CACHE[etf]) return Promise.resolve(RC_CACHE[etf]);
+      return fetch("recon/" + encodeURIComponent(etf) + ".json")
+        .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+        .then(function(o){
+          if(!o || o.error) throw new Error("该标的无还原数据");
+          RC_CACHE[etf] = o; return o;
+        });
     }
-    if(hits.length > 1){
+    var hits = reconHits();
+    if(hits.length > 1){                       // 叠加多只可还原 → 按叠加对比
       rcSelWrap(false);
-      renderReconMany(hits.map(function(h){ return bag[h.etf]; }));
-      return;
+      document.getElementById("chartHint").textContent = "还原曲线载入中（"+hits.length+" 只）…";
+      return Promise.all(hits.map(function(h){ return pick(h.etf); })).then(function(list){
+        if(seq !== RC_SEQ) return;
+        renderReconMany(list);
+      }).catch(function(e){
+        if(seq === RC_SEQ) document.getElementById("chartHint").textContent = "还原载入失败：" + e;
+      });
     }
-    var etf = STATE.rcEtf || (reconList()[0] || {}).etf;
-    if(!bag[etf]){                       // 快照里没有这只 → 回退到第一只有数据的
-      var ks = Object.keys(bag);
-      if(ks.length) etf = ks[0];
-    }
-    rcSelWrap(true);
-    if(bag[etf]){
-      STATE.rcEtf = etf; syncRcSel();
-      RECON = bag[etf]; renderReconstruct(RECON);
-      showRcNote(noHitNote() + " " + ((RECON && RECON.note) || ""));
-      return;
-    }
-    RECON = d.current || {error:1,msg:"静态快照缺少还原数据，请稍后重试或改用服务端模式"};
-    renderReconstruct(RECON);
-    return;
+    var one = hits.length === 1 ? hits[0].etf : (STATE.rcEtf || (reconList()[0] || {}).etf);
+    var note = hits.length === 1 ? "" : noHitNote();
+    if(hits.length === 1){ STATE.rcEtf = one; syncRcSel(); rcSelWrap(false); }
+    else rcSelWrap(true);
+    document.getElementById("chartHint").textContent = "还原曲线载入中…";
+    return pick(one).then(function(o){
+      if(seq !== RC_SEQ) return;
+      STATE.rcEtf = one; syncRcSel();
+      RECON = o; renderReconstruct(o);
+      if(note) showRcNote(note + " " + (o.note || ""));
+    }).catch(function(e){
+      if(seq !== RC_SEQ) return;
+      if(d.current){                           // 该只的分片缺失 → 退回快照里的首只，别白屏
+        RECON = d.current; renderReconstruct(RECON);
+        if(note) showRcNote(note + " " + (RECON.note || ""));
+        return;
+      }
+      RECON = {error:1, msg:"静态快照缺少该标的的还原数据（"+one+"）：" + e};
+      renderReconstruct(RECON);
+    });
   }
   var hits = reconHits();
   if(hits.length === 1){                       // 叠加里只有一只可还原 → 四曲线详情
