@@ -86,6 +86,81 @@ def _close_segment(seg, recover_date, rows):
             seg["peak"], seg["trough"], drop, recover_days, ongoing)
 
 
+def compute_episodes(rows, min_drop=10.0):
+    """按阈值识别「峰 → 谷 → 收复前峰」的独立波段（zigzag）。
+
+    为什么不复用 compute_metrics 的段：
+    metrics/dd_pct 始终相对**历史最高收盘**，这是页面的核心口径（免责声明也这么写），
+    但它会把「高点一直没被收复」期间的若干次大跌并成一段 —— 例如沪深300 从 2007-10
+    的 5891 点到 2021 年才重回前高，中间 2015(-43%)、2018(-32%)、2021(-40%) 全部
+    被吞进同一段，事件列表看起来只有寥寥几条。
+
+    episodes 反过来只关心「这一波跌了多少、后来回升了多少」：
+    - 跌破前高 min_drop% 即确认一个峰，从谷底回升 min_drop% 即确认一个谷；
+    - 因此每个大波段都是独立事件，涨跌两侧都能标注。
+    该结果只用于「事件标注 / 回撤事件列表」，不改动 dd_pct 与今日信号的既有口径。
+
+    返回 [{peak_date, peak, trough_date, trough, drop_pct, days_down,
+           recover_date, recover_days, ongoing, rebound_pct, rebound_date}]
+    """
+    eps = []
+    n = len(rows)
+    if n < 2:
+        return eps
+    peak_c, peak_d, peak_i = rows[0][1], rows[0][0], 0
+    if not peak_c or peak_c <= 0:
+        return eps
+    phase = "up"
+    trough_c = trough_d = None
+    trough_i = -1
+    for i in range(1, n):
+        d, c = rows[i]
+        if c is None or c <= 0:
+            continue
+        if phase == "up":
+            if c > peak_c:
+                peak_c, peak_d, peak_i = c, d, i
+            elif c <= peak_c * (1.0 - min_drop / 100.0):
+                phase = "down"
+                trough_c, trough_d, trough_i = c, d, i
+        else:
+            if c < trough_c:
+                trough_c, trough_d, trough_i = c, d, i
+            elif c >= trough_c * (1.0 + min_drop / 100.0):
+                eps.append(dict(peak_date=peak_d, peak=peak_c,
+                                trough_date=trough_d, trough=trough_c,
+                                peak_i=peak_i, trough_i=trough_i))
+                phase = "up"
+                peak_c, peak_d, peak_i = c, d, i
+    if phase == "down":
+        eps.append(dict(peak_date=peak_d, peak=peak_c,
+                        trough_date=trough_d, trough=trough_c,
+                        peak_i=peak_i, trough_i=trough_i))
+
+    # 收复前峰日期 + 反弹幅度（下一浪的峰，或末尾运行中的峰）
+    for k, e in enumerate(eps):
+        rec_d = rec_i = None
+        for j in range(e["trough_i"] + 1, n):
+            if rows[j][1] is not None and rows[j][1] >= e["peak"]:
+                rec_d, rec_i = rows[j][0], j
+                break
+        e["drop_pct"] = round((e["trough"] / e["peak"] - 1.0) * 100.0, 2)
+        e["days_down"] = e["trough_i"] - e["peak_i"]
+        e["recover_date"] = rec_d
+        e["ongoing"] = 0 if rec_d else 1
+        e["recover_days"] = (rec_i - e["peak_i"]) if rec_i is not None else None
+        nxt = eps[k + 1] if k + 1 < len(eps) else None
+        rb_d = nxt["peak_date"] if nxt else (peak_d if phase == "up" else None)
+        rb_c = nxt["peak"] if nxt else (peak_c if phase == "up" else None)
+        if rb_c and e["trough"]:
+            e["rebound_pct"] = round((rb_c / e["trough"] - 1.0) * 100.0, 2)
+            e["rebound_date"] = rb_d
+        else:
+            e["rebound_pct"] = None
+            e["rebound_date"] = None
+    return eps
+
+
 def _period_key(date, gran):
     d = datetime.date.fromisoformat(date)
     if gran == "day":

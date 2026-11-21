@@ -12,6 +12,8 @@ from . import db
 from . import engine
 from . import reconstruct as RC
 
+_EVT_CACHE = {}   # (path, asset, 最新日期, 阈值, top) → 自动事件；日更后自然失效
+
 
 def catalog(path=db.DB_PATH):
     avail = db.available_assets(path)
@@ -36,7 +38,7 @@ def catalog(path=db.DB_PATH):
         "granularities": [
             {"key": g, "label": C.GRANULARITY_LABELS[g]} for g in C.GRANULARITIES],
         "default_ids": C.DEFAULT_IDS,
-        "events": C.EVENTS,
+        "event_count": len(C.EVENTS),
         "reconstruct": C.RECONSTRUCT,
         "last_fetch": last_fetch,
         "last_rebuild": last_rebuild,
@@ -82,12 +84,82 @@ def _series_one(asset_id, dfrom=None, dto=None, path=db.DB_PATH):
     }
 
 
+def _num(v):
+    """价格显示：指数用 2 位、ETF 用 4 位，避免 3900.1234 这种噪声。"""
+    if v is None:
+        return "—"
+    return ("%.2f" if abs(v) >= 100 else "%.4f") % v
+
+
+def _auto_events(asset_id, path=db.DB_PATH, min_drop=20.0, top=6):
+    """数据自动识别的「深度回撤 / 触底反弹」标注（每标的最多取最深的 top 次）。
+
+    人工策展事件覆盖不到的长尾（尤其 2015/2018/2021 这类嵌套大跌）由这里补齐，
+    标题直接来自真实峰谷，不会编造历史。按 (库, 标的, 最新日期) 缓存，日更后自动失效。
+    """
+    latest = db.latest_date(asset_id, path)
+    if not latest:
+        return []
+    key = (path, asset_id, latest, min_drop, top)
+    if key in _EVT_CACHE:
+        return _EVT_CACHE[key]
+    eps = engine.compute_episodes(db.get_daily(asset_id, path), min_drop)
+    picked = sorted(eps, key=lambda e: e["drop_pct"])[:top]
+    out = []
+    for e in picked:
+        if e.get("recover_date"):
+            rec = "已在 %s 收复前峰（累计 %d 个交易日）" % (
+                e["recover_date"], e["recover_days"] or 0)
+        else:
+            rec = "至今未收复前峰"
+        out.append(dict(
+            date=e["peak_date"], target=asset_id, side="crash",
+            title="深度回撤 %.1f%%" % e["drop_pct"],
+            desc="自 %s 高点 %s 跌至 %s 低点 %s，最大回撤 %.2f%%，历时 %d 个交易日；%s。" % (
+                e["peak_date"], _num(e["peak"]), e["trough_date"],
+                _num(e["trough"]), e["drop_pct"], e["days_down"], rec),
+            auto=True))
+        if e.get("rebound_pct") is not None:
+            out.append(dict(
+                date=e["trough_date"], target=asset_id, side="rally",
+                title="触底反弹 +%.1f%%" % e["rebound_pct"],
+                desc="%s 见底 %s 后回升，至 %s 反弹 %.2f%%。" % (
+                    e["trough_date"], _num(e["trough"]),
+                    e["rebound_date"] or "—", e["rebound_pct"]),
+                auto=True))
+    _EVT_CACHE[key] = out
+    return out
+
+
+def _days_between(d1, d2):
+    import datetime
+    try:
+        return abs((datetime.date.fromisoformat(d1)
+                    - datetime.date.fromisoformat(d2)).days)
+    except (ValueError, TypeError):
+        return 9999
+
+
+def events_for(asset_id, path=db.DB_PATH):
+    """单标的事件：策展事件 + 自动识别波段（同名/邻近的自动事件不重复标注）。"""
+    curated = [dict(e) for e in C.EVENTS if e["target"] == asset_id]
+    auto = []
+    for e in _auto_events(asset_id, path):
+        if any(a["side"] == e["side"] and _days_between(a["date"], e["date"]) <= 45
+               for a in curated):
+            continue
+        auto.append(e)
+    out = curated + auto
+    out.sort(key=lambda e: (e["date"], e["side"]))
+    return out
+
+
 def series(ids, dfrom=None, dto=None, path=db.DB_PATH):
     ids = [i for i in (ids or []) if i in C.BY_ID]
     if not ids:
         ids = list(C.DEFAULT_IDS)
     out = {"series": [_series_one(i, dfrom, dto, path) for i in ids],
-           "events": [e for e in C.EVENTS if not ids or e["target"] in ids]}
+           "events": [e for aid in ids for e in events_for(aid, path)]}
     return out
 
 
@@ -101,6 +173,19 @@ def table(asset_id, gran="day", dfrom=None, dto=None, path=db.DB_PATH):
               "peak_date": m["peak_date"], "dd_pct": m["dd_pct"],
               "days_since_peak": m["days_since_peak"], "state": m["state"]}
              for m in metrics]
+    # 回撤事件用「波段识别」而非 dd_events：后者锚定历史最高收盘，
+    # 高点长期未收复时会把 2015/2018/2021 的大跌并进同一段（事件只有寥寥几条）。
+    rows = db.get_daily(asset_id, path)
+    if dfrom:
+        rows = [r for r in rows if r[0] >= dfrom]
+    if dto:
+        rows = [r for r in rows if r[0] <= dto]
+    episodes = [{"peak_date": e["peak_date"], "trough_date": e["trough_date"],
+                 "recover_date": e["recover_date"], "drop_pct": e["drop_pct"],
+                 "rebound_pct": e.get("rebound_pct"),
+                 "recover_days": e["recover_days"], "ongoing": e["ongoing"]}
+                for e in engine.compute_episodes(rows, 10.0)]
+    episodes.sort(key=lambda x: x["peak_date"], reverse=True)
     return {
         "id": asset_id,
         "name": C.BY_ID[asset_id]["name"],
@@ -108,6 +193,7 @@ def table(asset_id, gran="day", dfrom=None, dto=None, path=db.DB_PATH):
         "periods": engine.aggregate(metrics, gran),
         "daily": daily,
         "events": db.get_events(asset_id, path),
+        "episodes": episodes,
         "total": len(metrics),
     }
 

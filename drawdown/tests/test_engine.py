@@ -86,6 +86,80 @@ class TestSignal(unittest.TestCase):
         self.assertIsInstance(s["hint"], str)
 
 
+class TestEpisodes(unittest.TestCase):
+    """波段识别：覆盖「历史最高点长期未收复期间」的嵌套大跌。"""
+
+    def test_nested_drawdowns_are_separate_episodes(self):
+        rows = series(("2020-01-01", 100.0), ("2020-02-01", 200.0),
+                      ("2020-03-01", 120.0),   # 第一波 -40%
+                      ("2020-04-01", 190.0),   # 反弹但未创新高
+                      ("2020-05-01", 110.0),   # 第二波 -42%
+                      ("2020-06-01", 230.0))
+        eps = engine.compute_episodes(rows, 15.0)
+        self.assertEqual(len(eps), 2)
+        self.assertAlmostEqual(eps[0]["drop_pct"], -40.0, places=2)
+        self.assertAlmostEqual(eps[1]["drop_pct"], -42.11, places=1)
+        self.assertEqual(eps[0]["peak_date"], "2020-02-01")
+        self.assertEqual(eps[1]["peak_date"], "2020-04-01")
+        # 第一段在重回 200 时才算收复（即使中间有 190 的反弹）
+        self.assertEqual(eps[0]["recover_date"], "2020-06-01")
+        self.assertEqual(eps[0]["ongoing"], 0)
+        self.assertAlmostEqual(eps[0]["rebound_pct"], (190 / 120 - 1) * 100, places=1)
+
+    def test_ongoing_segment(self):
+        rows = series(("2021-01-01", 100.0), ("2021-02-01", 140.0),
+                      ("2021-03-01", 90.0), ("2021-04-01", 95.0))
+        eps = engine.compute_episodes(rows, 15.0)
+        self.assertEqual(len(eps), 1)
+        self.assertEqual(eps[0]["ongoing"], 1)
+        self.assertIsNone(eps[0]["recover_date"])
+
+    def test_small_swings_ignored(self):
+        rows = series(("2020-01-01", 100.0), ("2020-02-01", 105.0),
+                      ("2020-03-01", 98.0), ("2020-04-01", 106.0))
+        self.assertEqual(engine.compute_episodes(rows, 15.0), [])
+
+    def test_empty_and_short(self):
+        self.assertEqual(engine.compute_episodes([], 15.0), [])
+        self.assertEqual(engine.compute_episodes(series(("2020-01-01", 100.0)), 15.0), [])
+
+
+class TestEventsFor(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+        db.init_db(self.tmp)
+
+    def tearDown(self):
+        try:
+            os.unlink(self.tmp)
+        except OSError:
+            pass
+
+    def test_curated_and_auto_merged_without_duplicates(self):
+        # 2018-01-26 附近造一段 -31% 的大跌：应与策展事件「3587点」同类事件去重
+        rows = [("2017-12-01", 3900.0), ("2018-01-02", 4000.0),
+                ("2018-01-26", 4400.0), ("2018-02-09", 3000.0),
+                ("2018-06-01", 3900.0),   # 自谷底反弹 30%，波段确认
+                ("2018-12-28", 3800.0)]
+        db.upsert_daily("sh000300", rows, self.tmp)
+        db.set_meta("last_rebuild", "2018-12-28", self.tmp)
+        evs = api.events_for("sh000300", self.tmp)
+        curated = [e for e in evs if not e.get("auto")]
+        auto = [e for e in evs if e.get("auto")]
+        self.assertTrue(curated, "策展事件应保留")
+        self.assertTrue(auto, "识别出的波段应补进事件列表")
+        near = [e for e in auto
+                if e["side"] == "crash" and e["date"] == "2018-01-26"]
+        self.assertEqual(near, [], "与策展事件同侧且 45 天内的自动事件应被去重")
+        rally = [e for e in auto if e["side"] == "rally"]
+        self.assertEqual([e["date"] for e in rally], ["2018-02-09"],
+                         "谷底反弹应作为「行情启动」事件补进来")
+        # 事件按日期升序，前端按顺序落 pin
+        dates = [e["date"] for e in evs]
+        self.assertEqual(dates, sorted(dates))
+        self.assertTrue(all("title" in e and "desc" in e for e in evs))
+
+
 class TestDBAndAPI(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name

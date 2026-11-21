@@ -77,7 +77,7 @@ global.fetch = async () => ({
   ok: true, json: async () => ({ series: { series: [], events: [] }, signals: [], table: {} }),
 });
 
-const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt };`;
+const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt, applyTable, gotoPage, pageCount, setTable: function(t){TABLE=t;}, getRows: function(){return ROWS;} };`;
 eval(extractScript(HTML_TEXT) + EXPORTER);
 
 // ---------- 断言 ----------
@@ -235,6 +235,75 @@ __T.STATE.ids = ['sh000300', '513100'];
 ok(__T.reconHits().map(x => x.etf).join(',') === '513100', '叠加含 1 只可还原标的时纳入该只');
 __T.STATE.ids = ['513100', '513500'];
 ok(__T.reconHits().length === 2, '叠加含 2 只可还原标的时两只都纳入（走叠加还原对比）');
+
+
+// ---- 10) 单标的用绝对点位；叠加才归一化为百分比 ----
+const ONE = [{ id: 'sh000300', name: '沪深300',
+  line: [['2017-01-01', 4000], ['2018-01-26', 4381.3]],
+  dd: [['2017-01-01', 0], ['2018-01-26', -10]], points: 2 }];
+__T.renderChart({ series: ONE, events: [] });
+opt = LAST_OPT;
+const oneMain = opt.series.find(s => s.yAxisIndex === 0 && s.name === '沪深300');
+ok(oneMain.data[0][1] === 4000 && oneMain.data[1][1] === 4381.3,
+   '只选 1 个标的时走势用原始点位/价格（不再换算成%）');
+ok(/点位/.test(opt.yAxis[0].name) && !opt.yAxis[0].axisLabel,
+   '单标的 Y 轴显示数值（不是百分比刻度）：' + opt.yAxis[0].name);
+ok(oneMain.tooltip.valueFormatter(4381.3) === '4381.3000', '单标的 tooltip 直接给点位');
+const tipOne = opt.tooltip.formatter([{
+  seriesType: 'line', seriesIndex: 0, seriesName: '沪深300', marker: '',
+  value: ['2018-01-26', 4381.3], data: ['2018-01-26', 4381.3],
+}]);
+ok(tipOne.indexOf('4381.3000') >= 0 && tipOne.indexOf('较起点') >= 0,
+   '单标的 tooltip 同时给点位与「较起点」涨跌');
+__T.renderChart({ series: ONE, events: [{ target: 'sh000300', date: '2018-01-26', title: 'e', desc: 'd', side: 'crash' }] });
+const oneEvt = LAST_OPT.series.find(s => s.type === 'scatter');
+ok(oneEvt.data[0].value[1] === 4381.3, '单标的事件 pin 落在原始点位坐标');
+
+// 叠加（2 条以上）仍必须归一化
+__T.renderChart({ series: seriesData, events: [] });
+ok(/累计涨跌%/.test(LAST_OPT.yAxis[0].name) && /%/.test(LAST_OPT.yAxis[0].axisLabel.formatter),
+   '叠加 ≥2 个标的时 Y 轴切回累计涨跌%');
+
+// ---- 11) 同一宏观事件（同侧 10 天内）只画一个图钉 ----
+__T.renderChart({ series: seriesData, events: [
+  { target: 'sh000300', date: '2018-01-26', title: '同一宏观事件', desc: 'd', side: 'crash' },
+  { target: 'sh000001', date: '2018-01-24', title: '同一宏观事件', desc: 'd', side: 'crash' },
+  { target: 'sh000001', date: '2019-01-04', title: '另一个事件', desc: 'd', side: 'rally' },
+] });
+const dedup = LAST_OPT.series.find(s => s.type === 'scatter');
+ok(dedup.data.length === 2, '同侧 10 天内的重复事件只画一个 pin（避免多条线叠一堆）');
+
+// ---- 12) 回撤明细分页：首页 / 末页 / 页码跳转 ----
+const manyRows = [];
+for (let i = 0; i < 130; i++) {
+  manyRows.push({ date: '2020-01-01', close: 1, peak: 1, peak_date: '2020-01-01',
+    dd_pct: 0, days_since_peak: 0, state: 'x' });
+}
+__T.setTable({ name: '测试标的', daily: manyRows, periods: [], episodes: [] });
+__T.STATE.view = 'daily'; __T.STATE.page = 0;
+__T.applyTable();
+ok(__T.pageCount() === 3, '130 行按 60 行/页 共 3 页');
+document.getElementById('last').onclick();
+ok(__T.STATE.page === 2, '「末页」跳到最后 1 页');
+document.getElementById('first').onclick();
+ok(__T.STATE.page === 0, '「首页」回到第 1 页');
+document.getElementById('pageJump').value = '2';
+document.getElementById('jumpGo').onclick();
+ok(__T.STATE.page === 1, '输入页码 2 → 跳到第 2 页');
+__T.gotoPage(99);
+ok(__T.STATE.page === 2, '越界页码被夹到末页（不会白屏）');
+ok(document.getElementById('pageJump').max === '3', '页码输入框上限随总页数同步');
+
+// ---- 13) 回撤事件视图改用波段识别结果（覆盖嵌套大跌） ----
+__T.setTable({ name: '测试标的', daily: [], periods: [], episodes: [
+  { peak_date: '2015-06-08', trough_date: '2016-01-28', recover_date: null,
+    drop_pct: -43.5, rebound_pct: 41.2, recover_days: null, ongoing: 1 },
+] });
+__T.STATE.view = 'events'; __T.STATE.page = 0;
+__T.applyTable();
+const evRows = __T.getRows();
+ok(evRows.length === 1 && evRows[0].peak_date === '2015-06-08',
+   '回撤事件视图读 episodes（2007 高点未收复期间的 2015 大跌也能单列）');
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);

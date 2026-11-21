@@ -47,7 +47,10 @@
   thead th:hover{color:var(--accent)}
   .up{color:var(--up)} .down{color:var(--down)}
   .tbl-wrap{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:8px}
-  .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px;font-size:12px;color:var(--sub)}
+  .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px;font-size:12px;color:var(--sub);flex-wrap:wrap}
+  .pager .jump{display:inline-flex;align-items:center;gap:4px;color:var(--sub)}
+  .pager input[type=number]{width:66px;padding:5px 8px;text-align:center}
+  .pager button:disabled{opacity:.45;cursor:not-allowed}
   .muted{color:var(--sub);font-size:12px}
   .loading{padding:40px;text-align:center;color:var(--sub)}
   .evt-note{margin-top:8px;padding:9px 12px;border-left:3px solid var(--accent);background:#f2f6ff;border-radius:8px;font-size:13px;line-height:1.65;color:var(--ink)}
@@ -109,7 +112,15 @@
       <span class="muted" id="linkNote">与上方图表时间窗口联动</span>
     </div>
     <div class="tbl-wrap"><table id="tbl"><thead></thead><tbody></tbody></table></div>
-    <div class="pager"><span id="pageInfo"></span><button id="prev">上一页</button><button id="next">下一页</button></div>
+    <div class="pager">
+      <span id="pageInfo"></span>
+      <button id="first">首页</button>
+      <button id="prev">上一页</button>
+      <label class="jump">第 <input type="number" id="pageJump" min="1" step="1"> 页</label>
+      <button id="jumpGo">跳转</button>
+      <button id="next">下一页</button>
+      <button id="last">末页</button>
+    </div>
   </div>
 
   <footer>回撤全景 v2.9.1-nt · 数据来自公开行情接口，历史起点以各标的实际上市/发布日为准</footer>
@@ -124,6 +135,7 @@ var EVT_PTS = [], EVT_SI = -1;   // 事件点缓存 + 其 series 索引（像素
 var ZR_CLICK = null, ZR_MOVE = null, ZR_LAST = "";   // 自定义 zr 处理器（精确 off 用）
 var RC_CACHE = {};               // 还原曲线缓存（etf → 响应）
 var RC_SEQ = 0;                  // 还原请求序号（丢弃过期响应，避免快速切换时旧数据覆盖新图）
+var SER_SEQ = 0, TBL_SEQ = 0;    // 走势/表格请求序号（连点 chip 时防旧响应覆盖新图）
 
 function api(path){
   var base = (window.__STATIC__ && window.__STATIC__.data_base) || "";
@@ -134,11 +146,12 @@ function money(v){return v==null?"—":Number(v).toFixed(4)}
 function pct(v){return v==null?"—":Number(v).toFixed(2)+"%"}
 function cls(v){return v>0?"up":(v<0?"down":"")}
 function fmtPct(v){return v==null?"—":(Number(v)>0?"+":"")+Number(v).toFixed(2)+"%"}
-// 走势图归一化口径：每条线以「当前窗口首个有效点」为 0%
-//  - 设了起始日 → 从起始日 0 起算；点重置 → 回到各标的最早上市/发布日 0 起算
-//  - 不同标的价格量纲差几个数量级（3900 vs 4.15），只有百分比同轴才可比
-// META 保存「seriesIndex → 日期→原始价」，供 tooltip 同时回显绝对点位
-var META = {n:0, raw:{}};
+// 走势图两种口径：
+//  - 只选 1 个标的 → 直接展示收盘**点位/价格**（单条线不存在量纲冲突，看绝对值更直观）
+//  - 叠加 ≥2 个标的 → 统一换算为累计涨跌%，窗口首点为 0%
+//    （上证 3900 与 ETF 4.15 同轴时，绝对点位会把低价品种压成一条平线）
+// 设了起始日 → 以起始日为基准；点重置 → 各自最早上市/发布日为基准
+var META = {n:0, raw:{}, bases:[], single:false};
 function tipFmt(ps){
   if(!ps || !ps.length) return "";
   var head = ps[0].axisValueLabel || ps[0].axisValue || "";
@@ -147,14 +160,25 @@ function tipFmt(ps){
     if(p.seriesType !== "line") return;
     var y = Array.isArray(p.value) ? p.value[1] : p.value;
     if(y==null) return;
+    var isMain = p.seriesIndex < META.n;
     var raw = null;
-    if(p.seriesIndex < META.n && META.raw[p.seriesIndex]){
+    if(isMain && META.raw[p.seriesIndex]){
       var d = Array.isArray(p.data) ? p.data[0] : p.name;
       raw = META.raw[p.seriesIndex][d];
     }
-    html += '<div style="line-height:19px">'+(p.marker||"")+p.seriesName
-      + ' <b>'+fmtPct(y)+'</b>'
-      + (raw!=null ? ' <span style="color:#8a8f98">点位 '+money(raw)+'</span>' : '')+'</div>';
+    var line = '<div style="line-height:19px">'+(p.marker||"")+p.seriesName;
+    if(isMain && META.single){
+      // 单标的：Y 轴就是点位，直接给价格；附带「较起点」涨跌便于对照
+      var base = META.bases[p.seriesIndex];
+      line += ' <b>'+money(y)+'</b>';
+      if(base) line += ' <span style="color:#8a8f98">较起点 '+fmtPct((y/base-1)*100)+'</span>';
+    }else if(isMain){
+      line += ' <b>'+fmtPct(y)+'</b>'
+        + (raw!=null ? ' <span style="color:#8a8f98">点位 '+money(raw)+'</span>' : '');
+    }else{
+      line += ' <b>'+(y==null?"—":Number(y).toFixed(2)+"%")+'</b>';
+    }
+    html += line+'</div>';
   });
   return html;
 }
@@ -259,12 +283,11 @@ function showEvt(d){
   if(x) x.onclick = function(){ el.style.display = "none"; };
 }
 
-// 走势序列构建：以 fromStr（当前窗口左边界）为归一化基准
-//  - fromStr 为空 → 各线自身首个有效点（重置态：各自最早上市/发布日 = 0%）
-//  - fromStr 有值 → 该日期起算（设起始日 / 拖动缩放后都以它为 0%）
-// 不同标的价格量纲差几个数量级（3900 vs 4.15），只有百分比同轴才可比
+// 走势序列构建：fromStr = 当前窗口左边界（缩放/起始日联动）
+// mode：单标的用绝对点位，多标的用累计涨跌%（窗口首点=0%）
 function buildLines(s, fromStr){
-  var bases = {}, rawMap = {}, main = [], dd = [], legend = [], evtPoints = [];
+  var single = (s.series.length === 1);
+  var bases = {}, baseArr = [], rawMap = {}, main = [], dd = [], legend = [], evtPoints = [];
   s.series.forEach(function(line, i){
     var base = null;
     for(var k=0;k<line.line.length;k++){
@@ -274,6 +297,7 @@ function buildLines(s, fromStr){
       base = p0[1]; break;
     }
     bases[line.id] = base;
+    baseArr[i] = base;
     var m = {};
     line.line.forEach(function(p){ if(p[1]!=null) m[p[0]] = p[1]; });
     rawMap[i] = m;
@@ -281,14 +305,14 @@ function buildLines(s, fromStr){
     main.push({
       name: line.name, type:"line",
       data: line.line.map(function(p){
-        // p=[date, close] → [date, 相对窗口起点累计涨跌%]，形状不变、量纲统一
+        if(single) return [p[0], p[1]];                 // 单标的：直接用点位/价格
         return [p[0], (base && p[1]!=null) ? +(((p[1]/base)-1)*100).toFixed(4) : null];
       }),
       xAxisIndex:0, yAxisIndex:0, showSymbol:false,
       sampling:"lttb", smooth:false,
       lineStyle:{width:1.5},
-      // axis tooltip 的 valueFormatter 收到的是标量（该点的累计涨跌%），不是 [date, value] 数组
-      tooltip:{valueFormatter:function(v){return fmtPct(v)}}
+      // axis tooltip 的 valueFormatter 收到的是标量（该点数值），不是 [date, value] 数组
+      tooltip:{valueFormatter:function(v){return single ? money(v) : fmtPct(v)}}
     });
     // 回撤线与主线同名 → 同一个图例项统一控制；否则图例只列主线名，
     // 回撤虚线不在 legend.data 里无法被隐藏，「取消沪深300后虚线还在」。
@@ -301,19 +325,29 @@ function buildLines(s, fromStr){
   });
   // 事件标注用独立 scatter series 承载：markPoint 的 tooltip 受全局 axis 模式压制，
   // 悬停/点击都不出说明；scatter 可挂 item tooltip，且 tooltip.triggerOn 含 click。
-  (s.events||[]).forEach(function(e){
+  // 同一宏观事件挂在整组标的上，这里按「同侧且 10 天内」去重，只画一个图钉，避免叠得看不清。
+  var seen = [];
+  var evs = (s.events||[]).slice().sort(function(a,b){ return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+  evs.forEach(function(e){
     var hit = s.series.find(function(x){return x.id===e.target});
     if(!hit || !hit.line.length) return;
     // 窗口起点之前的事件不落在图上（否则会被挤到左边界，误导为窗口内事件）
     if(e.date < hit.line[0][0]) return;
     var pt = hit.line.find(function(p){return p[0]>=e.date});
     if(!pt) return;
+    // 同一场危机的不同标的峰谷日期会差几天到几周，去重窗口取 30 天，
+    // 否则叠加 4 条线时会在 2008/2015 这些位置堆成一坨、把曲线遮住。
+    var near = seen.some(function(x){
+      return x.side === e.side && Math.abs(new Date(x.date) - new Date(e.date)) <= 30*86400000;
+    });
+    if(near) return;
+    seen.push({date:e.date, side:e.side});
     var base = bases[e.target];
     evtPoints.push({
-      value:[pt[0], (base && pt[1]!=null) ? +(((pt[1]/base)-1)*100).toFixed(4) : null],
+      value:[pt[0], single ? pt[1] : ((base && pt[1]!=null) ? +(((pt[1]/base)-1)*100).toFixed(4) : null)],
       name:e.title,
       evDate:e.date, evDesc:e.desc, evSide:e.side,
-      symbol:"pin", symbolSize:e.side==="crash"?16:14,
+      symbol:"pin", symbolSize:e.side==="crash"?13:11,
       itemStyle:{color:e.side==="crash"?"#d92b2b":"#12924a"}
     });
   });
@@ -327,8 +361,8 @@ function buildLines(s, fromStr){
              '<br/>'+(d.evDesc||"");
     }}
   });
-  return {bases:bases, rawMap:rawMap, main:main, dd:dd, legend:legend,
-          evtPoints:evtPoints, n:s.series.length};
+  return {bases:bases, baseArr:baseArr, rawMap:rawMap, main:main, dd:dd, legend:legend,
+          evtPoints:evtPoints, n:s.series.length, single:single};
 }
 
 // dataZoom 给的是时间戳，用本地时区取日期（toISOString 会因时区差一天）
@@ -336,9 +370,11 @@ function tsToDate(ts){
   var d = new Date(ts), m = d.getMonth()+1, day = d.getDate();
   return d.getFullYear()+"-"+(m<10?"0":"")+m+"-"+(day<10?"0":"")+day;
 }
-function hintText(fromStr, total){
-  return "走势已统一为累计涨跌%（窗口起点=0%）· 共 "+total+" 个交易日"
-    + (fromStr ? " · 自 "+fromStr+" 起算" : " · 各自最早数据点起算");
+function hintText(fromStr, total, single){
+  var tail = " · 共 "+total+" 个交易日" + (fromStr ? " · 自 "+fromStr+" 起算" : "");
+  return single
+    ? "单标的走势按收盘点位展示"+tail
+    : "叠加走势已统一为累计涨跌%（窗口起点=0%）"+tail;
 }
 
 function renderChart(s){
@@ -350,13 +386,16 @@ function renderChart(s){
     if(_lg.selected) prevSelected=_lg.selected; }catch(e){} }
   if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
   var b = buildLines(s, null);
-  META = {n:b.n, raw:b.rawMap};
+  META = {n:b.n, raw:b.rawMap, bases:b.baseArr, single:b.single};
   EVT_PTS = b.evtPoints; EVT_SI = b.main.length - 1;   // scatter 恒为 main 的最后一个
   var total = s.series.reduce(function(a,x){return a+(x.points||0)},0);
+  var mainAxis = b.single
+    ? {type:"value",scale:true,gridIndex:0,name:"点位/价格"}
+    : {type:"value",scale:true,gridIndex:0,name:"累计涨跌%(起点0)",axisLabel:{formatter:"{value}%"}};
   var option = {
     animation:false,
     legend:{data:b.legend,top:0,selected:prevSelected},
-    // 自定义 axis tooltip：主图显示「累计涨跌% + 原始点位」，回撤图显示回撤%
+    // 自定义 axis tooltip：单标的显示点位、叠加显示累计涨跌%+原始点位，回撤图显示回撤%
     tooltip:{trigger:"axis",axisPointer:{type:"cross"},formatter:tipFmt},
     grid:[{left:60,right:24,top:34,height:"46%"},{left:60,right:24,top:"62%",height:"22%"}],
     xAxis:[
@@ -364,8 +403,7 @@ function renderChart(s){
       {type:"time",gridIndex:1}
     ],
     yAxis:[
-      {type:"value",scale:true,gridIndex:0,name:"累计涨跌%(起点0)",
-       axisLabel:{formatter:"{value}%"}},
+      mainAxis,
       {type:"value",max:0,gridIndex:1,name:"回撤%"}
     ],
     dataZoom:[
@@ -390,11 +428,11 @@ function renderChart(s){
     NORM_T = setTimeout(function(){
       if(!CHART || !RAW) return;
       var bb = buildLines(RAW, f);
-      META = {n:bb.n, raw:bb.rawMap};
+      META = {n:bb.n, raw:bb.rawMap, bases:bb.baseArr, single:bb.single};
       // 合并更新（不 notMerge）→ 保留当前缩放窗口与图例开关
       CHART.setOption({series: bb.main.concat(bb.dd)});
       var h = document.getElementById("chartHint");
-      if(h) h.textContent = hintText(f, total);
+      if(h) h.textContent = hintText(f, total, bb.single);
     }, 260);
   });
   // 事件标注的说明：ECharts 全局 axis tooltip 会压制 scatter 的 item tooltip，
@@ -440,7 +478,7 @@ function nearestEvt(x, y){
 var COLS = {
   period:[["period","区间"],["start","起"],["end","止"],["close","期末收"],["dd_pct","期末回撤%"],["deepest_pct","最深回撤%"],["deepest_date","最深日"],["peak","历史峰值"],["days_since_peak","距高点(天)"]],
   daily:[["date","日期"],["close","收盘"],["peak","峰值"],["peak_date","峰值日"],["dd_pct","回撤%"],["days_since_peak","距高点(天)"],["state","状态"]],
-  events:[["peak_date","峰值日"],["trough_date","谷值日"],["recover_date","修复日"],["drop_pct","跌幅%"],["recover_days","修复天数"],["ongoing","未修复"]]
+  events:[["peak_date","峰值日"],["trough_date","谷值日"],["drop_pct","跌幅%"],["rebound_pct","随后反弹%"],["recover_date","收复前峰"],["recover_days","历时(天)"],["ongoing","未收复"]]
 };
 var ROWS=[], PAGE_SIZE=60;
 
@@ -459,22 +497,51 @@ function renderTable(){
     }).join("")+"</tr>";
   }).join("") || "<tr><td colspan='"+cols.length+"'>无数据</td></tr>";
   document.getElementById("pageInfo").textContent="第 "+(STATE.page+1)+" 页 / 共 "+Math.ceil(ROWS.length/PAGE_SIZE)+" 页（"+ROWS.length+" 行）";
+  syncPager();
+}
+
+// 分页按钮的可用态 + 页码输入框上限（ROWS 变化时同步）
+function pageCount(){ return Math.max(1, Math.ceil(ROWS.length/PAGE_SIZE)); }
+function syncPager(){
+  var last = pageCount()-1;
+  var j = document.getElementById("pageJump");
+  // 输入框只做「跳转到第几页」的入口，清空 value 让 placeholder 始终显示当前页
+  if(j){ j.max = String(pageCount()); j.placeholder = String(STATE.page+1); j.value = ""; }
+  [["first", STATE.page<=0],["prev", STATE.page<=0],
+   ["next", STATE.page>=last],["last", STATE.page>=last]].forEach(function(p){
+    var b=document.getElementById(p[0]); if(b) b.disabled = p[1];
+  });
+}
+function gotoPage(n){
+  var p = parseInt(n,10);
+  if(isNaN(p)) return;
+  STATE.page = Math.min(Math.max(p-1, 0), pageCount()-1);
+  renderTable();
 }
 
 function loadTable(reset){
   if(reset) STATE.page=0;
-  var q = "id="+encodeURIComponent(STATE.ids[0])+"&gran="+STATE.gran
+  var seq = ++TBL_SEQ;
+  var aid = STATE.ids[0];
+  var q = "id="+encodeURIComponent(aid)+"&gran="+STATE.gran
     +(STATE.dfrom?"&from="+STATE.dfrom:"")+(STATE.dto?"&to="+STATE.dto:"");
   fetch(api("table?"+q)).then(function(r){return r.json()}).then(function(d){
+    if(seq !== TBL_SEQ) return;           // 已切到别的标的，丢弃过期响应
     TABLE = d;
     applyTable();
-  }).catch(function(e){document.getElementById("tableHint").textContent="表格载入失败："+e});
+  }).catch(function(e){
+    if(seq !== TBL_SEQ) return;
+    document.getElementById("tableHint").textContent="表格载入失败："+e;
+  });
 }
 
 function applyTable(){
   if(!TABLE) return;
-  ROWS = STATE.view==="period"?(TABLE.periods||[]):STATE.view==="events"?(TABLE.events||[]):(TABLE.daily||[]);
-  document.getElementById("tableHint").textContent=(TABLE.name||"")+" · "+ROWS.length+" 行";
+  ROWS = STATE.view==="period"?(TABLE.periods||[])
+       : STATE.view==="events"?(TABLE.episodes||TABLE.events||[])
+       : (TABLE.daily||[]);
+  document.getElementById("tableHint").textContent=(TABLE.name||"")+" · "+ROWS.length+" 行"
+    + (STATE.view==="events" ? "（波段识别：峰→谷跌幅≥10% 的独立行情段，与「历史最高收盘」口径互补）" : "");
   renderTable();
 }
 
@@ -633,14 +700,26 @@ function initReconstruct(){
 
 function refreshAll(){
   if(STATE.fx){ loadReconstruct(); loadTable(true); return; }
-  var q="ids="+encodeURIComponent(STATE.ids.join(","))
+  // 连点 chip 会并发多个请求，响应可能乱序；用序号丢弃过期结果，
+  // 否则「先发的慢请求」会把后点的选择覆盖掉，图表看起来没跟上点击。
+  var seq = ++SER_SEQ;
+  var ids = STATE.ids.join(",");
+  var q="ids="+encodeURIComponent(ids)
     +(STATE.dfrom?"&from="+STATE.dfrom:"")+(STATE.dto?"&to="+STATE.dto:"");
   fetch(api("series?"+q)).then(function(r){return r.json()}).then(function(d){
+    if(seq !== SER_SEQ) return;
     SERIES=d; renderChart(d);
     var n=d.series.reduce(function(a,x){return a+x.points},0);
-    document.getElementById("chartHint").textContent = hintText(STATE.dfrom, n);
-  }).catch(function(e){document.getElementById("chartHint").textContent="图表载入失败："+e});
-  fetch(api("signals?ids="+encodeURIComponent(STATE.ids.join(",")))).then(function(r){return r.json()}).then(function(d){renderSignals(d.signals)}).catch(function(){});
+    document.getElementById("chartHint").textContent =
+      hintText(STATE.dfrom, n, d.series.length === 1);
+  }).catch(function(e){
+    if(seq !== SER_SEQ) return;
+    document.getElementById("chartHint").textContent="图表载入失败："+e;
+  });
+  fetch(api("signals?ids="+encodeURIComponent(ids))).then(function(r){return r.json()}).then(function(d){
+    if(seq !== SER_SEQ) return;
+    renderSignals(d.signals);
+  }).catch(function(){});
   loadTable(true);
 }
 
@@ -684,6 +763,11 @@ document.getElementById("reset").onclick=function(){
 });
 document.getElementById("prev").onclick=function(){if(STATE.page>0){STATE.page--;renderTable()}};
 document.getElementById("next").onclick=function(){if((STATE.page+1)*PAGE_SIZE<ROWS.length){STATE.page++;renderTable()}};
+document.getElementById("first").onclick=function(){ if(STATE.page!==0) gotoPage(1); };
+document.getElementById("last").onclick=function(){ gotoPage(pageCount()); };
+document.getElementById("jumpGo").onclick=function(){ gotoPage(document.getElementById("pageJump").value); };
+document.getElementById("pageJump").onkeydown=function(e){ if(e && e.key === "Enter") gotoPage(this.value); };
+document.getElementById("pageJump").onchange=function(){ if(this.value) gotoPage(this.value); };
 document.getElementById("fxAdjust").onchange=function(){
   STATE.fx=this.checked;
   document.getElementById("rcNote").style.display=STATE.fx?"":"none";
