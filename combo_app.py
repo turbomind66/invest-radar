@@ -346,14 +346,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+# 预热页：子进程启动窗口内返回的过渡页（原先是写死「两个面板正在启动」）。
+# 站点页面数会持续增加（现在已是汪汪队 / 回撤全景 / QDII 三个），把数量、名称写死在
+# 过渡页里必然过时 —— 用户看到的就是一条「页面正在加载中」的错误提示。
+# 这里只描述「服务正在启动」这一件事，与页面数量解耦。
 WARMING = (
-    b"<html><head><meta charset='utf-8'><title>\xe9\xa2\x84\xe7\x83\xad\xe4\xb8\xad</title>"
-    b"<meta http-equiv='refresh' content='2'></head><body style='font-family:sans-serif;"
-    b"text-align:center;margin-top:20%'><h2>\xf0\x9f\x94\x84 \xe6\x9c\x8d\xe5\x8a\xa1\xe9\xa2\x84"
-    b"\xe7\x83\xad\xe4\xb8\xad\xe2\x80\xa6</h2><p>\xe4\xb8\xa4\xe4\xb8\xaa\xe9\x9d\xa2\xe6\x9d\xbf"
-    b"\xe6\xad\xa3\xe5\x9c\xa8\xe5\x90\xaf\xe5\x8a\xa8\xef\xbc\x8c\xe7\xba\xa62\xe7\xa7\x92\xe5\x90"
-    b"\x8e\xe8\x87\xaa\xe5\x8a\xa8\xe5\x88\xb7\xe6\x96\xb0\xe3\x80\x82</p></body></html>"
-)
+    "<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>"
+    "<title>启动中 · 投资雷达</title>"
+    "<meta http-equiv='refresh' content='2'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<style>"
+    "body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;"
+    "background:#f5f6f8;color:#1b1f24;"
+    "font:14px/1.6 -apple-system,'Segoe UI',Roboto,'Microsoft YaHei',sans-serif}"
+    ".box{text-align:center;padding:28px 30px}"
+    ".dot{width:34px;height:34px;margin:0 auto 14px;border:3px solid #d8dee8;"
+    "border-top-color:#2f5fd0;border-radius:50%;animation:spin .9s linear infinite}"
+    "@keyframes spin{to{transform:rotate(360deg)}}"
+    "h2{font-size:17px;margin:0 0 6px;font-weight:600}"
+    "p{margin:0;color:#5b6470;font-size:13px}"
+    "</style></head><body><div class='box'><div class='dot'></div>"
+    "<h2>服务正在启动…</h2>"
+    "<p>页面正在加载，通常几秒内自动进入；若长时间停留，请手动刷新。</p>"
+    "</div></body></html>"
+).encode("utf-8")
 
 
 def main():

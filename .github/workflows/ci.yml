@@ -76,3 +76,6 @@ jobs:
 
       - name: 静态站产物启动测试
         run: node national_team/tests/test_static_boot.js
+
+      - name: 回撤全景前端测试（DOM 桩件，离线）
+        run: node drawdown/tests/test_dd_frontend.js

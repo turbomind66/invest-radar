@@ -49,8 +49,10 @@ def const_version(path: str) -> str:
 PANEL_PAGES = (
     ("NT 模板", "national_team", "templates", "index.html"),
     ("QDII 模板", "qdii", "templates", "index.html"),
+    ("DD 模板", "drawdown", "templates", "index.html"),
     ("NT 静态页", "docs", "index.html"),
     ("QDII 静态页", "docs", "qdii", "index.html"),
+    ("DD 静态页", "docs", "dd", "index.html"),
 )
 SETUP_PAGE = os.path.join(BASE, "cron_trigger_setup.html")
 
@@ -82,8 +84,10 @@ class TestDisclaimer(unittest.TestCase):
         """静态页必须由含免责条的新模板重导，防止被旧模板覆盖回去。"""
         nt_tpl = disclaimer_bar(read_page(("national_team", "templates", "index.html")))
         qdii_tpl = disclaimer_bar(read_page(("qdii", "templates", "index.html")))
+        dd_tpl = disclaimer_bar(read_page(("drawdown", "templates", "index.html")))
         self.assertEqual(disclaimer_bar(read_page(("docs", "index.html"))), nt_tpl)
         self.assertEqual(disclaimer_bar(read_page(("docs", "qdii", "index.html"))), qdii_tpl)
+        self.assertEqual(disclaimer_bar(read_page(("docs", "dd", "index.html"))), dd_tpl)
 
     def test_setup_page_has_disclaimer(self):
         # cron_trigger_setup.html 被 .gitignore 排除（含内部信息，不进公开仓库），
