@@ -37,6 +37,7 @@ function mkEl(id) {
     id, innerHTML: '', textContent: '', value: '', style: {}, title: '',
     classList: mkClassList(), onclick: null, children: [], _cls: '',
     appendChild(c) { this.children.push(c); },
+    querySelector() { return null; },
   };
   Object.defineProperty(el, 'className', {
     get() { return el._cls; },
@@ -74,7 +75,7 @@ global.fetch = async () => ({
   ok: true, json: async () => ({ series: { series: [], events: [] }, signals: [], table: {} }),
 });
 
-const EXPORTER = `;global.__T = { renderChart, renderGroups, STATE };`;
+const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE };`;
 eval(extractScript(HTML_TEXT) + EXPORTER);
 
 // ---------- 断言 ----------
@@ -84,8 +85,15 @@ function ok(cond, name) {
   else { fail++; console.log('  \u274c ' + name); }
 }
 
-const CATALOG = JSON.parse(fs.readFileSync(
-  path.join(__dirname, '..', '..', '..', 'outputs', '_diag_payload.json'), 'utf8')).catalog;
+// 自包含最小 catalog（不依赖外部临时文件）
+const CATALOG = {
+  assets: [
+    { id: 'sh000300', name: '沪深300', ready: true, actual_from: '2005-04-08', points: 5253 },
+    { id: 'sh000001', name: '上证指数', ready: true, actual_from: '1990-12-19', points: 8595 },
+  ],
+  groups: [{ key: 'index', label: 'A股指数', ids: ['sh000300', 'sh000001'] }],
+  default_ids: ['sh000300', 'sh000001'],
+};
 
 // ---- 1) 只剩最后一个标的：chip 不可被"假取消" ----
 created.length = 0;
@@ -100,8 +108,12 @@ ok(hsChip.classList.contains('on'), '点击后 chip 保持选中态（不再变�
 
 // ---- 2) 主线与回撤线同名：同一图例项统一控制 ----
 const seriesData = [
-  { id: 'sh000300', name: '沪深300', line: [], dd: [], points: 2 },
-  { id: 'sh000001', name: '上证指数', line: [], dd: [], points: 2 },
+  { id: 'sh000300', name: '沪深300',
+    line: [['2017-01-01', 4000], ['2018-01-26', 4381.3], ['2020-01-01', 4100]],
+    dd: [['2017-01-01', 0], ['2018-01-26', 0], ['2020-01-01', -10]], points: 3 },
+  { id: 'sh000001', name: '上证指数',
+    line: [['2017-01-01', 3100], ['2020-01-01', 3000]],
+    dd: [['2017-01-01', 0], ['2020-01-01', -5]], points: 2 },
 ];
 const events = [{ target: 'sh000300', date: '2018-01-26', title: 't', desc: 'd', side: 'crash' }];
 __T.renderChart({ series: seriesData, events });
@@ -119,6 +131,23 @@ __T.renderChart({ series: seriesData, events });
 opt = LAST_OPT;
 ok(opt.legend.selected && opt.legend.selected['沪深300'] === false,
    '重绘后仍保留"沪深300 已隐藏"的图例状态（不被 notMerge 清空）');
+
+// ---- 4) 点位/回撤值格式化：axis tooltip 传的是标量，不是 [date, value] ----
+const mainS = opt.series.find(s => s.yAxisIndex === 0 && s.name === '沪深300');
+const ddS = opt.series.find(s => s.yAxisIndex === 1 && s.name === '沪深300');
+ok(mainS.tooltip.valueFormatter(2857.151) === '2857.1510', '主线 tooltip 传标量能格式化出价格（不再是 —）');
+ok(ddS.tooltip.valueFormatter(-53.1) === '-53.10%', '回撤线 tooltip 传标量能格式化出百分比（不再是 NaN%）');
+ok(ddS.tooltip.valueFormatter(null) === '—', '回撤线空值显示 —');
+
+// ---- 5) 事件标注说明：独立 scatter + 说明条 ----
+const evtSeries = opt.series.find(s => s.type === 'scatter');
+ok(!!evtSeries && evtSeries.name === '大事件', '事件标注为独立 scatter series（markPoint 的 tooltip 会被 axis 模式压制）');
+const evtTxt = evtSeries.tooltip.formatter({ data: { name: '测试事件', evDate: '2020-01-01', evDesc: '描述内容' } });
+ok(evtTxt.indexOf('测试事件') >= 0 && evtTxt.indexOf('描述内容') >= 0, '事件 item tooltip 含标题与描述');
+__T.showEvt({ name: '测试事件', evDate: '2020-01-01', evDesc: '描述内容' });
+const note = document.getElementById('evtNote');
+ok(note.style.display === 'block' && note.innerHTML.indexOf('描述内容') >= 0,
+   'showEvt 在页面说明条渲染事件详情');
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);

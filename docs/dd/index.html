@@ -50,6 +50,10 @@
   .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px;font-size:12px;color:var(--sub)}
   .muted{color:var(--sub);font-size:12px}
   .loading{padding:40px;text-align:center;color:var(--sub)}
+  .evt-note{margin-top:8px;padding:9px 12px;border-left:3px solid var(--accent);background:#f2f6ff;border-radius:8px;font-size:13px;line-height:1.65;color:var(--ink)}
+  .evt-note b{color:var(--accent)}
+  .evt-note .evt-date{color:var(--sub);font-size:12px;margin-left:8px}
+  .evt-note .evt-x{float:right;cursor:pointer;color:var(--sub);font-size:14px;line-height:1;padding:0 2px}
   footer{text-align:center;color:var(--sub);font-size:12px;padding:16px}
 </style>
 <script>window.__STATIC__={"data_base": "", "static": true};</script>
@@ -88,6 +92,7 @@
   <div class="card">
     <h2>② 走势与回撤 <span class="muted" id="chartHint">拖动下方滑块或滚轮缩放，点标记看大事件</span></h2>
     <div id="chart"><div class="loading">图表载入中…</div></div>
+    <div id="evtNote" class="evt-note" style="display:none"></div>
   </div>
 
   <div class="card">
@@ -213,6 +218,17 @@ function renderReconstruct(r){
   document.getElementById("rcNote").textContent = r.note;
 }
 
+function showEvt(d){
+  if(!d) return;
+  var el = document.getElementById("evtNote");
+  if(!el) return;
+  el.innerHTML = '<span class="evt-x" title="关闭">×</span><b>'+(d.name||"事件")+'</b>'
+    + '<span class="evt-date">'+(d.evDate||"")+'</span><br>'+(d.evDesc||"");
+  el.style.display = "block";
+  var x = el.querySelector(".evt-x");
+  if(x) x.onclick = function(){ el.style.display = "none"; };
+}
+
 function renderChart(s){
   var el = document.getElementById("chart");
   // 保留用户当前的图例开关状态：notMerge 重绘会清空它，导致「刚隐藏的线又冒出来」
@@ -228,7 +244,8 @@ function renderChart(s){
       xAxisIndex:0, yAxisIndex:0, showSymbol:false,
       sampling:"lttb", smooth:false,
       lineStyle:{width:1.5},
-      tooltip:{valueFormatter:function(v){return money(v[1])}}
+      // axis tooltip 的 valueFormatter 收到的是标量（该点的收盘价），不是 [date, price] 数组
+      tooltip:{valueFormatter:function(v){return v==null?"—":money(v)}}
     });
   });
   var ddSeries = [];
@@ -239,22 +256,36 @@ function renderChart(s){
       name: line.name, type:"line", data: line.dd,
       xAxisIndex:1, yAxisIndex:1, showSymbol:false, sampling:"lttb",
       lineStyle:{width:1,type:"dashed",opacity:.7},
-      tooltip:{valueFormatter:function(v){return v==null?"—":Number(v[1]).toFixed(2)+"%"}}
+      tooltip:{valueFormatter:function(v){return v==null?"—":Number(v).toFixed(2)+"%"}}
     });
   });
-  var marks = [];
+  // 事件标注用独立 scatter series 承载：markPoint 的 tooltip 受全局 axis 模式压制，
+  // 悬停/点击都不出说明；scatter 可挂 item tooltip，且 tooltip.triggerOn 含 click。
+  var evtPoints = [];
   (s.events||[]).forEach(function(e){
     var hit = s.series.find(function(x){return x.id===e.target});
     if(!hit) return;
     var pt = hit.line.find(function(p){return p[0]>=e.date});
     if(!pt) return;
-    marks.push({coord:[pt[0],pt[1]],name:e.title,
-      symbol:"pin",symbolSize:e.side==="crash"?14:12,
-      itemStyle:{color:e.side==="crash"?"#d92b2b":"#12924a"},
-      label:{show:false},
-      tooltip:{formatter:'<b>'+e.title+'</b><br/>'+e.date+'<br/>'+e.desc}});
+    evtPoints.push({
+      value:[pt[0],pt[1]], name:e.title,
+      evDate:e.date, evDesc:e.desc, evSide:e.side,
+      symbol:"pin", symbolSize:e.side==="crash"?16:14,
+      itemStyle:{color:e.side==="crash"?"#d92b2b":"#12924a"}
+    });
   });
-  if(marks.length) series.push({name:"大事件",type:"line",data:[],markPoint:{data:marks}});
+  if(evtPoints.length){
+    series.push({
+      name:"大事件", type:"scatter", data:evtPoints,
+      xAxisIndex:0, yAxisIndex:0, z:10,
+      label:{show:false},
+      tooltip:{trigger:"item", formatter:function(p){
+        var d=(p&&p.data)||{};
+        return '<b>'+(d.name||"")+'</b><br/>'+'事件日：'+(d.evDate||"")+
+               '<br/>'+(d.evDesc||"");
+      }}
+    });
+  }
   var option = {
     animation:false,
     legend:{data:legend,top:0,selected:prevSelected},
@@ -288,6 +319,12 @@ function renderChart(s){
       loadTable(true);
     }
   });
+  // 事件标注的说明：ECharts 全局 axis tooltip 会压制 scatter 的 item tooltip，
+  // 这里直接监听图表事件，把说明写进图表下方的固定说明条（点击/悬停均触发）。
+  CHART.off("click");
+  CHART.off("mouseover");
+  CHART.on("click", function(p){ if(p && p.seriesName === "大事件" && p.data) showEvt(p.data); });
+  CHART.on("mouseover", function(p){ if(p && p.seriesName === "大事件" && p.data) showEvt(p.data); });
 }
 
 var COLS = {
