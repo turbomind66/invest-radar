@@ -138,11 +138,14 @@ function renderGroups(cat){
       c.textContent = a.name + (a.ready?"":"（无数据）");
       c.title = a.name + " · 数据 " + (a.actual_from||"—") + " 起 " + (a.points||0) + " 点";
       c.onclick = function(){
-        var i = STATE.ids.indexOf(id);
-        if(i>=0){ if(STATE.ids.length>1) STATE.ids.splice(i,1); }
-        else STATE.ids.push(id);
-        c.classList.toggle("on");
-        refreshAll();
+        var i = STATE.ids.indexOf(id), changed = false;
+        if(i>=0){
+          if(STATE.ids.length>1){ STATE.ids.splice(i,1); changed=true; }
+          else c.title = a.name + " · 至少保留一个标的（数据 " + (a.actual_from||"—") + " 起 " + (a.points||0) + " 点）";
+        }
+        else { STATE.ids.push(id); changed=true; }
+        // 仅当 STATE.ids 真的变化时才翻转视觉，避免「chip 变灰但线还在」的假象
+        if(changed){ c.classList.toggle("on"); refreshAll(); }
       };
       chips.appendChild(c);
     });
@@ -211,6 +214,10 @@ function renderReconstruct(r){
 
 function renderChart(s){
   var el = document.getElementById("chart");
+  // 保留用户当前的图例开关状态：notMerge 重绘会清空它，导致「刚隐藏的线又冒出来」
+  var prevSelected = {};
+  if(CHART){ try{ var _old=CHART.getOption(), _lg=(_old&&_old.legend&&_old.legend[0])||{};
+    if(_lg.selected) prevSelected=_lg.selected; }catch(e){} }
   if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
   var series = [], legend = [];
   s.series.forEach(function(line){
@@ -225,10 +232,13 @@ function renderChart(s){
   });
   var ddSeries = [];
   s.series.forEach(function(line){
+    // 回撤线与主线同名 → 同一个图例项统一控制；否则图例只列主线名，
+    // 回撤虚线不在 legend.data 里无法被隐藏，「取消沪深300后虚线还在」。
     ddSeries.push({
-      name: line.name+" 回撤%", type:"line", data: line.dd,
+      name: line.name, type:"line", data: line.dd,
       xAxisIndex:1, yAxisIndex:1, showSymbol:false, sampling:"lttb",
-      lineStyle:{width:1,type:"dashed",opacity:.7}
+      lineStyle:{width:1,type:"dashed",opacity:.7},
+      tooltip:{valueFormatter:function(v){return v==null?"—":Number(v[1]).toFixed(2)+"%"}}
     });
   });
   var marks = [];
@@ -246,7 +256,7 @@ function renderChart(s){
   if(marks.length) series.push({name:"大事件",type:"line",data:[],markPoint:{data:marks}});
   var option = {
     animation:false,
-    legend:{data:legend,top:0},
+    legend:{data:legend,top:0,selected:prevSelected},
     tooltip:{trigger:"axis",axisPointer:{type:"cross"}},
     grid:[{left:60,right:24,top:34,height:"46%"},{left:60,right:24,top:"62%",height:"22%"}],
     xAxis:[
