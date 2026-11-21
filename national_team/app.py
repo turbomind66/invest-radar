@@ -475,7 +475,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # ---- 回撤全景页（独立页面 /dd + 同源 API /api/dd/*）----
         # combo_app / gateway 只把 /qdii* 转给 QDII，其余默认落 NT，
         # 故 /dd 天然走本子进程，无需新增端口或进程，三种原部署零牵连。
-        if path == "/dd":
+        # 尾斜杠兼容：GitHub Pages 静态站是 /dd/，用户把地址换成服务端版时常带斜杠，
+        # 精确匹配 "/dd" 会直接 404（看起来像页面挂掉）。
+        # 这里统一 302 到 "/dd"：页面里的 echarts.min.js 和 api/dd/* 都是相对路径，
+        # 在 /dd/ 下会被解析成 /dd/echarts.min.js、/dd/api/dd/* → 404 白图，不能原地渲染。
+        if path.rstrip("/") == "/dd":
+            if path != "/dd":
+                q = urllib.parse.urlparse(self.path).query
+                loc = "/dd" + (("?" + q) if q else "")
+                body = b'<a href="/dd">/dd</a>'
+                self.send_response(302)
+                self.send_header("Location", loc)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                if not head_only:
+                    self.wfile.write(body)
+                return
             try:
                 with open(DD_TEMPLATE, "rb") as f:
                     html = f.read().decode("utf-8", "replace")
