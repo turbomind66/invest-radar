@@ -521,6 +521,11 @@ function gotoPage(n){
 
 function loadTable(reset){
   if(reset) STATE.page=0;
+  if(window.__STATIC__){          // 静态快照没有 table 接口，直接用首屏 payload 里的表
+    TABLE = (PAYLOAD && PAYLOAD.table) || null;
+    applyTable();
+    return;
+  }
   var seq = ++TBL_SEQ;
   var aid = STATE.ids[0];
   var q = "id="+encodeURIComponent(aid)+"&gran="+STATE.gran
@@ -537,8 +542,11 @@ function loadTable(reset){
 
 function applyTable(){
   if(!TABLE) return;
+  // 事件视图优先用波段识别结果；旧快照没有 episodes 时退回 dd_events，
+  // 并滤掉「跌 0.0x%」这类噪声段（否则列表里全是无意义的小波动）。
   ROWS = STATE.view==="period"?(TABLE.periods||[])
-       : STATE.view==="events"?(TABLE.episodes||TABLE.events||[])
+       : STATE.view==="events"?(TABLE.episodes
+           || (TABLE.events||[]).filter(function(e){ return (e.drop_pct||0) <= -10; }))
        : (TABLE.daily||[]);
   document.getElementById("tableHint").textContent=(TABLE.name||"")+" · "+ROWS.length+" 行"
     + (STATE.view==="events" ? "（波段识别：峰→谷跌幅≥10% 的独立行情段，与「历史最高收盘」口径互补）" : "");
@@ -700,6 +708,24 @@ function initReconstruct(){
 
 function refreshAll(){
   if(STATE.fx){ loadReconstruct(); loadTable(true); return; }
+  if(window.__STATIC__){
+    // 静态站没有服务端筛选：data.json 是全量快照，按 ids 在前端过滤（日期筛选对快照无效）
+    var all = (PAYLOAD && PAYLOAD.series) || {series:[], events:[]};
+    var ids = STATE.ids || [];
+    var pick = (all.series||[]).filter(function(x){ return ids.indexOf(x.id) >= 0; });
+    if(!pick.length){
+      document.getElementById("chartHint").textContent =
+        "静态快照仅含默认 4 只标的的曲线，查看其他标的请用服务端版（WorkBuddy / VPS）";
+      return;
+    }
+    var sub = {series: pick,
+               events: (all.events||[]).filter(function(e){ return ids.indexOf(e.target) >= 0; })};
+    SERIES = sub; renderChart(sub);
+    var n = sub.series.reduce(function(a,x){return a+(x.points||0)},0);
+    document.getElementById("chartHint").textContent = hintText(STATE.dfrom, n, sub.series.length === 1);
+    loadTable(true);
+    return;
+  }
   // 连点 chip 会并发多个请求，响应可能乱序；用序号丢弃过期结果，
   // 否则「先发的慢请求」会把后点的选择覆盖掉，图表看起来没跟上点击。
   var seq = ++SER_SEQ;
