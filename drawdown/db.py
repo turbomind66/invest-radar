@@ -69,17 +69,31 @@ def get_conn(path: str = DB_PATH):
     return conn
 
 
-def upsert_daily(asset, rows, path=DB_PATH):
-    """写入某标的全历史日线 rows=[(date, close), ...]，按 asset+date 幂等。"""
+def upsert_daily(asset, rows, path=DB_PATH, source=None):
+    """写入某标的日线 rows=[(date, close), ...]，按 asset+date 幂等。
+
+    source 仅在新行写入时标记；增量更新与全历史回补用同一张表、不区分来源。
+    """
     if not rows:
         return 0
     conn = get_conn(path)
     try:
         conn.executemany(
             "INSERT OR REPLACE INTO dd_daily(asset,date,close,source) VALUES(?,?,?,?)",
-            [(asset, d, c, "em_sina") for d, c in rows])
+            [(asset, d, c, source or "em_sina") for d, c in rows])
         conn.commit()
         return len(rows)
+    finally:
+        conn.close()
+
+
+def latest_date(asset, path=DB_PATH):
+    """返回该标的库内最新日期 YYYY-MM-DD，无数据返回 None（增量更新水位）。"""
+    conn = get_conn(path)
+    try:
+        r = conn.execute("SELECT MAX(date) AS d FROM dd_daily WHERE asset=?",
+                         (asset,)).fetchone()
+        return r["d"] if r and r["d"] else None
     finally:
         conn.close()
 

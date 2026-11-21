@@ -150,18 +150,21 @@ def fetch_sina_a(symbol, retries=2):
     return []
 
 
-def fetch_tencent_a(symbol, retries=2, max_rounds=15, pause=0.5):
+def fetch_tencent_a(symbol, retries=2, max_rounds=15, pause=0.5, since=None):
     """腾讯财经 A股/ETF 日K全历史（end 参数向前翻页，每页640~1000根）。
 
     东财 push2his 被封后的 A股/ETF 主源。腾讯单次有根数上限，需用 end 参数
     逐页往前翻，直到无新日期。实测：上证 1990-12 起 8595 根、510300 2012 起 3520 根。
+    since 非空时只抓 since 之后的新数据（增量更新用），只翻一轮、跳过更早日期。
     返回升序 [(date, close)]，已去重。
     """
     import datetime
     all_rows = {}
+    # 结束日期给未来 2 天，规避容器 UTC 与北京时间差（收盘后当天数据必出）
+    future = (datetime.datetime.utcnow() + datetime.timedelta(days=2)).strftime("%Y-%m-%d")
     for _ in range(retries):
         all_rows = {}
-        end = time.strftime("%Y-%m-%d")
+        end = future
         for _r in range(max_rounds):
             url = ("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
                    "?param=%s,day,1990-01-01,%s,1000,qfq" % (symbol, end))
@@ -185,6 +188,11 @@ def fetch_tencent_a(symbol, retries=2, max_rounds=15, pause=0.5):
                         new_cnt += 1
                     except (ValueError, TypeError):
                         pass
+            if since:
+                # 增量模式：只翻一轮（since 之后的新数据都在这一页里），
+                # 并把早于 since 的行剔掉，避免无谓回写历史。
+                all_rows = {d: c for d, c in all_rows.items() if d >= since}
+                break
             if new_cnt == 0:
                 break
             earliest = min(dates)
@@ -200,16 +208,17 @@ def fetch_tencent_a(symbol, retries=2, max_rounds=15, pause=0.5):
     return [(d, all_rows[d]) for d in sorted(all_rows)]
 
 
-def fetch_tigzig(symbol, retries=2):
+def fetch_tigzig(symbol, retries=2, since=None):
     """TigZig 免费 yfinance 包装器（无 key），海外指数全历史日线。
 
     东财 push2his 被按 IP 封禁时的替代源，实测 1990 起、零空洞、每日更新。
     返回结构：{"YYYY-MM-DD": {"^N225": close, ...}, ...}
-    返回升序 [(date, close)]。
+    since 非空时只取该日之后的新数据（增量更新用）。返回升序 [(date, close)]。
     """
+    start = since or "1990-01-01"
     url = ("https://yfin-h.tigzig.com/v1/get-adj-close/?tickers=%s"
-           "&start_date=1990-01-01&end_date=2050-12-31"
-           % urllib.parse.quote(symbol, safe=""))
+           "&start_date=%s&end_date=2050-12-31"
+           % (urllib.parse.quote(symbol, safe=""), start))
     for _ in range(retries):
         try:
             txt = _get(url, timeout=30)
@@ -231,18 +240,20 @@ def fetch_tigzig(symbol, retries=2):
     return []
 
 
-def fetch_csindex(code, retries=2):
+def fetch_csindex(code, retries=2, since=None):
     """中证指数官网 perf API（中证红利低波等中证自有指数，东财外唯一权威源）。
 
     GET https://www.csindex.com.cn/csindex-home/perf/index-perf
         ?indexCode=H30269&startDate=19900101&endDate=20261121
     返回 {"data": [{"tradeDate":"20200104","close":8549.43, ...}, ...]}
     注意：官网首行是基日占位（如 19900101），值与真实起点次日相同，需剔除，
-    避免图上多一段虚假平台。返回升序 [(date, close)]。
+    避免图上多一段虚假平台。since 非空（YYYY-MM-DD）时起始日期取该日，
+    返回升序 [(date, close)]。
     """
     today = time.strftime("%Y%m%d")
+    start = since.replace("-", "") if since else "19900101"
     url = ("https://www.csindex.com.cn/csindex-home/perf/index-perf"
-           "?indexCode=%s&startDate=19900101&endDate=%s" % (code, today))
+           "?indexCode=%s&startDate=%s&endDate=%s" % (code, start, today))
     for _ in range(retries):
         try:
             txt = _get(url, ref="https://www.csindex.com.cn/", timeout=30)
@@ -269,29 +280,32 @@ def fetch_csindex(code, retries=2):
     return []
 
 
-def fetch_asset(asset):
+def fetch_asset(asset, since=None):
     src, code = asset["src"], asset["code"]
     rows = []
     if src == "em":
         rows = fetch_em_kline(code)
     elif src == "tencent":
-        rows = fetch_tencent_a(code)
+        rows = fetch_tencent_a(code, since=since)
     elif src == "sina_us":
         rows = fetch_sina_us(code)
     elif src == "sina_fx":
         rows = fetch_sina_fx(code)
     elif src == "tigzig":
-        rows = fetch_tigzig(code)
+        rows = fetch_tigzig(code, since=since)
     elif src == "csindex":
-        rows = fetch_csindex(code)
-    # 备源回退：东财限流时用新浪（A股/ETF 近4年，美股 2004 起）
+        rows = fetch_csindex(code, since=since)
+    # 备源回退：主源限流时用新浪（A股/ETF 近4年，美股 2004 起）
     if not rows:
         if asset.get("alt_src") == "sina_us":
             rows = fetch_sina_us(asset["alt_code"])
         elif asset.get("alt_src") == "sina_a":
             rows = fetch_sina_a(asset["alt_code"] or asset["id"])
         elif asset.get("alt_src") == "tigzig":
-            rows = fetch_tigzig(asset["alt_code"])
+            rows = fetch_tigzig(asset["alt_code"], since=since)
+    # 增量模式统一按 since 过滤（备源可能不支持 since 参数）
+    if since and rows:
+        rows = [(d, c) for d, c in rows if d >= since]
     return rows
 
 

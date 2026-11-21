@@ -102,6 +102,7 @@ STATE = {
     "last_seed": "",      # 最近一次种子恢复摘要
     "last_sync": "",      # 最近一次当日全量摘要
     "last_sample": "",    # 最近一次盘中采样摘要
+    "last_dd": "",        # 最近一次回撤全景增量更新摘要（单应用形态专属）
     "last_error": "",     # 最近一次失败摘要（成功即清空）
 }
 
@@ -263,6 +264,27 @@ def _archive_tick(day: str):
     return tn
 
 
+def _dd_incremental():
+    """回撤全景页（/dd）每日增量：抓各标的最新日线 + 重算指标。
+
+    零新增进程：复用本子进程的 _WORK_LOCK 串行锁与已固定的北京时间。
+    drawdown 包导入失败（如未部署）只记日志，绝不阻断主面板刷新。
+    """
+    try:
+        from drawdown import updater as dd_updater
+        res = dd_updater.incremental()
+        changed = res.get("_changed") or []
+        summary = "%d 标的变更" % len(changed)
+        _log("回撤全景增量：%s%s" % (
+            summary, ("（" + ", ".join(changed[:6]) + "）") if changed else "（无新数据）"))
+        _state(last_dd=summary, last_error="")
+        res.pop("_changed", None)
+        return res
+    except Exception as e:  # noqa: BLE001
+        _log_exc("回撤全景增量", e)
+        return None
+
+
 def bootstrap():
     """一次性补数：把线上库从「只有当天」补成「有完整历史 + 当日实时」。
 
@@ -281,6 +303,8 @@ def bootstrap():
         today = bj_now().strftime("%Y-%m-%d")
         _archive_intraday(today)
         _archive_tick(today)
+    # 回撤全景页：首启也补一次当天日线（独立容错，异常不影响主面板）
+    _dd_incremental()
     _log("首启补数完成，耗时 %.1fs" % (time.time() - t0))
     _state(phase="idle")
 
@@ -325,6 +349,9 @@ def loop():
                 if last_full != today:
                     _log("收盘后全量同步（%s）" % today)
                     _full_sync(today)
+                    # 回撤全景页每日增量：与收盘全量同一时点、同一子进程，
+                    # 失败只记日志不影响主面板；非交易日不抓。
+                    _dd_incremental()
                     last_full = today
             elif trading and 9 * 60 + 30 <= hm <= 15 * 60:
                 bucket = (today, hm // 30)

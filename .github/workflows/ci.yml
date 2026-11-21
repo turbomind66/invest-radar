@@ -37,6 +37,7 @@ jobs:
             common/fuyao.py \
             drawdown/constants.py drawdown/db.py drawdown/fetcher.py \
             drawdown/engine.py drawdown/api.py drawdown/backfill.py \
+            drawdown/updater.py \
             docker/healthcheck.py gateway.py combo_app.py
 
       - name: QDII 静态导出（同时验证 allow_nan=False / 空覆盖保护可用）
