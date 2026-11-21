@@ -68,7 +68,7 @@ global.echarts = {
       if (o.legend && !Array.isArray(o.legend)) o.legend = [o.legend];
       return o;
     },
-    off() {}, on() {},
+    off() {}, on(ev, fn) { this._h = this._h || {}; this._h[ev] = fn; },
   }),
 };
 global.fetch = async () => ({
@@ -135,7 +135,7 @@ ok(opt.legend.selected && opt.legend.selected['沪深300'] === false,
 // ---- 4) 点位/回撤值格式化：axis tooltip 传的是标量，不是 [date, value] ----
 const mainS = opt.series.find(s => s.yAxisIndex === 0 && s.name === '沪深300');
 const ddS = opt.series.find(s => s.yAxisIndex === 1 && s.name === '沪深300');
-ok(mainS.tooltip.valueFormatter(2857.151) === '2857.1510', '主线 tooltip 传标量能格式化出价格（不再是 —）');
+ok(mainS.tooltip.valueFormatter(12.345) === '+12.35%', '主线 tooltip 传标量输出累计涨跌%（不再是 —）');
 ok(ddS.tooltip.valueFormatter(-53.1) === '-53.10%', '回撤线 tooltip 传标量能格式化出百分比（不再是 NaN%）');
 ok(ddS.tooltip.valueFormatter(null) === '—', '回撤线空值显示 —');
 
@@ -148,6 +148,64 @@ __T.showEvt({ name: '测试事件', evDate: '2020-01-01', evDesc: '描述内容'
 const note = document.getElementById('evtNote');
 ok(note.style.display === 'block' && note.innerHTML.indexOf('描述内容') >= 0,
    'showEvt 在页面说明条渲染事件详情');
+
+// ---- 6) 叠加归一化：不同量纲统一为累计涨跌%，窗口首点 = 0% ----
+__T.renderChart({ series: seriesData, events });
+opt = LAST_OPT;
+const hsMain = opt.series.find(s => s.yAxisIndex === 0 && s.name === '沪深300');
+const shMain = opt.series.find(s => s.yAxisIndex === 0 && s.name === '上证指数');
+ok(hsMain.data[0][1] === 0, '沪深300 窗口首点归一为 0%');
+ok(shMain.data[0][1] === 0, '上证指数 窗口首点归一为 0%（不同量纲同轴可比）');
+ok(Math.abs(hsMain.data[1][1] - ((4381.3 / 4000 - 1) * 100)) < 1e-3,
+   '沪深300 第二点 = 相对窗口首点涨跌%（+9.53%）');
+ok(Math.abs(shMain.data[1][1] - ((3000 / 3100 - 1) * 100)) < 1e-3,
+   '上证指数 末点 = 相对窗口首点涨跌%（-3.23%）');
+ok(/累计涨跌%/.test(opt.yAxis[0].name) && /%/.test(opt.yAxis[0].axisLabel.formatter),
+   '主图 Y 轴改为累计涨跌%（不再是绝对点位，避免价差大时显示不全）');
+
+// 设起始日 → 以后端裁剪后的首点为 0；重置 → 各标的最早点 0（等价于传入各自全量数据）
+const clipped = [
+  { id: 'sh000300', name: '沪深300',
+    line: [['2015-01-05', 3500], ['2016-01-04', 3150]], dd: [['2015-01-05', 0], ['2016-01-04', -10]], points: 2 },
+  { id: 'sh000001', name: '上证指数',
+    line: [['2015-01-05', 3350], ['2016-01-04', 2680]], dd: [['2015-01-05', 0], ['2016-01-04', -20]], points: 2 },
+];
+__T.renderChart({ series: clipped, events: [] });
+opt = LAST_OPT;
+const cHs = opt.series.find(s => s.yAxisIndex === 0 && s.name === '沪深300');
+const cSh = opt.series.find(s => s.yAxisIndex === 0 && s.name === '上证指数');
+ok(cHs.data[0][1] === 0 && cSh.data[0][1] === 0, '设置起始日期后，两条线都在起始日归 0%');
+ok(Math.abs(cHs.data[1][1] - (-10)) < 1e-6 && Math.abs(cSh.data[1][1] - (-20)) < 1e-6,
+   '起始日之后的点按同一起点换算涨跌%');
+
+// tooltip 同时回显绝对点位（归一化后不丢失点位信息）
+const tipTxt = opt.tooltip.formatter([{
+  seriesType: 'line', seriesIndex: 0, seriesName: '沪深300', marker: '',
+  value: ['2016-01-04', -10], data: ['2016-01-04', -10],
+}]);
+ok(tipTxt.indexOf('-10.00%') >= 0 && tipTxt.indexOf('3150.0000') >= 0,
+   'tooltip 同时显示累计涨跌%与原始点位');
+
+// 事件 pin 也按归一化坐标绘制（否则会跑到天上）
+const evtPt = opt.series.find(s => s.type === 'scatter' && s.name === '大事件');
+ok(!evtPt || evtPt.data.every(d => Math.abs(d.value[1]) < 1000),
+   '事件标注坐标随主线归一化（不再使用绝对点位）');
+
+// ---- 7) 拖动缩放后以视窗左边界重新归零（输入框日期与曲线基准始终一致） ----
+const chartInst = charts.chart;
+ok(!!(chartInst._h && typeof chartInst._h.datazoom === 'function'), '注册了 datazoom 监听（缩放联动）');
+__T.renderChart({ series: seriesData, events });
+LAST_OPT.dataZoom = [{
+  startValue: new Date(2018, 0, 26).getTime(),
+  endValue: new Date(2020, 0, 1).getTime(),
+}];
+const realST = global.setTimeout;
+global.setTimeout = (fn) => { fn(); return 0; };
+try { chartInst._h.datazoom(); } finally { global.setTimeout = realST; }
+const zHs = LAST_OPT.series.find(s => s.yAxisIndex === 0 && s.name === '沪深300');
+ok(zHs && Math.abs(zHs.data[1][1]) < 1e-9, '缩放后沪深300 以视窗左边界(2018-01-26)归 0%');
+ok(__T.STATE.dfrom === '2018-01-26',
+   '缩放起点写回「起」条件，与曲线基准一致：' + __T.STATE.dfrom);
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);

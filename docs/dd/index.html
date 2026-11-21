@@ -119,6 +119,7 @@
 "use strict";
 var CHART = null, STATE = {ids:[],gran:"day",dfrom:"",dto:"",view:"period",page:0,fx:false,rcEtf:""};
 var PAYLOAD = null, CATALOG = null, SERIES = null, TABLE = null, RECON = null;
+var RAW = null, NORM_T = null;   // RAW=原始 series（缩放重归一化用）；NORM_T=防抖定时器
 
 function api(path){
   var base = (window.__STATIC__ && window.__STATIC__.data_base) || "";
@@ -128,6 +129,31 @@ function api(path){
 function money(v){return v==null?"—":Number(v).toFixed(4)}
 function pct(v){return v==null?"—":Number(v).toFixed(2)+"%"}
 function cls(v){return v>0?"up":(v<0?"down":"")}
+function fmtPct(v){return v==null?"—":(Number(v)>0?"+":"")+Number(v).toFixed(2)+"%"}
+// 走势图归一化口径：每条线以「当前窗口首个有效点」为 0%
+//  - 设了起始日 → 从起始日 0 起算；点重置 → 回到各标的最早上市/发布日 0 起算
+//  - 不同标的价格量纲差几个数量级（3900 vs 4.15），只有百分比同轴才可比
+// META 保存「seriesIndex → 日期→原始价」，供 tooltip 同时回显绝对点位
+var META = {n:0, raw:{}};
+function tipFmt(ps){
+  if(!ps || !ps.length) return "";
+  var head = ps[0].axisValueLabel || ps[0].axisValue || "";
+  var html = '<div style="margin-bottom:3px;color:#8a8f98">'+head+'</div>';
+  ps.forEach(function(p){
+    if(p.seriesType !== "line") return;
+    var y = Array.isArray(p.value) ? p.value[1] : p.value;
+    if(y==null) return;
+    var raw = null;
+    if(p.seriesIndex < META.n && META.raw[p.seriesIndex]){
+      var d = Array.isArray(p.data) ? p.data[0] : p.name;
+      raw = META.raw[p.seriesIndex][d];
+    }
+    html += '<div style="line-height:19px">'+(p.marker||"")+p.seriesName
+      + ' <b>'+fmtPct(y)+'</b>'
+      + (raw!=null ? ' <span style="color:#8a8f98">点位 '+money(raw)+'</span>' : '')+'</div>';
+  });
+  return html;
+}
 
 function renderGroups(cat){
   CATALOG = cat;
@@ -229,30 +255,40 @@ function showEvt(d){
   if(x) x.onclick = function(){ el.style.display = "none"; };
 }
 
-function renderChart(s){
-  var el = document.getElementById("chart");
-  // 保留用户当前的图例开关状态：notMerge 重绘会清空它，导致「刚隐藏的线又冒出来」
-  var prevSelected = {};
-  if(CHART){ try{ var _old=CHART.getOption(), _lg=(_old&&_old.legend&&_old.legend[0])||{};
-    if(_lg.selected) prevSelected=_lg.selected; }catch(e){} }
-  if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
-  var series = [], legend = [];
-  s.series.forEach(function(line){
+// 走势序列构建：以 fromStr（当前窗口左边界）为归一化基准
+//  - fromStr 为空 → 各线自身首个有效点（重置态：各自最早上市/发布日 = 0%）
+//  - fromStr 有值 → 该日期起算（设起始日 / 拖动缩放后都以它为 0%）
+// 不同标的价格量纲差几个数量级（3900 vs 4.15），只有百分比同轴才可比
+function buildLines(s, fromStr){
+  var bases = {}, rawMap = {}, main = [], dd = [], legend = [], evtPoints = [];
+  s.series.forEach(function(line, i){
+    var base = null;
+    for(var k=0;k<line.line.length;k++){
+      var p0 = line.line[k];
+      if(p0[1]==null) continue;
+      if(fromStr && String(p0[0]) < fromStr) continue;
+      base = p0[1]; break;
+    }
+    bases[line.id] = base;
+    var m = {};
+    line.line.forEach(function(p){ if(p[1]!=null) m[p[0]] = p[1]; });
+    rawMap[i] = m;
     legend.push(line.name);
-    series.push({
-      name: line.name, type:"line", data: line.line,
+    main.push({
+      name: line.name, type:"line",
+      data: line.line.map(function(p){
+        // p=[date, close] → [date, 相对窗口起点累计涨跌%]，形状不变、量纲统一
+        return [p[0], (base && p[1]!=null) ? +(((p[1]/base)-1)*100).toFixed(4) : null];
+      }),
       xAxisIndex:0, yAxisIndex:0, showSymbol:false,
       sampling:"lttb", smooth:false,
       lineStyle:{width:1.5},
-      // axis tooltip 的 valueFormatter 收到的是标量（该点的收盘价），不是 [date, price] 数组
-      tooltip:{valueFormatter:function(v){return v==null?"—":money(v)}}
+      // axis tooltip 的 valueFormatter 收到的是标量（该点的累计涨跌%），不是 [date, value] 数组
+      tooltip:{valueFormatter:function(v){return fmtPct(v)}}
     });
-  });
-  var ddSeries = [];
-  s.series.forEach(function(line){
     // 回撤线与主线同名 → 同一个图例项统一控制；否则图例只列主线名，
     // 回撤虚线不在 legend.data 里无法被隐藏，「取消沪深300后虚线还在」。
-    ddSeries.push({
+    dd.push({
       name: line.name, type:"line", data: line.dd,
       xAxisIndex:1, yAxisIndex:1, showSymbol:false, sampling:"lttb",
       lineStyle:{width:1,type:"dashed",opacity:.7},
@@ -261,63 +297,100 @@ function renderChart(s){
   });
   // 事件标注用独立 scatter series 承载：markPoint 的 tooltip 受全局 axis 模式压制，
   // 悬停/点击都不出说明；scatter 可挂 item tooltip，且 tooltip.triggerOn 含 click。
-  var evtPoints = [];
   (s.events||[]).forEach(function(e){
     var hit = s.series.find(function(x){return x.id===e.target});
-    if(!hit) return;
+    if(!hit || !hit.line.length) return;
+    // 窗口起点之前的事件不落在图上（否则会被挤到左边界，误导为窗口内事件）
+    if(e.date < hit.line[0][0]) return;
     var pt = hit.line.find(function(p){return p[0]>=e.date});
     if(!pt) return;
+    var base = bases[e.target];
     evtPoints.push({
-      value:[pt[0],pt[1]], name:e.title,
+      value:[pt[0], (base && pt[1]!=null) ? +(((pt[1]/base)-1)*100).toFixed(4) : null],
+      name:e.title,
       evDate:e.date, evDesc:e.desc, evSide:e.side,
       symbol:"pin", symbolSize:e.side==="crash"?16:14,
       itemStyle:{color:e.side==="crash"?"#d92b2b":"#12924a"}
     });
   });
-  if(evtPoints.length){
-    series.push({
-      name:"大事件", type:"scatter", data:evtPoints,
-      xAxisIndex:0, yAxisIndex:0, z:10,
-      label:{show:false},
-      tooltip:{trigger:"item", formatter:function(p){
-        var d=(p&&p.data)||{};
-        return '<b>'+(d.name||"")+'</b><br/>'+'事件日：'+(d.evDate||"")+
-               '<br/>'+(d.evDesc||"");
-      }}
-    });
-  }
+  // 始终保留 scatter（即使无事件）→ series 数量恒定，缩放重算可安全合并更新
+  main.push({
+    name:"大事件", type:"scatter", data:evtPoints,
+    xAxisIndex:0, yAxisIndex:0, z:10, label:{show:false},
+    tooltip:{trigger:"item", formatter:function(p){
+      var d=(p&&p.data)||{};
+      return '<b>'+(d.name||"")+'</b><br/>'+'事件日：'+(d.evDate||"")+
+             '<br/>'+(d.evDesc||"");
+    }}
+  });
+  return {bases:bases, rawMap:rawMap, main:main, dd:dd, legend:legend,
+          evtPoints:evtPoints, n:s.series.length};
+}
+
+// dataZoom 给的是时间戳，用本地时区取日期（toISOString 会因时区差一天）
+function tsToDate(ts){
+  var d = new Date(ts), m = d.getMonth()+1, day = d.getDate();
+  return d.getFullYear()+"-"+(m<10?"0":"")+m+"-"+(day<10?"0":"")+day;
+}
+function hintText(fromStr, total){
+  return "走势已统一为累计涨跌%（窗口起点=0%）· 共 "+total+" 个交易日"
+    + (fromStr ? " · 自 "+fromStr+" 起算" : " · 各自最早数据点起算");
+}
+
+function renderChart(s){
+  RAW = s;
+  var el = document.getElementById("chart");
+  // 保留用户当前的图例开关状态：notMerge 重绘会清空它，导致「刚隐藏的线又冒出来」
+  var prevSelected = {};
+  if(CHART){ try{ var _old=CHART.getOption(), _lg=(_old&&_old.legend&&_old.legend[0])||{};
+    if(_lg.selected) prevSelected=_lg.selected; }catch(e){} }
+  if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
+  var b = buildLines(s, null);
+  META = {n:b.n, raw:b.rawMap};
+  var total = s.series.reduce(function(a,x){return a+(x.points||0)},0);
   var option = {
     animation:false,
-    legend:{data:legend,top:0,selected:prevSelected},
-    tooltip:{trigger:"axis",axisPointer:{type:"cross"}},
+    legend:{data:b.legend,top:0,selected:prevSelected},
+    // 自定义 axis tooltip：主图显示「累计涨跌% + 原始点位」，回撤图显示回撤%
+    tooltip:{trigger:"axis",axisPointer:{type:"cross"},formatter:tipFmt},
     grid:[{left:60,right:24,top:34,height:"46%"},{left:60,right:24,top:"62%",height:"22%"}],
     xAxis:[
       {type:"time",gridIndex:0,axisLabel:{show:false}},
       {type:"time",gridIndex:1}
     ],
     yAxis:[
-      {type:"value",scale:true,gridIndex:0,name:"点位/价格"},
+      {type:"value",scale:true,gridIndex:0,name:"累计涨跌%(起点0)",
+       axisLabel:{formatter:"{value}%"}},
       {type:"value",max:0,gridIndex:1,name:"回撤%"}
     ],
     dataZoom:[
       {type:"inside",xAxisIndex:[0,1],start:0,end:100},
       {type:"slider",xAxisIndex:[0,1],bottom:0,height:20,start:0,end:100}
     ],
-    series: series.concat(ddSeries)
+    series: b.main.concat(b.dd)
   };
   CHART.setOption(option,true);
   CHART.off("datazoom");
   CHART.on("datazoom",function(){
-    if(!CHART) return;
+    if(!CHART || !RAW) return;
     var op = CHART.getOption();
     var dz = (op.dataZoom&&op.dataZoom[0])||{};
-    if(dz.startValue!=null && dz.endValue!=null){
-      var f = new Date(dz.startValue).toISOString().slice(0,10);
-      var t = new Date(dz.endValue).toISOString().slice(0,10);
-      STATE.dfrom=f; STATE.dto=t;
-      document.getElementById("dfrom").value=f; document.getElementById("dto").value=t;
-      loadTable(true);
-    }
+    if(dz.startValue==null || dz.endValue==null) return;
+    var f = tsToDate(dz.startValue), t = tsToDate(dz.endValue);
+    STATE.dfrom=f; STATE.dto=t;
+    document.getElementById("dfrom").value=f; document.getElementById("dto").value=t;
+    loadTable(true);
+    // 缩放后以窗口左边界重新归零：不做则「输入框显示 2015、曲线仍以 1990 为 0」，口径不一致
+    if(NORM_T) clearTimeout(NORM_T);
+    NORM_T = setTimeout(function(){
+      if(!CHART || !RAW) return;
+      var bb = buildLines(RAW, f);
+      META = {n:bb.n, raw:bb.rawMap};
+      // 合并更新（不 notMerge）→ 保留当前缩放窗口与图例开关
+      CHART.setOption({series: bb.main.concat(bb.dd)});
+      var h = document.getElementById("chartHint");
+      if(h) h.textContent = hintText(f, total);
+    }, 260);
   });
   // 事件标注的说明：ECharts 全局 axis tooltip 会压制 scatter 的 item tooltip，
   // 这里直接监听图表事件，把说明写进图表下方的固定说明条（点击/悬停均触发）。
@@ -402,7 +475,8 @@ function refreshAll(){
     +(STATE.dfrom?"&from="+STATE.dfrom:"")+(STATE.dto?"&to="+STATE.dto:"");
   fetch(api("series?"+q)).then(function(r){return r.json()}).then(function(d){
     SERIES=d; renderChart(d);
-    document.getElementById("chartHint").textContent="共 "+d.series.reduce(function(a,x){return a+x.points},0)+" 个数据点（已降采样）";
+    var n=d.series.reduce(function(a,x){return a+x.points},0);
+    document.getElementById("chartHint").textContent = hintText(STATE.dfrom, n);
   }).catch(function(e){document.getElementById("chartHint").textContent="图表载入失败："+e});
   fetch(api("signals?ids="+encodeURIComponent(STATE.ids.join(",")))).then(function(r){return r.json()}).then(function(d){renderSignals(d.signals)}).catch(function(){});
   loadTable(true);
@@ -419,7 +493,10 @@ function boot(){
     SERIES=d.series; renderChart(d.series);
     TABLE=d.table; applyTable();
     document.getElementById("freshness").textContent="抓取："+(d.catalog.last_fetch||"—")+" · 重算："+(d.catalog.last_rebuild||"—");
-    document.getElementById("dfrom").value=d.catalog.assets.find(a=>a.id===STATE.ids[0]).actual_from||"";
+    // 「起」输入框不预填（否则会误以为已按该日起算），只用 placeholder 提示首只标的最早数据日
+    var _f=d.catalog.assets.find(function(a){return a.id===STATE.ids[0]});
+    var _in=document.getElementById("dfrom");
+    if(_in){ _in.value=""; if(_f&&_f.actual_from) _in.placeholder=_f.actual_from; }
   }).catch(function(e){
     document.getElementById("freshness").textContent="数据载入失败："+e;
   });
