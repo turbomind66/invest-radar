@@ -116,7 +116,7 @@ const GRAN_BTNS = ['day', 'week', 'month', 'quarter', 'year'].map(g => {
 els.granBar = mkEl('granBar');
 els.granBar._qs = { '.gbtn': GRAN_BTNS };
 
-const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt, applyTable, gotoPage, pageCount, setTable: function(t){TABLE=t;}, getTable: function(){return TABLE;}, getRows: function(){return ROWS;}, renderReconstruct, renderReconMany, clipPct, reconSeriesOne, reconSeriesMany, unbindChart, getRAW: function(){return RC_RAW;}, getChart: function(){return CHART;}, renderSignals, winSummary, winMap, aggPeriods, periodKey, staticTable, staticSignals, COLS, setPayload: function(p){PAYLOAD=p;}, setGran: setGran, switchView: switchView, paintGran: paintGran };`;
+const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt, applyTable, gotoPage, pageCount, setTable: function(t){TABLE=t;}, getTable: function(){return TABLE;}, getRows: function(){return ROWS;}, renderReconstruct, renderReconMany, loadReconstruct, getRECON: function(){return RECON;}, clipPct, reconSeriesOne, reconSeriesMany, unbindChart, getRAW: function(){return RC_RAW;}, getChart: function(){return CHART;}, renderSignals, winSummary, winMap, aggPeriods, periodKey, staticTable, staticSignals, COLS, setPayload: function(p){PAYLOAD=p;}, setGran: setGran, switchView: switchView, paintGran: paintGran };`;
 eval(extractScript(HTML_TEXT) + EXPORTER);
 
 // ---------- 断言 ----------
@@ -580,6 +580,45 @@ ok(st.periods.length === 3 && st.periods[0].start === '2015-01-05'
    '静态版周期聚合按起止日重新算（3 个自然月 3 行）');
 ok(st.episodes.length >= 1 && st.episodes[0].drop_pct <= -10,
    '静态版回撤事件按窗口重算（峰→谷≥10%）');
+
+// 静态快照的还原模式：data.json 的 reconstruct.by_etf 带全部可还原标的，
+// 勾选哪只画哪只 —— 不能永远只出首只纳指ETF（GitHub Pages 用户报的问题）。
+(function testStaticRecon(){
+  const c1 = { etf: '513100', name: '纳指ETF国泰', bench_name: '纳斯达克100', t0: '2013-05-15', points: 2,
+    curves: { price: [['2013-05-15', 0], ['2020-01-02', 180]], nav: [['2013-05-15', 0], ['2020-01-02', 150]],
+              restored: [['2013-05-15', 0], ['2020-01-02', 120]], bench: [['2013-05-15', 0], ['2020-01-02', 118]] } };
+  const c2 = { etf: '513500', name: '标普500ETF', bench_name: '标普500', t0: '2013-12-06', points: 2,
+    curves: { price: [['2013-12-06', 0], ['2020-01-02', 90]], nav: [['2013-12-06', 0], ['2020-01-02', 80]],
+              restored: [['2013-12-06', 0], ['2020-01-02', 70]], bench: [['2013-12-06', 0], ['2020-01-02', 68]] } };
+  window.__STATIC__ = {};
+  __T.setPayload({ reconstruct: {
+    available: [{ etf: '513100', name: '纳指ETF国泰', bench_name: '纳斯达克100' },
+                { etf: '513500', name: '标普500ETF', bench_name: '标普500' }],
+    current: c1, by_etf: { '513100': c1, '513500': c2 },
+  } });
+  __T.STATE.dfrom = ''; __T.STATE.dto = '';
+  __T.STATE.ids = ['513500']; __T.STATE.rcEtf = '';
+  __T.loadReconstruct();
+  ok(__T.getRECON() && __T.getRECON().etf === '513500',
+     '静态版叠加标普500ETF → 画它自己（不再固定首只纳指ETF）');
+  ok(__T.STATE.rcEtf === '513500', '静态版把下拉同步为当前命中的标的');
+  __T.STATE.ids = ['513100', '513500'];
+  __T.loadReconstruct();
+  const smany = (LAST_OPT.series || []).filter(s => /还原%/.test(s.name));
+  ok(smany.length === 2, '静态版叠加两只可还原标的 → 两条还原线（叠加对比）');
+  __T.STATE.ids = ['sh000300']; __T.STATE.rcEtf = '513500';
+  __T.loadReconstruct();
+  ok(__T.getRECON() && __T.getRECON().etf === '513500',
+     '静态版叠加无海外敞口时按下拉选择出图');
+  ok(document.getElementById('rcNote').style.display === 'block'
+     && document.getElementById('rcNote').textContent.indexOf('无海外敞口') >= 0,
+     '静态版同样提示「当前叠加的标的无海外敞口」');
+  __T.STATE.ids = ['sh000300']; __T.STATE.rcEtf = '513030';
+  __T.loadReconstruct();
+  ok(__T.getRECON() && __T.getRECON().etf === '513100',
+     '静态快照缺该只曲线时回退到第一只有数据的，不白屏（513030 未打包 → 取 513100）');
+  delete window.__STATIC__;
+})();
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);

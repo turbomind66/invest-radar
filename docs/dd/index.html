@@ -971,13 +971,37 @@ function showRcNote(txt){
 
 function loadReconstruct(){
   if(window.__STATIC__){
-    // 静态站 data.json 只带首只还原标的（避免体积膨胀），无网络 API
+    // 静态快照现在带全部可还原标的（data.json 的 reconstruct.by_etf），
+    // 分派规则与服务端一致：叠加里命中 1 只→四曲线、命中多只→叠加对比、
+    // 一只都不命中→用下拉选（并说明「当前叠加无海外敞口」）。
     var d = (PAYLOAD&&PAYLOAD.reconstruct)||{};
-    if(STATE.rcEtf && d.available){
-      var hit=d.available.find(function(x){return x.etf===STATE.rcEtf});
-      if(!hit){ RECON={error:1,msg:"静态快照仅含首只还原标的，请在服务端模式查看其他标的"}; renderReconstruct(RECON); return; }
+    var bag = d.by_etf || {};
+    var hits = reconHits().filter(function(h){ return !!bag[h.etf]; });
+    if(hits.length === 1){
+      STATE.rcEtf = hits[0].etf; syncRcSel(); rcSelWrap(false);
+      RECON = bag[hits[0].etf]; renderReconstruct(RECON);
+      return;
     }
-    RECON = d.current; renderReconstruct(RECON); return;
+    if(hits.length > 1){
+      rcSelWrap(false);
+      renderReconMany(hits.map(function(h){ return bag[h.etf]; }));
+      return;
+    }
+    var etf = STATE.rcEtf || (reconList()[0] || {}).etf;
+    if(!bag[etf]){                       // 快照里没有这只 → 回退到第一只有数据的
+      var ks = Object.keys(bag);
+      if(ks.length) etf = ks[0];
+    }
+    rcSelWrap(true);
+    if(bag[etf]){
+      STATE.rcEtf = etf; syncRcSel();
+      RECON = bag[etf]; renderReconstruct(RECON);
+      showRcNote(noHitNote() + " " + ((RECON && RECON.note) || ""));
+      return;
+    }
+    RECON = d.current || {error:1,msg:"静态快照缺少还原数据，请稍后重试或改用服务端模式"};
+    renderReconstruct(RECON);
+    return;
   }
   var hits = reconHits();
   if(hits.length === 1){                       // 叠加里只有一只可还原 → 四曲线详情
@@ -1289,7 +1313,10 @@ document.getElementById("fxAdjust").onchange=function(){
 };
 document.getElementById("rcSel").onchange=function(){
   STATE.rcEtf=this.value;
-  if(STATE.fx) loadOneRecon(STATE.rcEtf, noHitNote());
+  if(!STATE.fx) return;
+  // 静态快照没有 /api/dd/reconstruct：直接在 data.json 的 by_etf 里换一只
+  if(window.__STATIC__){ loadReconstruct(); return; }
+  loadOneRecon(STATE.rcEtf, noHitNote());
 };
 
 boot();

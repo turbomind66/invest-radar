@@ -1,4 +1,5 @@
 """drawdown/tests/test_engine.py — 回撤引擎离线单测（不联网）。"""
+import json
 import os
 import sys
 import tempfile
@@ -10,7 +11,7 @@ for p in (ROOT, BASE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from drawdown import engine, db, api  # noqa: E402
+from drawdown import engine, db, api, constants as C  # noqa: E402
 
 
 def series(*pairs):
@@ -296,6 +297,35 @@ class TestDBAndAPI(unittest.TestCase):
         self.assertIn("signals", p)
         self.assertIn("table", p)
         self.assertEqual(p["series"]["series"][0]["points"], 2)
+
+    def test_export_static_carries_every_reconstructable_etf(self):
+        """静态站必须打包全部可还原标的（reconstruct.by_etf）。
+
+        只放 current 会让 GitHub Pages 勾选「剔除汇率/溢价」后永远只出首只
+        （用户报「只显示纳指ETF国泰 vs 纳斯达克100」），静态站又没有 API 可现取。
+        """
+        r = C.RECONSTRUCT[0]
+        days = ["2020-01-02", "2020-01-03", "2020-01-06"]
+        db.upsert_daily(r["etf"], [(d, 1.0 + i) for i, d in enumerate(days)], self.tmp)
+        db.upsert_daily(r["fx"], [(d, 7.0) for d in days], self.tmp)
+        db.upsert_daily(r["bench"], [(d, 100.0 + i) for i, d in enumerate(days)], self.tmp)
+        db.save_nav(r["nav_code"], [(d, 1.0 + 0.1 * i) for i, d in enumerate(days)], self.tmp)
+
+        out = tempfile.mkdtemp()
+        api.export_static(out, path=self.tmp)
+        with open(os.path.join(out, "data.json"), encoding="utf-8") as f:
+            p = json.load(f)
+        rc = p["reconstruct"]
+        self.assertIn("by_etf", rc)
+        self.assertIn(r["etf"], rc["by_etf"])
+        one = rc["by_etf"][r["etf"]]
+        self.assertEqual(one["etf"], r["etf"])
+        self.assertEqual(one["points"], 3)
+        for k in ("price", "nav", "restored", "bench"):
+            self.assertIn(k, one["curves"])
+        self.assertIn("current", rc)              # 旧字段保留，兼容首屏
+        html = open(os.path.join(out, "index.html"), encoding="utf-8").read()
+        self.assertIn("__STATIC__", html)         # 前端据此走本地数据分支
 
     def _seed_window(self):
         """三段行情：先创新高、再落、再反弹但未收复 → 全历史与区间口径必然不同。"""
