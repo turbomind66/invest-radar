@@ -27,7 +27,12 @@ function mkClassList() {
   const set = new Set();
   return {
     add: c => set.add(c), remove: c => set.delete(c),
-    toggle: c => set.has(c) ? set.delete(c) : set.add(c),
+    // 真实 DOM 语义：toggle(c, force) 的 force 为布尔时是「设置」而不是「翻转」
+    toggle: (c, force) => {
+      const want = force === undefined ? !set.has(c) : !!force;
+      if (want) set.add(c); else set.delete(c);
+      return want;
+    },
     contains: c => set.has(c), _set: set,
   };
 }
@@ -35,9 +40,13 @@ const els = {}, created = [];
 function mkEl(id) {
   const el = {
     id, innerHTML: '', textContent: '', value: '', style: {}, title: '',
-    classList: mkClassList(), onclick: null, children: [], _cls: '',
+    classList: mkClassList(), onclick: null, children: [], _cls: '', _attrs: {}, _qs: null,
     appendChild(c) { this.children.push(c); },
     querySelector() { return null; },
+    querySelectorAll(sel) { return (this._qs && this._qs[sel]) || []; },
+    getAttribute(k) { return this._attrs[k] != null ? this._attrs[k] : null; },
+    setAttribute(k, v) { this._attrs[k] = String(v); },
+    get dataset() { return this._attrs; },
   };
   Object.defineProperty(el, 'className', {
     get() { return el._cls; },
@@ -98,7 +107,16 @@ global.fetch = async () => ({
   ok: true, json: async () => ({ series: { series: [], events: [] }, signals: [], table: {} }),
 });
 
-const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt, applyTable, gotoPage, pageCount, setTable: function(t){TABLE=t;}, getTable: function(){return TABLE;}, getRows: function(){return ROWS;}, renderReconstruct, renderReconMany, clipPct, reconSeriesOne, reconSeriesMany, unbindChart, getRAW: function(){return RC_RAW;}, getChart: function(){return CHART;}, renderSignals, winSummary, winMap, aggPeriods, periodKey, staticTable, staticSignals, COLS, setPayload: function(p){PAYLOAD=p;} };`;
+// ④「周期区间」分段按钮（日/周/月/季/年）：initGran 会在脚本加载时绑定点击并按 STATE.gran 打 active
+const GRAN_BTNS = ['day', 'week', 'month', 'quarter', 'year'].map(g => {
+  const b = mkEl('gbtn_' + g);
+  b._attrs['data-gran'] = g;
+  return b;
+});
+els.granBar = mkEl('granBar');
+els.granBar._qs = { '.gbtn': GRAN_BTNS };
+
+const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt, applyTable, gotoPage, pageCount, setTable: function(t){TABLE=t;}, getTable: function(){return TABLE;}, getRows: function(){return ROWS;}, renderReconstruct, renderReconMany, clipPct, reconSeriesOne, reconSeriesMany, unbindChart, getRAW: function(){return RC_RAW;}, getChart: function(){return CHART;}, renderSignals, winSummary, winMap, aggPeriods, periodKey, staticTable, staticSignals, COLS, setPayload: function(p){PAYLOAD=p;}, setGran: setGran, switchView: switchView, paintGran: paintGran };`;
 eval(extractScript(HTML_TEXT) + EXPORTER);
 
 // ---------- 断言 ----------
@@ -422,17 +440,47 @@ ok(manyRes.length === 2 && manyRes.every(s => s.data[0][1] === 0),
 ok(__T.getRAW() && __T.getRAW().mode === 'many', '叠加还原缓存了原始曲线供缩放重算');
 
 // ---- 区间口径（所选起止日）----
-// 用户报的「周期汇总每行都是一天」根因：<select id=gran> 没接监听，STATE.gran 恒为 day。
+// ④「周期汇总」的区间粒度：日 / 周 / 月 / 季 / 年（贴在表头的分段按钮，不再是①里的下拉）
 (function testGran(){
-  els.gran.value = 'quarter';
-  els.gran.onchange.call({ value: 'quarter' });
-  ok(__T.STATE.gran === 'quarter', '周期下拉变化后 STATE.gran 跟着变（原先是死控件）');
+  ok(GRAN_BTNS.length === 5, '周期区间提供 日/周/月/季/年 五个粒度');
+  ok(GRAN_BTNS.find(b => b.getAttribute('data-gran') === 'month').classList.contains('active'),
+     '默认粒度「月」按钮处于选中态');
+  __T.setGran('quarter', false);
+  ok(__T.STATE.gran === 'quarter', '切到「季」后 STATE.gran = quarter');
+  ok(GRAN_BTNS.find(b => b.getAttribute('data-gran') === 'quarter').classList.contains('active')
+     && !GRAN_BTNS.find(b => b.getAttribute('data-gran') === 'month').classList.contains('active'),
+     '选中态跟着切换（季高亮、月取消）');
+  __T.STATE.view = 'daily';
+  __T.setGran('year', false);
+  ok(__T.STATE.view === 'period', '在「日明细」视图下切粒度会自动跳回周期汇总（否则看不到变化）');
+  ok(GRAN_BTNS.find(b => b.getAttribute('data-gran') === 'year').getAttribute('aria-pressed') === 'true',
+     'aria-pressed 同步，读屏可感知当前粒度');
+  ok(__T.periodKey('2015-06-08', 'day') === '2015-06-08', '日粒度键即当天日期');
   ok(__T.periodKey('2015-06-08', 'quarter') === '2015-Q2', '季粒度键 2015-Q2');
   ok(__T.periodKey('2015-06-08', 'month') === '2015-06', '月粒度键 2015-06');
   ok(__T.periodKey('2015-06-08', 'year') === '2015', '年粒度键 2015');
   ok(/^2015-W\d\d$/.test(__T.periodKey('2015-06-08', 'week')), '周粒度键按 ISO 周：' + __T.periodKey('2015-06-08', 'week'));
-  ok(/id="gran"/.test(HTML_TEXT) && /value="month" selected/.test(HTML_TEXT),
-     '周期默认「月」（日粒度会让周期汇总与日明细完全重复）');
+  ok(/id="granBar"/.test(HTML_TEXT) && /class="gbtn active"\s+data-gran="month"/.test(HTML_TEXT),
+     '模板里「月」为默认高亮（周期汇总与日明细才不重复）');
+  ok(!/id="gran"/.test(HTML_TEXT), '① 卡片里不再留旧的下拉（避免两个控件改同一状态）');
+})();
+
+// 五种粒度对同一批日线的行数：日 4 行 / 周 3 行 / 月 3 行 / 季 2 行 / 年 1 行
+(function testGranAgg(){
+  const rows = [
+    { date: '2020-01-02', close: 100, dd_pct: 0, peak: 100, peak_date: '2020-01-02', days_since_peak: 0, state: 'new_high' },
+    { date: '2020-01-03', close: 98, dd_pct: -2, peak: 100, peak_date: '2020-01-02', days_since_peak: 1, state: 'drawdown' },
+    { date: '2020-02-03', close: 90, dd_pct: -10, peak: 100, peak_date: '2020-01-02', days_since_peak: 22, state: 'drawdown' },
+    { date: '2020-07-01', close: 105, dd_pct: 0, peak: 105, peak_date: '2020-07-01', days_since_peak: 0, state: 'new_high' },
+  ];
+  const n = g => __T.aggPeriods(rows, g, null).length;
+  ok(n('day') === 4, '日粒度：4 个交易日 → 4 行');
+  ok(n('week') === 3, '周粒度：跨 3 个 ISO 周 → 3 行');
+  ok(n('month') === 3, '月粒度：01 月 2 行 + 02 月 + 07 月 → 3 行');
+  ok(n('quarter') === 2, '季粒度：Q1 / Q3 → 2 行');
+  ok(n('year') === 1, '年粒度：全部收进 2020 → 1 行');
+  const jan = __T.aggPeriods(rows, 'month', null)[0];
+  ok(jan.start === '2020-01-02' && jan.end === '2020-01-03', '月粒度首行区间 01-02 ~ 01-03（起止不同天）');
 })();
 
 // 区间高点：峰值从窗口第一根起算，而不是历史最高收盘

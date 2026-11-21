@@ -30,6 +30,11 @@
   .chip.on{background:#e8efff;border-color:var(--accent);color:var(--accent)}
   .chip.ready{border-left:3px solid var(--down)}
   .chip.empty{border-left:3px solid #ccc;opacity:.6}
+  /* ④ 周期区间粒度：日/周/月/季/年 分段按钮（贴在表头，点了立刻重算） */
+  .granbar{display:inline-flex;gap:4px;flex-wrap:wrap}
+  .gbtn{padding:4px 12px;font-size:12px;border-radius:8px;background:#fff;color:var(--sub);border:1px solid var(--line)}
+  .gbtn:hover{border-color:var(--accent);color:var(--accent)}
+  .gbtn.active{background:var(--accent);border-color:var(--accent);color:#fff}
   #chart{width:100%;height:460px}
   .signals{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin-top:6px}
   .sig{border:1px solid var(--line);border-radius:10px;padding:12px}
@@ -102,7 +107,6 @@
   <div class="card">
     <h2>① 选择标的（可多选叠加）</h2>
     <div class="row">
-      <label>周期 <select id="gran"><option value="day">日</option><option value="week">周</option><option value="month" selected>月</option><option value="quarter">季</option><option value="year">年</option></select></label>
       <label>起 <input type="date" id="dfrom"></label>
       <label>止 <input type="date" id="dto"></label>
       <button class="primary" id="apply">应用筛选</button>
@@ -132,6 +136,17 @@
       <button id="view-daily">日明细</button>
       <button id="view-events">回撤事件</button>
       <span class="muted" id="linkNote">与上方图表时间窗口联动</span>
+    </div>
+    <div class="row" style="margin:-2px 0 10px">
+      <span class="muted">周期区间</span>
+      <span class="granbar" id="granBar" role="group" aria-label="周期汇总每行覆盖的时间跨度">
+        <button type="button" class="gbtn" data-gran="day" aria-pressed="false" title="按交易日：每行一天">日</button>
+        <button type="button" class="gbtn" data-gran="week" aria-pressed="false" title="按 ISO 周：每行 5 个交易日">周</button>
+        <button type="button" class="gbtn active" data-gran="month" aria-pressed="true" title="按月：每行一个自然月">月</button>
+        <button type="button" class="gbtn" data-gran="quarter" aria-pressed="false" title="按季：每行一个季度">季</button>
+        <button type="button" class="gbtn" data-gran="year" aria-pressed="false" title="按年：每行一个自然年">年</button>
+      </span>
+      <span class="muted">所选粒度决定「区间」列跨多少天（默认按月）</span>
     </div>
     <div class="winbar" id="tblWin" style="display:none"></div>
     <div class="tbl-wrap"><table id="tbl"><thead></thead><tbody></tbody></table></div>
@@ -1207,19 +1222,55 @@ document.getElementById("reset").onclick=function(){
   document.getElementById("dfrom").value=document.getElementById("dto").value="";
   refreshAll();
 };
-// 周期粒度联动「周期汇总」：原来这个 <select> 没接监听，STATE.gran 恒为 day，
-// 所以「周期汇总」每行都是「起=止=当天」，看起来像日期算错（其实是粒度没生效）。
-document.getElementById("gran").onchange=function(){
-  STATE.gran = this.value || "day";
+// ④「周期汇总」的区间粒度：日 / 周 / 月 / 季 / 年。
+// 原先放在①里的 <select id=gran> 离表格太远，且切换后如果停在「日明细」视图完全看不出
+// 变化，容易被当成日期算错。改成贴在④表头的分段按钮：点一下即重算，并自动切到周期汇总。
+function paintView(){
+  ["period","daily","events"].forEach(function(x){
+    var el=document.getElementById("view-"+x);
+    if(el&&el.classList) el.classList.toggle("primary", x===STATE.view);
+  });
+}
+function switchView(v){
+  STATE.view=v; STATE.page=0;
+  paintView(); applyTable();
+}
+function paintGran(){
+  var bar=document.getElementById("granBar");
+  if(!bar||!bar.querySelectorAll) return;
+  var bs=bar.querySelectorAll(".gbtn");
+  for(var i=0;i<bs.length;i++){
+    var on = bs[i].getAttribute("data-gran")===STATE.gran;
+    if(bs[i].classList) bs[i].classList.toggle("active", on);
+    bs[i].setAttribute("aria-pressed", on?"true":"false");
+  }
+}
+function setGran(g, remember){
+  STATE.gran = GRAN_LABEL[g] ? g : "month";
+  STATE.page = 0;
+  if(STATE.view !== "period"){ STATE.view="period"; paintView(); }  // 切粒度就切到周期汇总
+  paintGran();
+  if(remember){ try{ localStorage.setItem("dd.gran", STATE.gran); }catch(e){} }
   loadTable(true);
-};
+}
+(function initGran(){
+  var saved="";
+  try{ saved = localStorage.getItem("dd.gran") || ""; }catch(e){}
+  STATE.gran = GRAN_LABEL[saved] ? saved : "month";   // 记住上次选择，默认月
+  var bar=document.getElementById("granBar");
+  if(bar&&bar.querySelectorAll){
+    var bs=bar.querySelectorAll(".gbtn");
+    for(var i=0;i<bs.length;i++){
+      bs[i].onclick=(function(b){
+        return function(){ setGran(b.getAttribute("data-gran"), true); };
+      })(bs[i]);
+    }
+  }
+  paintGran();
+})();
 ["period","daily","events"].forEach(function(v){
   var b=document.getElementById("view-"+v);
-  if(b) b.onclick=function(){
-    STATE.view=v; STATE.page=0;
-    ["period","daily","events"].forEach(function(x){var el=document.getElementById("view-"+x);if(el)el.classList.toggle("primary",x===v)});
-    applyTable();
-  };
+  if(b) b.onclick=function(){ switchView(v); };
 });
 document.getElementById("prev").onclick=function(){if(STATE.page>0){STATE.page--;renderTable()}};
 document.getElementById("next").onclick=function(){if((STATE.page+1)*PAGE_SIZE<ROWS.length){STATE.page++;renderTable()}};
