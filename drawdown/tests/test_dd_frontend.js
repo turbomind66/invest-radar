@@ -60,7 +60,8 @@ let LAST_OPT = null;
 const charts = {};
 global.echarts = {
   init: (dom) => charts[dom.id] || (charts[dom.id] = {
-    setOption(o) { LAST_OPT = o; },
+    _setCount: 0,
+    setOption(o, notMerge) { LAST_OPT = o; this._setCount++; this._notMerge = !!notMerge; },
     // 真实 ECharts getOption().legend 是数组（每项含 selected），桩件按此形态返回
     getOption() {
       if (!LAST_OPT) return {};
@@ -68,8 +69,28 @@ global.echarts = {
       if (o.legend && !Array.isArray(o.legend)) o.legend = [o.legend];
       return o;
     },
-    off() {}, on(ev, fn) { this._h = this._h || {}; this._h[ev] = fn; },
-    getZr() { this._zr = this._zr || { _h: {}, on(ev, fn) { this._h[ev] = fn; }, off() {} }; return this._zr; },
+    // 真实语义：off(ev) 清掉该事件全部监听、off(ev, fn) 只解绑匹配的 —— 桩件照此实现，
+    // 否则「还原模式是否残留走势图 datazoom 监听」这类回归无法被测出。
+    off(ev, fn) {
+      if (!this._h) return;
+      if (!ev) { this._h = {}; return; }
+      if (!fn) { delete this._h[ev]; return; }
+      if (this._h[ev] === fn) delete this._h[ev];
+    },
+    on(ev, fn) { this._h = this._h || {}; this._h[ev] = fn; },
+    dispose() { this._disposed = true; },
+    getZr() {
+      this._zr = this._zr || {
+        _h: {},
+        on(ev, fn) { this._h[ev] = fn; },
+        off(ev, fn) {
+          if (!ev) { this._h = {}; return; }
+          if (!fn) { delete this._h[ev]; return; }
+          if (this._h[ev] === fn) delete this._h[ev];
+        },
+      };
+      return this._zr;
+    },
     convertToPixel() { return [100, 200]; },
   }),
 };
@@ -77,7 +98,7 @@ global.fetch = async () => ({
   ok: true, json: async () => ({ series: { series: [], events: [] }, signals: [], table: {} }),
 });
 
-const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt, applyTable, gotoPage, pageCount, setTable: function(t){TABLE=t;}, getRows: function(){return ROWS;} };`;
+const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt, applyTable, gotoPage, pageCount, setTable: function(t){TABLE=t;}, getRows: function(){return ROWS;}, renderReconstruct, renderReconMany, clipPct, reconSeriesOne, reconSeriesMany, unbindChart, getRAW: function(){return RC_RAW;}, getChart: function(){return CHART;} };`;
 eval(extractScript(HTML_TEXT) + EXPORTER);
 
 // ---------- 断言 ----------
@@ -304,6 +325,101 @@ __T.applyTable();
 const evRows = __T.getRows();
 ok(evRows.length === 1 && evRows[0].peak_date === '2015-06-08',
    '回撤事件视图读 episodes（2007 高点未收复期间的 2015 大跌也能单列）');
+
+// ---- 14) 还原模式：起点/止点日期生效 + 不残留走势图监听（图表卡死回归） ----
+const RC_ONE = {
+  etf: '513100', name: '纳指ETF国泰', bench_name: '纳斯达克100',
+  t0: '2013-05-15', points: 3, note: '起点 2013-05-15 = 0%',
+  curves: {
+    price:    [['2013-05-15', 0], ['2015-01-05', 10], ['2020-01-02', 120]],
+    nav:      [['2013-05-15', 0], ['2015-01-05', 8],  ['2020-01-02', 110]],
+    restored: [['2013-05-15', 0], ['2015-01-05', 9],  ['2020-01-02', 130]],
+    bench:    [['2013-05-15', 0], ['2015-01-05', 9.5], ['2020-01-02', 128]],
+  },
+};
+__T.STATE.dfrom = ''; __T.STATE.dto = '';
+__T.renderReconstruct(RC_ONE);
+opt = LAST_OPT;
+ok(opt.series.length === 4, '还原图只画 4 条曲线（场内价/净值/还原/基准）');
+const rcFull = opt.series.find(s => /还原%/.test(s.name));
+ok(rcFull.data.length === 3 && rcFull.data[0][1] === 0, '未设起点时以 t0 为首点归 0%');
+
+// 关键回归：还原模式原来看不到 STATE.dfrom，设了起点日期曲线纹丝不动
+__T.STATE.dfrom = '2015-01-05';
+__T.renderReconstruct(RC_ONE);
+opt = LAST_OPT;
+const rcA = opt.series.find(s => /还原%/.test(s.name));
+ok(rcA.data.length === 2 && rcA.data[0][0] === '2015-01-05' && rcA.data[0][1] === 0,
+   '还原模式设起点日期生效：曲线从 2015-01-05 起算并归 0%');
+const expectRel = ((1 + 130 / 100) / (1 + 9 / 100) - 1) * 100;
+ok(Math.abs(rcA.data[1][1] - expectRel) < 1e-3,
+   '起点后的点按新基准重算（不是原来的 +130%）：' + rcA.data[1][1].toFixed(2) + '%');
+ok(document.getElementById('chartHint').textContent.indexOf('2015-01-05') >= 0,
+   '图表提示标注了实际起算日');
+
+__T.STATE.dto = '2015-01-05';
+__T.renderReconstruct(RC_ONE);
+ok(LAST_OPT.series.find(s => /还原%/.test(s.name)).data.length === 1,
+   '设止点日期后曲线被裁剪到止点（不再画出窗口外的点）');
+__T.STATE.dto = '';
+
+// 关键回归：走势图的 datazoom 监听若残留，在还原图里拖动缩放会把主线/回撤线/事件 pin 合并进来 → 卡死
+const rcInst = __T.getChart();
+ok(rcInst._h && typeof rcInst._h.datazoom === 'function', '还原模式注册了自己的缩放监听');
+ok(!rcInst._h.click && !rcInst._h.mouseover, '还原模式下不再保留走势图 click/mouseover 监听');
+ok(!rcInst.getZr()._h.click && !rcInst.getZr()._h.mousemove,
+   '还原模式下不再保留事件 pin 的 zr 容差监听（convertToPixel 找不到 series 会每帧报错）');
+
+const zoomTo = () => {
+  LAST_OPT.dataZoom = [{
+    startValue: new Date(2015, 0, 5).getTime(),
+    endValue: new Date(2020, 0, 2).getTime(),
+  }];
+  const realST2 = global.setTimeout;
+  global.setTimeout = (fn) => { fn(); return 0; };
+  try { rcInst._h.datazoom(); } finally { global.setTimeout = realST2; }
+};
+const beforeLen = LAST_OPT.series.length;
+zoomTo();
+ok(LAST_OPT.series.length === beforeLen,
+   '缩放后 series 数量不变（走势回撤线/事件 pin 未串入还原图）');
+ok(LAST_OPT.series.every(s => s.yAxisIndex === undefined),
+   '还原图 series 没有被塞入 yAxisIndex:1 的回撤线');
+ok(__T.STATE.dfrom === '2015-01-05', '还原模式缩放起点写回「起」条件：' + __T.STATE.dfrom);
+zoomTo();
+zoomTo();
+ok(LAST_OPT.series.length === 4, '连续缩放多次 series 数不膨胀（卡死的直接原因已消除）');
+
+// 切回走势图：还原监听被替换，走势数据完整
+__T.renderChart({ series: seriesData, events });
+opt = LAST_OPT;
+ok(opt.series.some(s => s.yAxisIndex === 1), '切回走势图后回撤线正常存在');
+ok(typeof rcInst._h.datazoom === 'function' && !!rcInst._h.click,
+   '走势图的缩放与事件监听重新绑定');
+ok(__T.getRAW() === null, '切回走势图时清空还原曲线缓存（不会拿旧还原数据重算）');
+
+// 叠加还原同样支持起点日期
+const RC_MANY = [
+  { name: '纳指ETF国泰', bench_name: '纳斯达克100', curves: {
+    restored: [['2015-01-05', 0], ['2020-01-02', 130]],
+    price: [['2015-01-05', 0], ['2020-01-02', 120]],
+    bench: [['2015-01-05', 0], ['2020-01-02', 128]] } },
+  { name: '标普500ETF', bench_name: '标普500', curves: {
+    restored: [['2016-01-04', 0], ['2020-01-02', 60]],
+    price: [['2016-01-04', 0], ['2020-01-02', 55]],
+    bench: [['2016-01-04', 0], ['2020-01-02', 58]] } },
+];
+__T.STATE.dfrom = ''; __T.STATE.dto = '';
+__T.renderReconMany(RC_MANY);
+opt = LAST_OPT;
+ok(opt.series.length === 6, '叠加还原：2 只 ×（还原+场内价）+ 2 条基准 = 6 条');
+__T.STATE.dfrom = '2016-01-04';
+__T.renderReconMany(RC_MANY);
+opt = LAST_OPT;
+const manyRes = opt.series.filter(s => /还原%/.test(s.name));
+ok(manyRes.length === 2 && manyRes.every(s => s.data[0][1] === 0),
+   '叠加还原设起点后各线仍从 0% 起（起点早于某只的 t0 时取该只 t0）');
+ok(__T.getRAW() && __T.getRAW().mode === 'many', '叠加还原缓存了原始曲线供缩放重算');
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);
