@@ -26,6 +26,36 @@ def _ok(msg, log):
     log("[dd-update] %s" % msg)
 
 
+def fetch_nav(force=False, only=None, log=print, pause=0.12):
+    """抓 6 只可还原 QDII 场内 ETF 的历史净值入库。
+
+    force=False 从库内最新日期增量抓（日常）；force=True 全历史（首次回补）。
+    串行翻页，单只失败留空不造假。返回 {code: 行数}。
+    """
+    db.init_db()
+    result = {}
+    for r in C.RECONSTRUCT:
+        code = r["nav_code"]
+        if only and code not in only:
+            continue
+        since = None if force else db.nav_latest_date(code)
+        try:
+            rows = fetcher.fetch_fund_nav_history(code, pause=pause, since=since)
+        except Exception as e:  # noqa: BLE001
+            _ok("净值 %s(%s) 抓取异常：%s: %s" % (code, r["name"], type(e).__name__, e), log)
+            result[code] = 0
+            continue
+        if not rows:
+            _ok("净值 %s(%s) 无数据，留空待重试" % (code, r["name"]), log)
+            result[code] = 0
+            continue
+        db.save_nav(code, rows)
+        result[code] = len(rows)
+        _ok("净值 %s(%s) %d 根 %s~%s" % (code, r["name"], len(rows),
+                                         rows[0][0], rows[-1][0]), log)
+    return result
+
+
 def incremental(path=db.DB_PATH, sleep=0.4, only=None, log=print):
     """增量抓取 + 重算。返回 {id: 新增行数}（含 0 行的失败标的）。
 

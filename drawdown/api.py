@@ -10,6 +10,7 @@
 from . import constants as C
 from . import db
 from . import engine
+from . import reconstruct as RC
 
 
 def catalog(path=db.DB_PATH):
@@ -36,6 +37,7 @@ def catalog(path=db.DB_PATH):
             {"key": g, "label": C.GRANULARITY_LABELS[g]} for g in C.GRANULARITIES],
         "default_ids": C.DEFAULT_IDS,
         "events": C.EVENTS,
+        "reconstruct": C.RECONSTRUCT,
         "last_fetch": last_fetch,
         "last_rebuild": last_rebuild,
     }
@@ -133,6 +135,7 @@ def build_payload(ids=None, gran="day", dfrom=None, dto=None, path=db.DB_PATH):
         "series": series(ids, dfrom, dto, path),
         "signals": signals(ids, path)["signals"],
         "table": table(ids[0], gran, dfrom, dto, path),
+        "reconstruct": RC.payload(path=path),
         "generated_at": engine.datetime.datetime.now().isoformat(timespec="seconds"),
     }
 

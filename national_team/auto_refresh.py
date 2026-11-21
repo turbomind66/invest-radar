@@ -277,7 +277,11 @@ def _dd_incremental():
         summary = "%d 标的变更" % len(changed)
         _log("回撤全景增量：%s%s" % (
             summary, ("（" + ", ".join(changed[:6]) + "）") if changed else "（无新数据）"))
-        _state(last_dd=summary, last_error="")
+        # QDII 场内 ETF 净值增量（溢价/汇率还原用，域名 api.fund 未封）
+        nav = dd_updater.fetch_nav()
+        nav_n = sum(1 for v in nav.values() if v)
+        _log("回撤全景净值：%d 只更新" % nav_n)
+        _state(last_dd="%s / 净值%d只" % (summary, nav_n), last_error="")
         res.pop("_changed", None)
         return res
     except Exception as e:  # noqa: BLE001

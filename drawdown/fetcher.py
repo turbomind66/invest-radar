@@ -161,7 +161,8 @@ def fetch_tencent_a(symbol, retries=2, max_rounds=15, pause=0.5, since=None):
     import datetime
     all_rows = {}
     # 结束日期给未来 2 天，规避容器 UTC 与北京时间差（收盘后当天数据必出）
-    future = (datetime.datetime.utcnow() + datetime.timedelta(days=2)).strftime("%Y-%m-%d")
+    future = (datetime.datetime.now(datetime.timezone.utc)
+              + datetime.timedelta(days=2)).strftime("%Y-%m-%d")
     for _ in range(retries):
         all_rows = {}
         end = future
@@ -278,6 +279,59 @@ def fetch_csindex(code, retries=2, since=None):
             pass
         time.sleep(0.8)
     return []
+
+
+def fetch_fund_nav_history(code, retries=2, pause=0.12, max_pages=200, since=None):
+    """东财基金 f10/lsjz 抓全历史单位净值（QDII 溢价/汇率还原用）。
+
+    与 push2his 行情域名不同，api.fund.eastmoney.com 未被 IP 封禁（2026-11-21 实测）。
+    每页固定 20 条（pageSize 参数无效），513100 共 3257 条 ≈ 163 页。
+    串行翻页 + 小间隔，避免触发限流；单页失败跳过（不造假），已抓到的仍返回。
+    since 非空（YYYY-MM-DD）时：翻到该日期即停（净值按日期降序返回），日常增量用，
+    只读最近几页。返回升序 [(date, nav), ...]。
+    """
+    out = {}
+    for attempt in range(retries):
+        out = {}
+        reached_since = False
+        for page in range(1, max_pages + 1):
+            url = ("https://api.fund.eastmoney.com/f10/lsjz"
+                   "?fundCode=%s&pageIndex=%d&pageSize=20" % (code, page))
+            try:
+                txt = _get(url, ref="https://fundf10.eastmoney.com/", timeout=15)
+                obj = json.loads(txt)
+                rows = ((obj.get("Data") or {}).get("LSJZList") or [])
+            except Exception:
+                break  # 单页失败停止翻页，保留已抓到的
+            if not rows:
+                break
+            stop = False
+            for r in rows:
+                d = r.get("FSRQ")
+                if not d:
+                    continue
+                if since and d < since:
+                    stop = True
+                    continue
+                # 用累计净值 LJJZ（含分红再投资）：QDII ETF 多有份额折算，
+                # 单位净值 DWJZ 会断崖失真（513100 单位1.773 vs 累计8.865，
+                # 后者 +786% 才与纳指基准 +783% 吻合）。回退到 DWJZ 兜底。
+                v = r.get("LJJZ") or r.get("DWJZ")
+                if v not in (None, ""):
+                    try:
+                        out[d] = float(v)
+                    except (ValueError, TypeError):
+                        pass
+            if stop:
+                reached_since = True
+                break
+            if page > 1 and len(rows) < 20:
+                break
+            time.sleep(pause)
+        if out or reached_since:
+            break
+        time.sleep(0.8)
+    return [(d, out[d]) for d in sorted(out)]
 
 
 def fetch_asset(asset, since=None):

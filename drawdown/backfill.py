@@ -29,11 +29,17 @@ def main():
     ap.add_argument("--force", action="store_true", help="强制重抓（默认跳过已有）")
     ap.add_argument("--rebuild-only", action="store_true", help="只重算指标不抓取")
     ap.add_argument("--export", action="store_true", help="导出 docs/dd/data.json")
+    ap.add_argument("--nav", action="store_true", help="抓 QDII 场内ETF历史净值（溢价/汇率还原用）")
     ap.add_argument("--sleep", type=float, default=0.4, help="标的间间隔秒")
     ap.add_argument("ids", nargs="*", help="只抓指定标的 id")
     args = ap.parse_args()
 
     db.init_db()
+    if args.nav:
+        from . import updater
+        nav = updater.fetch_nav(force=args.force)
+        print("[backfill] 净值抓完：%s" % nav)
+        return
     if not args.rebuild_only:
         res = fetcher.fetch_all(force=args.force, only=args.ids or None, sleep=args.sleep)
         failed = [k for k, v in res.items() if v[0] == 0]

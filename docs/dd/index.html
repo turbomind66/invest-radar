@@ -78,8 +78,10 @@
       <label>止 <input type="date" id="dto"></label>
       <button class="primary" id="apply">应用筛选</button>
       <button id="reset">重置</button>
-      <label class="toggle"><input type="checkbox" id="fxAdjust"> 剔除汇率/溢价（还原真实涨跌，二期）</label>
+      <label class="toggle"><input type="checkbox" id="fxAdjust"> 剔除汇率/溢价（还原真实涨跌%）</label>
+      <label id="rcSelWrap" style="display:none">还原标的 <select id="rcSel"></select></label>
     </div>
+    <div class="muted" id="rcNote" style="margin-top:6px;display:none"></div>
     <div id="groups"></div>
   </div>
 
@@ -110,8 +112,8 @@
 
 <script>
 "use strict";
-var CHART = null, STATE = {ids:[],gran:"day",dfrom:"",dto:"",view:"period",page:0,fx:false};
-var PAYLOAD = null, CATALOG = null, SERIES = null, TABLE = null;
+var CHART = null, STATE = {ids:[],gran:"day",dfrom:"",dto:"",view:"period",page:0,fx:false,rcEtf:""};
+var PAYLOAD = null, CATALOG = null, SERIES = null, TABLE = null, RECON = null;
 
 function api(path){
   var base = (window.__STATIC__ && window.__STATIC__.data_base) || "";
@@ -167,6 +169,45 @@ function renderSignals(sigs){
       + '</dl><div class="hint">'+ (s.hint||"") +'</div>';
     box.appendChild(d);
   });
+}
+
+var RC_COLORS = {price:"#d92b2b", nav:"#2f5fd0", restored:"#12924a", bench:"#8a5b00"};
+var RC_LABELS = {price:"场内价%（含溢价+汇率）", nav:"净值%（剔溢价，含汇率）",
+  restored:"还原%（剔溢价+汇率）", bench:"基准指数%（本币）"};
+
+function renderReconstruct(r){
+  var el = document.getElementById("chart");
+  if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
+  if(!r || r.error){
+    el.innerHTML='<div class="loading">'+(r&&r.msg?r.msg:"该标的暂无还原数据（先跑净值回补）")+'</div>';
+    CHART = null; return;
+  }
+  var order = ["price","nav","restored","bench"];
+  var series = order.map(function(k){
+    return {name:RC_LABELS[k], type:"line", data:r.curves[k], showSymbol:false,
+      sampling:"lttb", lineStyle:{width:k==="restored"?2.2:1.4,
+        type:k==="bench"?"dashed":"solid", color:RC_COLORS[k]},
+      itemStyle:{color:RC_COLORS[k]},
+      tooltip:{valueFormatter:function(v){return v==null?"—":Number(v).toFixed(2)+"%"}}};
+  });
+  var option = {
+    animation:false,
+    legend:{data:order.map(function(k){return RC_LABELS[k]}),top:0},
+    tooltip:{trigger:"axis",axisPointer:{type:"cross"},
+      valueFormatter:function(v){return v==null?"—":Number(v).toFixed(2)+"%"}},
+    grid:{left:60,right:24,top:34,bottom:64},
+    xAxis:{type:"time"},
+    yAxis:{type:"value",name:"累计涨跌%",axisLabel:{formatter:"{value}%"}},
+    dataZoom:[
+      {type:"inside",start:0,end:100},
+      {type:"slider",bottom:6,height:20,start:0,end:100}
+    ],
+    series:series
+  };
+  CHART.setOption(option,true);
+  document.getElementById("chartHint").textContent =
+    r.name+" vs "+r.bench_name+" · 起点 "+r.t0+"=0% · "+r.points+" 个交易日";
+  document.getElementById("rcNote").textContent = r.note;
 }
 
 function renderChart(s){
@@ -280,7 +321,36 @@ function applyTable(){
   renderTable();
 }
 
+function loadReconstruct(){
+  if(window.__STATIC__){
+    // 静态站 data.json 只带首只还原标的（避免体积膨胀），无网络 API
+    var d = (PAYLOAD&&PAYLOAD.reconstruct)||{};
+    if(STATE.rcEtf && d.available){
+      var hit=d.available.find(function(x){return x.etf===STATE.rcEtf});
+      if(!hit){ RECON={error:1,msg:"静态快照仅含首只还原标的，请在服务端模式查看其他标的"}; renderReconstruct(RECON); return; }
+    }
+    RECON = d.current; renderReconstruct(RECON); return;
+  }
+  document.getElementById("chartHint").textContent="还原曲线载入中…";
+  fetch(api("reconstruct?etf="+encodeURIComponent(STATE.rcEtf))).then(function(r){return r.json()}).then(function(d){
+    RECON = d.current; renderReconstruct(RECON);
+  }).catch(function(e){document.getElementById("chartHint").textContent="还原载入失败："+e});
+}
+
+function initReconstruct(){
+  var list = (CATALOG && CATALOG.reconstruct) || (PAYLOAD && PAYLOAD.reconstruct && PAYLOAD.reconstruct.available) || [];
+  if(!list.length) return;
+  var sel = document.getElementById("rcSel"); sel.innerHTML="";
+  list.forEach(function(r){
+    var o=document.createElement("option"); o.value=r.etf;
+    o.textContent=r.name+" → "+r.bench_name; sel.appendChild(o);
+  });
+  STATE.rcEtf = STATE.rcEtf || list[0].etf;
+  sel.value = STATE.rcEtf;
+}
+
 function refreshAll(){
+  if(STATE.fx){ loadReconstruct(); loadTable(true); return; }
   var q="ids="+encodeURIComponent(STATE.ids.join(","))
     +(STATE.dfrom?"&from="+STATE.dfrom:"")+(STATE.dto?"&to="+STATE.dto:"");
   fetch(api("series?"+q)).then(function(r){return r.json()}).then(function(d){
@@ -297,6 +367,7 @@ function boot(){
     STATE.ids=(d.catalog.default_ids||[]).filter(function(id){var a=d.catalog.assets.find(function(x){return x.id===id});return a&&a.ready});
     if(!STATE.ids.length){var r=d.catalog.assets.filter(function(a){return a.ready});STATE.ids=r.slice(0,4).map(function(a){return a.id})}
     renderGroups(d.catalog);
+    initReconstruct();
     renderSignals(d.signals);
     SERIES=d.series; renderChart(d.series);
     TABLE=d.table; applyTable();
@@ -327,7 +398,15 @@ document.getElementById("reset").onclick=function(){
 });
 document.getElementById("prev").onclick=function(){if(STATE.page>0){STATE.page--;renderTable()}};
 document.getElementById("next").onclick=function(){if((STATE.page+1)*PAGE_SIZE<ROWS.length){STATE.page++;renderTable()}};
-document.getElementById("fxAdjust").onchange=function(){STATE.fx=this.checked;document.getElementById("chartHint").textContent=STATE.fx?"已勾选还原（当前版本仅标注差额，二期实现精确还原）":"拖动下方滑块或滚轮缩放"};
+document.getElementById("fxAdjust").onchange=function(){
+  STATE.fx=this.checked;
+  document.getElementById("rcSelWrap").style.display=STATE.fx?"":"none";
+  document.getElementById("rcNote").style.display=STATE.fx?"":"none";
+  if(STATE.fx) loadReconstruct(); else renderChart(SERIES||PAYLOAD.series);
+};
+document.getElementById("rcSel").onchange=function(){
+  STATE.rcEtf=this.value; if(STATE.fx) loadReconstruct();
+};
 
 boot();
 </script>

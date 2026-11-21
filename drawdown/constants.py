@@ -77,6 +77,30 @@ FX = [
 ALL = INDEXES + ETFS + OVERSEAS + FX
 BY_ID = {a["id"]: a for a in ALL}
 
+
+def reconstruct_targets():
+    """可做「剔除溢价+汇率还原」的场内 ETF 映射（动态推导，避免硬编码重复）。
+
+    仅跟踪海外指数的 QDII 场内 ETF 有意义：A股 ETF 无汇率、无 QDII 净值披露。
+    返回 [{etf, nav_code, bench, fx, name, bench_name}, ...]。
+    """
+    out = []
+    for e in ETFS:
+        track = e.get("track")
+        if not track or track not in BY_ID:
+            continue
+        b = BY_ID[track]
+        if b.get("kind") != "overseas" or not b.get("fx"):
+            continue
+        out.append({
+            "etf": e["id"], "nav_code": e["id"], "bench": track,
+            "fx": b["fx"], "name": e["name"], "bench_name": b["name"],
+        })
+    return out
+
+
+RECONSTRUCT = reconstruct_targets()
+
 # 前端默认展示标的（最新选中态）
 DEFAULT_IDS = ["sh000001", "sh000300", "sz399006", "510300"]
 

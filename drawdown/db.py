@@ -178,6 +178,51 @@ def get_events(asset=None, path=DB_PATH):
         conn.close()
 
 
+def save_nav(code, rows, path=DB_PATH):
+    """写入基金历史净值 rows=[(date, nav), ...]，按 code+date 幂等。"""
+    if not rows:
+        return 0
+    conn = get_conn(path)
+    try:
+        conn.executemany(
+            "INSERT OR REPLACE INTO dd_nav(code,date,nav) VALUES(?,?,?)",
+            [(code, d, v) for d, v in rows])
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()
+
+
+def get_nav(code, path=DB_PATH):
+    conn = get_conn(path)
+    try:
+        rs = conn.execute("SELECT date, nav FROM dd_nav WHERE code=? ORDER BY date",
+                          (code,)).fetchall()
+        return [(r["date"], r["nav"]) for r in rs]
+    finally:
+        conn.close()
+
+
+def nav_codes(path=DB_PATH):
+    conn = get_conn(path)
+    try:
+        return [r[0] for r in conn.execute(
+            "SELECT DISTINCT code FROM dd_nav ORDER BY code").fetchall()]
+    finally:
+        conn.close()
+
+
+def nav_latest_date(code, path=DB_PATH):
+    """返回基金净值库内最新日期，无数据返回 None（增量水位）。"""
+    conn = get_conn(path)
+    try:
+        r = conn.execute("SELECT MAX(date) AS d FROM dd_nav WHERE code=?",
+                         (code,)).fetchone()
+        return r["d"] if r and r["d"] else None
+    finally:
+        conn.close()
+
+
 def get_meta(key, default=None, path=DB_PATH):
     conn = get_conn(path)
     try:

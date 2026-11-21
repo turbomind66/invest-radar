@@ -506,6 +506,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 elif api_path == "/signals":
                     ids = [x for x in qone("ids").split(",") if x]
                     data = dd.signals(ids)
+                elif api_path == "/reconstruct":
+                    data = dd.RC.payload(qone("etf") or None)
                 elif api_path == "/payload":
                     data = build_dd_payload(dd, qone)
                 else:
