@@ -54,7 +54,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs
+          # 只提交数据（*.json），不提交页面模板 HTML：
+          # 本 workflow 用当次 checkout 的模板重新导出 docs/**/index.html，若 checkout
+          # 落后于最新发版（比如刚 push 完模板修复就撞上定时任务），会把新模板整份
+          # 回退成旧版 —— v2.9.1 dd 页就这么被覆盖过（index.html 一次少了 146 行）。
+          # 页面模板由代码发版控制，Actions 只负责数据。
+          git add ':(glob)docs/*.json' ':(glob)docs/**/*.json'
           if git diff --staged --quiet; then
             echo "无变更，跳过提交"
             exit 0
@@ -69,7 +74,8 @@ jobs:
           # 因历史不全失败，故这里不用 rebase）。
           git fetch origin "${GITHUB_REF_NAME}"
           git reset --mixed "origin/${GITHUB_REF_NAME}"
-          git add docs
+          # 同上：只重新暂存数据文件，页面模板一律不碰（否则 reset 之后又把旧 HTML 加回来）
+          git add ':(glob)docs/*.json' ':(glob)docs/**/*.json'
           if git diff --staged --quiet; then
             echo "远端已包含相同快照，跳过提交"
             exit 0
