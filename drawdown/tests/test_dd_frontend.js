@@ -69,13 +69,15 @@ global.echarts = {
       return o;
     },
     off() {}, on(ev, fn) { this._h = this._h || {}; this._h[ev] = fn; },
+    getZr() { this._zr = this._zr || { _h: {}, on(ev, fn) { this._h[ev] = fn; }, off() {} }; return this._zr; },
+    convertToPixel() { return [100, 200]; },
   }),
 };
 global.fetch = async () => ({
   ok: true, json: async () => ({ series: { series: [], events: [] }, signals: [], table: {} }),
 });
 
-const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE };`;
+const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt };`;
 eval(extractScript(HTML_TEXT) + EXPORTER);
 
 // ---------- 断言 ----------
@@ -206,6 +208,33 @@ const zHs = LAST_OPT.series.find(s => s.yAxisIndex === 0 && s.name === '沪深30
 ok(zHs && Math.abs(zHs.data[1][1]) < 1e-9, '缩放后沪深300 以视窗左边界(2018-01-26)归 0%');
 ok(__T.STATE.dfrom === '2018-01-26',
    '缩放起点写回「起」条件，与曲线基准一致：' + __T.STATE.dfrom);
+
+
+// ---- 8) 事件 pin 像素容差命中（点在尖端/边缘也能弹说明） ----
+const pinEvents = [{ target: 'sh000300', date: '2018-01-26', title: '容差命中事件', desc: '说明文字', side: 'crash' }];
+__T.renderChart({ series: seriesData, events: pinEvents });
+const zrInst = charts.chart.getZr();
+ok(typeof zrInst._h.click === 'function', '注册了 zr 层容差点击监听');
+document.getElementById('evtNote').style.display = 'none';
+zrInst._h.click({ offsetX: 104, offsetY: 192 });   // 距图钉中心 ~4px
+const noteEl = document.getElementById('evtNote');
+ok(noteEl.style.display === 'block' && noteEl.innerHTML.indexOf('说明文字') >= 0,
+   '点偏 4px 仍能命中 pin 并弹出说明（不再只有 1、2 个能点）');
+ok(__T.nearestEvt(100, 240) === null, '超出 16px 容差不算命中（不会误弹）');
+
+// ---- 9) 还原模式跟随叠加选择（不再固定第一只纳指ETF） ----
+const RC = [
+  { etf: '513100', name: '纳指ETF国泰', bench_name: '纳斯达克100' },
+  { etf: '513500', name: '标普500ETF', bench_name: '标普500' },
+];
+__T.renderGroups(Object.assign({}, CATALOG, { reconstruct: RC }));
+__T.STATE.ids = ['sh000300', 'sh000001'];
+ok(__T.reconHits().length === 0, '叠加全是 A 股宽基时无可还原标的');
+ok(__T.noHitNote().indexOf('无海外敞口') >= 0, '无可还原标的时给出原因说明');
+__T.STATE.ids = ['sh000300', '513100'];
+ok(__T.reconHits().map(x => x.etf).join(',') === '513100', '叠加含 1 只可还原标的时纳入该只');
+__T.STATE.ids = ['513100', '513500'];
+ok(__T.reconHits().length === 2, '叠加含 2 只可还原标的时两只都纳入（走叠加还原对比）');
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);

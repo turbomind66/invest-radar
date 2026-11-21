@@ -120,6 +120,10 @@
 var CHART = null, STATE = {ids:[],gran:"day",dfrom:"",dto:"",view:"period",page:0,fx:false,rcEtf:""};
 var PAYLOAD = null, CATALOG = null, SERIES = null, TABLE = null, RECON = null;
 var RAW = null, NORM_T = null;   // RAW=原始 series（缩放重归一化用）；NORM_T=防抖定时器
+var EVT_PTS = [], EVT_SI = -1;   // 事件点缓存 + 其 series 索引（像素容差命中用）
+var ZR_CLICK = null, ZR_MOVE = null, ZR_LAST = "";   // 自定义 zr 处理器（精确 off 用）
+var RC_CACHE = {};               // 还原曲线缓存（etf → 响应）
+var RC_SEQ = 0;                  // 还原请求序号（丢弃过期响应，避免快速切换时旧数据覆盖新图）
 
 function api(path){
   var base = (window.__STATIC__ && window.__STATIC__.data_base) || "";
@@ -347,6 +351,7 @@ function renderChart(s){
   if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
   var b = buildLines(s, null);
   META = {n:b.n, raw:b.rawMap};
+  EVT_PTS = b.evtPoints; EVT_SI = b.main.length - 1;   // scatter 恒为 main 的最后一个
   var total = s.series.reduce(function(a,x){return a+(x.points||0)},0);
   var option = {
     animation:false,
@@ -398,6 +403,38 @@ function renderChart(s){
   CHART.off("mouseover");
   CHART.on("click", function(p){ if(p && p.seriesName === "大事件" && p.data) showEvt(p.data); });
   CHART.on("mouseover", function(p){ if(p && p.seriesName === "大事件" && p.data) showEvt(p.data); });
+  // pin 的锚点在尖端，精确命中很难（尤其缩放后尺寸变小、点偏一两像素就没反应）。
+  // 补一层像素容差反查：距最近事件点 ≤16px 即命中，点击/悬停都能稳定弹出说明。
+  // 注意：只能 off 自己的处理器（无参 zr.off 会连 ECharts 内部的 zrender handler 一起清掉）。
+  var zr = CHART.getZr && CHART.getZr();
+  if(zr){
+    if(ZR_CLICK) zr.off("click", ZR_CLICK);
+    if(ZR_MOVE) zr.off("mousemove", ZR_MOVE);
+    ZR_CLICK = function(e){ var hit = nearestEvt(e.offsetX, e.offsetY); if(hit) showEvt(hit); };
+    ZR_MOVE = function(e){
+      var hit = nearestEvt(e.offsetX, e.offsetY);
+      var key = hit ? (hit.evDate + "|" + hit.name) : "";
+      if(!key){ ZR_LAST = ""; return; }
+      if(key !== ZR_LAST){ ZR_LAST = key; showEvt(hit); }
+    };
+    zr.on("click", ZR_CLICK);
+    zr.on("mousemove", ZR_MOVE);
+  }
+}
+
+// 距鼠标最近的图钉（pin 图形以数据点为尖端向上延伸，比较点取图形中部）
+function nearestEvt(x, y){
+  if(!CHART || !EVT_PTS.length || EVT_SI < 0) return null;
+  var best = null, bd = 1e9;
+  for(var i=0;i<EVT_PTS.length;i++){
+    var p = EVT_PTS[i];
+    var px = CHART.convertToPixel({seriesIndex:EVT_SI}, p.value);
+    if(!px || px.length < 2) continue;
+    var dx = px[0] - x, dy = (px[1] - 7) - y;
+    var d = Math.sqrt(dx*dx + dy*dy);
+    if(d < bd){ bd = d; best = p; }
+  }
+  return (best && bd <= 16) ? best : null;
 }
 
 var COLS = {
@@ -441,6 +478,38 @@ function applyTable(){
   renderTable();
 }
 
+function reconList(){
+  return (CATALOG && CATALOG.reconstruct)
+      || (PAYLOAD && PAYLOAD.reconstruct && PAYLOAD.reconstruct.available) || [];
+}
+// 当前叠加选择中「支持溢价/汇率还原」的标的（跟着 chip 走，而不是固定第一只）
+function reconHits(){
+  var byEtf = {};
+  reconList().forEach(function(r){ byEtf[r.etf] = r; });
+  return (STATE.ids || []).map(function(id){ return byEtf[id]; }).filter(Boolean);
+}
+function rcSelWrap(show){
+  var w = document.getElementById("rcSelWrap");
+  if(w) w.style.display = show ? "" : "none";
+}
+function syncRcSel(){
+  var sel = document.getElementById("rcSel");
+  if(sel && STATE.rcEtf) sel.value = STATE.rcEtf;
+}
+function noHitNote(){
+  var names = (STATE.ids || []).map(function(id){
+    var a = ((CATALOG && CATALOG.assets) || []).find(function(x){ return x.id === id; });
+    return a ? a.name : id;
+  }).join("、");
+  return "当前叠加的 "+names+" 无海外敞口（不涉及汇率/溢价），下列为可还原标的的曲线；"
+       + "若要对比真实涨跌，请在上方勾选纳指/标普/日经/德国/法国 ETF。";
+}
+function showRcNote(txt){
+  var el = document.getElementById("rcNote");
+  el.style.display = "block";
+  el.textContent = txt;
+}
+
 function loadReconstruct(){
   if(window.__STATIC__){
     // 静态站 data.json 只带首只还原标的（避免体积膨胀），无网络 API
@@ -451,14 +520,107 @@ function loadReconstruct(){
     }
     RECON = d.current; renderReconstruct(RECON); return;
   }
-  document.getElementById("chartHint").textContent="还原曲线载入中…";
-  fetch(api("reconstruct?etf="+encodeURIComponent(STATE.rcEtf))).then(function(r){return r.json()}).then(function(d){
-    RECON = d.current; renderReconstruct(RECON);
-  }).catch(function(e){document.getElementById("chartHint").textContent="还原载入失败："+e});
+  var hits = reconHits();
+  if(hits.length === 1){                       // 叠加里只有一只可还原 → 四曲线详情
+    STATE.rcEtf = hits[0].etf; syncRcSel(); rcSelWrap(false);
+    loadOneRecon(hits[0].etf, "");
+    return;
+  }
+  if(hits.length > 1){                         // 叠加多只可还原 → 按叠加对比
+    rcSelWrap(false);
+    loadManyRecon(hits);
+    return;
+  }
+  // 叠加里一只都不支持还原 → 用下拉选的那只，并说明原因（否则用户会以为「选什么都只出纳指ETF」）
+  rcSelWrap(true);
+  loadOneRecon(STATE.rcEtf || (reconList()[0] || {}).etf, noHitNote());
+}
+
+function loadOneRecon(etf, note){
+  if(!etf) return;
+  STATE.rcEtf = etf;
+  var seq = ++RC_SEQ;
+  document.getElementById("chartHint").textContent = "还原曲线载入中…";
+  function done(d){
+    if(seq !== RC_SEQ) return;            // 期间又发起了新请求 → 丢弃本次过期结果
+    RECON = (d && d.current) ? d.current : d;
+    renderReconstruct(RECON);
+    if(note) showRcNote(note + " " + ((RECON && RECON.note) || ""));
+  }
+  if(RC_CACHE[etf]){ done(RC_CACHE[etf]); return; }
+  fetch(api("reconstruct?etf="+encodeURIComponent(etf)))
+    .then(function(r){return r.json()})
+    .then(function(d){ RC_CACHE[etf]=d; done(d); })
+    .catch(function(e){ if(seq === RC_SEQ) document.getElementById("chartHint").textContent="还原载入失败："+e; });
+}
+
+function loadManyRecon(hits){
+  var seq = ++RC_SEQ;
+  document.getElementById("chartHint").textContent = "还原曲线载入中（"+hits.length+" 只）…";
+  var jobs = hits.map(function(h){
+    if(RC_CACHE[h.etf]) return Promise.resolve(RC_CACHE[h.etf]);
+    return fetch(api("reconstruct?etf="+encodeURIComponent(h.etf)))
+      .then(function(r){return r.json()})
+      .then(function(d){ RC_CACHE[h.etf]=d; return d; });
+  });
+  Promise.all(jobs).then(function(list){
+    if(seq !== RC_SEQ) return;
+    var curves = list.map(function(d){ return (d && d.current) ? d.current : d; })
+                     .filter(function(c){ return c && c.curves && !c.error; });
+    if(!curves.length){ RECON={error:1,msg:"叠加的标的中暂无可用的还原数据"}; renderReconstruct(RECON); return; }
+    renderReconMany(curves);
+  }).catch(function(e){ if(seq === RC_SEQ) document.getElementById("chartHint").textContent="还原载入失败："+e; });
+}
+
+var RC_MULTI = ["#d92b2b","#2f5fd0","#12924a","#8a5b00","#7b3fa0","#0e7c86"];
+// 多只叠加：每只一条「还原%」（实线，剔溢价+汇率=真实涨跌）+ 一条「场内价%」（细虚线），
+// 跟踪基准按名称去重后画灰色点线（同基准只画一条）。
+function renderReconMany(curves){
+  var el = document.getElementById("chart");
+  if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
+  var series = [], legend = [], benchSeen = {};
+  var pctFmt = function(v){ return v==null?"—":Number(v).toFixed(2)+"%"; };
+  curves.forEach(function(c, i){
+    var col = RC_MULTI[i % RC_MULTI.length];
+    var n1 = c.name+" 还原%（剔溢价+汇率）", n2 = c.name+" 场内价%（含溢价+汇率）";
+    series.push({name:n1, type:"line", data:c.curves.restored, showSymbol:false,
+      sampling:"lttb", lineStyle:{width:2.2,color:col}, itemStyle:{color:col},
+      tooltip:{valueFormatter:pctFmt}});
+    legend.push(n1);
+    series.push({name:n2, type:"line", data:c.curves.price, showSymbol:false,
+      sampling:"lttb", lineStyle:{width:1,type:"dashed",opacity:.55,color:col},
+      itemStyle:{color:col}, tooltip:{valueFormatter:pctFmt}});
+    legend.push(n2);
+    if(!benchSeen[c.bench_name]){
+      benchSeen[c.bench_name] = 1;
+      var nb = "基准·"+c.bench_name+"（本币）";
+      series.push({name:nb, type:"line", data:c.curves.bench, showSymbol:false,
+        sampling:"lttb", lineStyle:{width:1.2,type:"dotted",color:"#8a8f98"},
+        itemStyle:{color:"#8a8f98"}, tooltip:{valueFormatter:pctFmt}});
+      legend.push(nb);
+    }
+  });
+  var option = {
+    animation:false,
+    legend:{data:legend,top:0,type:"scroll"},
+    tooltip:{trigger:"axis",axisPointer:{type:"cross"},valueFormatter:pctFmt},
+    grid:{left:60,right:24,top:52,bottom:64},
+    xAxis:{type:"time"},
+    yAxis:{type:"value",name:"累计涨跌%",axisLabel:{formatter:"{value}%"}},
+    dataZoom:[
+      {type:"inside",start:0,end:100},
+      {type:"slider",bottom:6,height:20,start:0,end:100}
+    ],
+    series:series
+  };
+  CHART.setOption(option,true);
+  document.getElementById("chartHint").textContent =
+    "叠加还原对比 · "+curves.length+" 只 · 各线以自身起点=0%";
+  showRcNote("实线=还原%（剔溢价+汇率，即真实涨跌）；细虚线=场内价%（含溢价+汇率）；灰色点线=跟踪基准（本币）。");
 }
 
 function initReconstruct(){
-  var list = (CATALOG && CATALOG.reconstruct) || (PAYLOAD && PAYLOAD.reconstruct && PAYLOAD.reconstruct.available) || [];
+  var list = reconList();
   if(!list.length) return;
   var sel = document.getElementById("rcSel"); sel.innerHTML="";
   list.forEach(function(r){
@@ -524,12 +686,13 @@ document.getElementById("prev").onclick=function(){if(STATE.page>0){STATE.page--
 document.getElementById("next").onclick=function(){if((STATE.page+1)*PAGE_SIZE<ROWS.length){STATE.page++;renderTable()}};
 document.getElementById("fxAdjust").onchange=function(){
   STATE.fx=this.checked;
-  document.getElementById("rcSelWrap").style.display=STATE.fx?"":"none";
   document.getElementById("rcNote").style.display=STATE.fx?"":"none";
-  if(STATE.fx) loadReconstruct(); else renderChart(SERIES||PAYLOAD.series);
+  if(STATE.fx){ loadReconstruct(); }          // rcSelWrap 由 loadReconstruct 决定显隐
+  else { rcSelWrap(false); renderChart(SERIES||PAYLOAD.series); }
 };
 document.getElementById("rcSel").onchange=function(){
-  STATE.rcEtf=this.value; if(STATE.fx) loadReconstruct();
+  STATE.rcEtf=this.value;
+  if(STATE.fx) loadOneRecon(STATE.rcEtf, noHitNote());
 };
 
 boot();
