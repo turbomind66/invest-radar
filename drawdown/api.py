@@ -161,7 +161,7 @@ def export_static(out_dir, path=db.DB_PATH):
     tpl = os.path.join(_C.BASE, "templates", "index.html")
     with open(tpl, encoding="utf-8") as f:
         html = f.read()
-    version = os.environ.get("DD_STATIC_VERSION", "v2.8.18-nt")
+    version = os.environ.get("DD_STATIC_VERSION", "v2.9.0-nt")
     html = html.replace("__APP_VERSION__", version)
     flag = {"data_base": "", "static": True}
     inject = ("<script>window.__STATIC__=%s;</script>\n</head>"
