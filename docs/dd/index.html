@@ -135,9 +135,6 @@ var EVT_PTS = [], EVT_SI = -1;   // 事件点缓存 + 其 series 索引（像素
 var ZR_CLICK = null, ZR_MOVE = null, ZR_LAST = "";   // 自定义 zr 处理器（精确 off 用）
 var RC_CACHE = {};               // 还原曲线缓存（etf → 响应）
 var RC_SEQ = 0;                  // 还原请求序号（丢弃过期响应，避免快速切换时旧数据覆盖新图）
-var RC_RAW = null;               // 还原曲线原始数据（未裁剪），缩放后按新窗口重算基准用
-var RC_HINT = null;              // 还原模式的 hint 生成函数（随窗口变化重算文字）
-var RC_T = null;                 // 还原模式缩放重算防抖定时器
 var SER_SEQ = 0, TBL_SEQ = 0;    // 走势/表格请求序号（连点 chip 时防旧响应覆盖新图）
 
 function api(path){
@@ -240,79 +237,24 @@ var RC_COLORS = {price:"#d92b2b", nav:"#2f5fd0", restored:"#12924a", bench:"#8a5
 var RC_LABELS = {price:"场内价%（含溢价+汇率）", nav:"净值%（剔溢价，含汇率）",
   restored:"还原%（剔溢价+汇率）", bench:"基准指数%（本币）"};
 
-// 图例/事件/缩放监听统一解绑。
-// 走势图与还原图共用同一个 ECharts 实例，若切换模式时不解绑：
-//  1) 走势图的 datazoom 监听仍在 → 在还原图里拖动缩放会触发 buildLines() 并把
-//     「主线+回撤线+事件 pin」合并进还原图（回撤线还带 yAxisIndex:1，而还原图只有一个 Y 轴）
-//     → 每拖一次就多叠一层 series，图表直接卡死；
-//  2) NORM_T 的延时重算在切换后才触发，同样会往还原图里塞走势 series；
-//  3) 事件 pin 的像素容差反查用 EVT_SI 索引，还原图没有该 series，convertToPixel 每帧报错。
-function unbindChart(){
-  if(!CHART) return;
-  try{ CHART.off("datazoom"); CHART.off("click"); CHART.off("mouseover"); }catch(e){}
-  var zr = CHART.getZr && CHART.getZr();
-  if(zr){
-    if(ZR_CLICK) zr.off("click", ZR_CLICK);
-    if(ZR_MOVE) zr.off("mousemove", ZR_MOVE);
+function renderReconstruct(r){
+  var el = document.getElementById("chart");
+  if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
+  if(!r || r.error){
+    el.innerHTML='<div class="loading">'+(r&&r.msg?r.msg:"该标的暂无还原数据（先跑净值回补）")+'</div>';
+    CHART = null; return;
   }
-  ZR_CLICK = null; ZR_MOVE = null; ZR_LAST = "";
-  EVT_PTS = []; EVT_SI = -1;
-  if(NORM_T){ clearTimeout(NORM_T); NORM_T = null; }
-  if(RC_T){ clearTimeout(RC_T); RC_T = null; }
-  RC_RAW = null; RC_HINT = null;
-}
-
-// 还原曲线本身已是「相对 t0 的累计%」，按窗口首点重新归零 = (1+a/100)/(1+base/100)-1。
-// 后端 reconstruct 只按各自共同起点 t0 归一化，前端必须在这里支持「设置起点日期」。
-function clipPct(arr, fromStr, toStr){
-  var out = [], base = null, first = "";
-  if(!arr || !arr.length) return {pts:out, first:first};
-  for(var i=0;i<arr.length;i++){
-    var p = arr[i];
-    if(!p || p[1]==null) continue;
-    var d = String(p[0]);
-    if(fromStr && d < fromStr) continue;
-    if(toStr && d > toStr) continue;
-    if(base === null){ base = Number(p[1]); first = d; }
-    var den = 1 + base/100;                      // 基准点本身不会跌到 -100%，防御性判空
-    out.push([p[0], den ? +((((1+p[1]/100)/den)-1)*100).toFixed(4) : null]);
-  }
-  return {pts:out, first:first};
-}
-
-var RC_ORDER = ["price","nav","restored","bench"];
-// 单只还原：四曲线（场内价%/净值%/还原%/基准%），均按窗口首点=0%
-function reconSeriesOne(curves, fromStr, toStr){
-  var series = [], legend = [], first = "";
-  RC_ORDER.forEach(function(k){
-    var c = clipPct(curves[k], fromStr, toStr);
-    if(!first) first = c.first;
-    legend.push(RC_LABELS[k]);
-    series.push({name:RC_LABELS[k], type:"line", data:c.pts, showSymbol:false,
+  var order = ["price","nav","restored","bench"];
+  var series = order.map(function(k){
+    return {name:RC_LABELS[k], type:"line", data:r.curves[k], showSymbol:false,
       sampling:"lttb", lineStyle:{width:k==="restored"?2.2:1.4,
         type:k==="bench"?"dashed":"solid", color:RC_COLORS[k]},
       itemStyle:{color:RC_COLORS[k]},
-      tooltip:{valueFormatter:function(v){return v==null?"—":Number(v).toFixed(2)+"%"}}});
+      tooltip:{valueFormatter:function(v){return v==null?"—":Number(v).toFixed(2)+"%"}}};
   });
-  var restored = series[2] ? series[2].data.length : 0;
-  return {series:series, legend:legend, first:first, points:restored};
-}
-
-function renderReconstruct(r){
-  var el = document.getElementById("chart");
-  if(!r || r.error){
-    unbindChart();
-    if(CHART){ try{ CHART.dispose(); }catch(e){} CHART = null; }  // 旧实例连 canvas 一起销毁，避免残留监听
-    el.innerHTML='<div class="loading">'+(r&&r.msg?r.msg:"该标的暂无还原数据（先跑净值回补）")+'</div>';
-    document.getElementById("chartHint").textContent = (r&&r.msg)||"该标的暂无还原数据";
-    return;
-  }
-  unbindChart();
-  if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
-  var built = reconSeriesOne(r.curves, STATE.dfrom, STATE.dto);
-  CHART.setOption({
+  var option = {
     animation:false,
-    legend:{data:built.legend, top:0},
+    legend:{data:order.map(function(k){return RC_LABELS[k]}),top:0},
     tooltip:{trigger:"axis",axisPointer:{type:"cross"},
       valueFormatter:function(v){return v==null?"—":Number(v).toFixed(2)+"%"}},
     grid:{left:60,right:24,top:34,bottom:64},
@@ -322,45 +264,12 @@ function renderReconstruct(r){
       {type:"inside",start:0,end:100},
       {type:"slider",bottom:6,height:20,start:0,end:100}
     ],
-    series:built.series
-  }, true);
-  RC_RAW = {mode:"one", payload:r};
-  RC_HINT = function(fromStr){
-    var b = reconSeriesOne(r.curves, fromStr, STATE.dto);
-    return r.name+" vs "+r.bench_name+" · 起点 "+(b.first||r.t0)+"=0% · "+b.points+" 个交易日"
-         + (fromStr && fromStr !== b.first ? " · 窗口自 "+fromStr : "");
+    series:series
   };
-  document.getElementById("chartHint").textContent = built.points
-    ? RC_HINT(STATE.dfrom) : "所选区间内无还原数据（起点 "+STATE.dfrom+" 晚于曲线末端）";
+  CHART.setOption(option,true);
+  document.getElementById("chartHint").textContent =
+    r.name+" vs "+r.bench_name+" · 起点 "+r.t0+"=0% · "+r.points+" 个交易日";
   document.getElementById("rcNote").textContent = r.note;
-  bindReconZoom();
-}
-
-// 还原图的缩放：只按新窗口重算基准（合并 setOption 保留缩放范围与图例开关），
-// 绝不能沿用走势图的 datazoom 监听（那会往图里塞主线/回撤线/pin → 卡死）。
-function bindReconZoom(){
-  if(!CHART) return;
-  CHART.off("datazoom");
-  CHART.on("datazoom", function(){
-    if(!CHART || !RC_RAW) return;
-    var dz = (((CHART.getOption()||{}).dataZoom)||[])[0]||{};
-    if(dz.startValue==null || dz.endValue==null) return;
-    var f = tsToDate(dz.startValue), t = tsToDate(dz.endValue);
-    STATE.dfrom = f; STATE.dto = t;
-    var a=document.getElementById("dfrom"), b=document.getElementById("dto");
-    if(a) a.value=f; if(b) b.value=t;
-    if(RC_HINT) document.getElementById("chartHint").textContent = RC_HINT(f);
-    if(RC_T) clearTimeout(RC_T);
-    // 缩放拖动过程中 datazoom 会高频触发：重算曲线与拉表格都放进防抖，避免请求风暴拖住 UI
-    RC_T = setTimeout(function(){
-      if(!CHART || !RC_RAW) return;
-      var nb = RC_RAW.mode === "many"
-        ? reconSeriesMany(RC_RAW.list, f, t)
-        : reconSeriesOne(RC_RAW.payload.curves, f, t);
-      CHART.setOption({series: nb.series});   // 合并更新，series 数与 name 保持一致
-      loadTable(true);
-    }, 260);
-  });
 }
 
 function showEvt(d){
@@ -475,7 +384,6 @@ function renderChart(s){
   var prevSelected = {};
   if(CHART){ try{ var _old=CHART.getOption(), _lg=(_old&&_old.legend&&_old.legend[0])||{};
     if(_lg.selected) prevSelected=_lg.selected; }catch(e){} }
-  unbindChart();          // 先解绑（含还原模式的缩放监听与延时重算），再重绘
   if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
   var b = buildLines(s, null);
   META = {n:b.n, raw:b.rawMap, bases:b.baseArr, single:b.single};
@@ -505,6 +413,7 @@ function renderChart(s){
     series: b.main.concat(b.dd)
   };
   CHART.setOption(option,true);
+  CHART.off("datazoom");
   CHART.on("datazoom",function(){
     if(!CHART || !RAW) return;
     var op = CHART.getOption();
@@ -528,6 +437,8 @@ function renderChart(s){
   });
   // 事件标注的说明：ECharts 全局 axis tooltip 会压制 scatter 的 item tooltip，
   // 这里直接监听图表事件，把说明写进图表下方的固定说明条（点击/悬停均触发）。
+  CHART.off("click");
+  CHART.off("mouseover");
   CHART.on("click", function(p){ if(p && p.seriesName === "大事件" && p.data) showEvt(p.data); });
   CHART.on("mouseover", function(p){ if(p && p.seriesName === "大事件" && p.data) showEvt(p.data); });
   // pin 的锚点在尖端，精确命中很难（尤其缩放后尺寸变小、点偏一两像素就没反应）。
@@ -738,46 +649,35 @@ function loadManyRecon(hits){
 
 var RC_MULTI = ["#d92b2b","#2f5fd0","#12924a","#8a5b00","#7b3fa0","#0e7c86"];
 // 多只叠加：每只一条「还原%」（实线，剔溢价+汇率=真实涨跌）+ 一条「场内价%」（细虚线），
-// 跟踪基准按名称去重后画灰色点线（同基准只画一条）。各线按窗口首点=0%。
-function reconSeriesMany(curves, fromStr, toStr){
-  var series = [], legend = [], benchSeen = {}, first = "";
+// 跟踪基准按名称去重后画灰色点线（同基准只画一条）。
+function renderReconMany(curves){
+  var el = document.getElementById("chart");
+  if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
+  var series = [], legend = [], benchSeen = {};
   var pctFmt = function(v){ return v==null?"—":Number(v).toFixed(2)+"%"; };
   curves.forEach(function(c, i){
     var col = RC_MULTI[i % RC_MULTI.length];
     var n1 = c.name+" 还原%（剔溢价+汇率）", n2 = c.name+" 场内价%（含溢价+汇率）";
-    var a = clipPct(c.curves.restored, fromStr, toStr);
-    var b = clipPct(c.curves.price, fromStr, toStr);
-    if(!first) first = a.first || b.first;
-    series.push({name:n1, type:"line", data:a.pts, showSymbol:false,
+    series.push({name:n1, type:"line", data:c.curves.restored, showSymbol:false,
       sampling:"lttb", lineStyle:{width:2.2,color:col}, itemStyle:{color:col},
       tooltip:{valueFormatter:pctFmt}});
     legend.push(n1);
-    series.push({name:n2, type:"line", data:b.pts, showSymbol:false,
+    series.push({name:n2, type:"line", data:c.curves.price, showSymbol:false,
       sampling:"lttb", lineStyle:{width:1,type:"dashed",opacity:.55,color:col},
       itemStyle:{color:col}, tooltip:{valueFormatter:pctFmt}});
     legend.push(n2);
     if(!benchSeen[c.bench_name]){
       benchSeen[c.bench_name] = 1;
       var nb = "基准·"+c.bench_name+"（本币）";
-      var z = clipPct(c.curves.bench, fromStr, toStr);
-      series.push({name:nb, type:"line", data:z.pts, showSymbol:false,
+      series.push({name:nb, type:"line", data:c.curves.bench, showSymbol:false,
         sampling:"lttb", lineStyle:{width:1.2,type:"dotted",color:"#8a8f98"},
         itemStyle:{color:"#8a8f98"}, tooltip:{valueFormatter:pctFmt}});
       legend.push(nb);
     }
   });
-  return {series:series, legend:legend, first:first};
-}
-
-function renderReconMany(curves){
-  var el = document.getElementById("chart");
-  unbindChart();
-  if(!CHART){ el.innerHTML=""; CHART = echarts.init(el); }
-  var built = reconSeriesMany(curves, STATE.dfrom, STATE.dto);
-  var pctFmt = function(v){ return v==null?"—":Number(v).toFixed(2)+"%"; };
-  CHART.setOption({
+  var option = {
     animation:false,
-    legend:{data:built.legend,top:0,type:"scroll"},
+    legend:{data:legend,top:0,type:"scroll"},
     tooltip:{trigger:"axis",axisPointer:{type:"cross"},valueFormatter:pctFmt},
     grid:{left:60,right:24,top:52,bottom:64},
     xAxis:{type:"time"},
@@ -786,17 +686,12 @@ function renderReconMany(curves){
       {type:"inside",start:0,end:100},
       {type:"slider",bottom:6,height:20,start:0,end:100}
     ],
-    series:built.series
-  }, true);
-  RC_RAW = {mode:"many", list:curves};
-  RC_HINT = function(fromStr){
-    var b = reconSeriesMany(curves, fromStr, STATE.dto);
-    return "叠加还原对比 · "+curves.length+" 只 · 起点 "+(b.first||"—")+"=0%"
-         + (fromStr && fromStr !== b.first ? " · 窗口自 "+fromStr : "");
+    series:series
   };
-  document.getElementById("chartHint").textContent = RC_HINT(STATE.dfrom);
+  CHART.setOption(option,true);
+  document.getElementById("chartHint").textContent =
+    "叠加还原对比 · "+curves.length+" 只 · 各线以自身起点=0%";
   showRcNote("实线=还原%（剔溢价+汇率，即真实涨跌）；细虚线=场内价%（含溢价+汇率）；灰色点线=跟踪基准（本币）。");
-  bindReconZoom();
 }
 
 function initReconstruct(){
@@ -902,10 +797,8 @@ document.getElementById("pageJump").onchange=function(){ if(this.value) gotoPage
 document.getElementById("fxAdjust").onchange=function(){
   STATE.fx=this.checked;
   document.getElementById("rcNote").style.display=STATE.fx?"":"none";
-  // 两种模式都走完整刷新：勾选→还原曲线（按当前起止日裁剪），
-  // 取消→按当前 chips/日期重新取走势（不能再用缓存里的旧 SERIES，否则沿用勾选前的旧选择）
-  rcSelWrap(false);
-  refreshAll();          // rcSelWrap 的最终显隐由 loadReconstruct 决定
+  if(STATE.fx){ loadReconstruct(); }          // rcSelWrap 由 loadReconstruct 决定显隐
+  else { rcSelWrap(false); renderChart(SERIES||PAYLOAD.series); }
 };
 document.getElementById("rcSel").onchange=function(){
   STATE.rcEtf=this.value;
