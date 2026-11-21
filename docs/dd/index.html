@@ -1000,6 +1000,11 @@ function loadReconstruct(){
       });
     }
     var one = hits.length === 1 ? hits[0].etf : (STATE.rcEtf || (reconList()[0] || {}).etf);
+    if(!one){                                  // data.json 还没落地（4MB），别去请求 recon/undefined.json
+      rcSelWrap(true);
+      document.getElementById("chartHint").textContent = "可还原标的载入中…";
+      return;
+    }
     var note = hits.length === 1 ? "" : noHitNote();
     if(hits.length === 1){ STATE.rcEtf = one; syncRcSel(); rcSelWrap(false); }
     else rcSelWrap(true);

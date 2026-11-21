@@ -648,8 +648,16 @@ function testStaticReconOnDemand(){
   }).then(function(){
     ok(__T.getRECON() && __T.getRECON().etf === '513100',
        '分片缺失（404）时回退快照里的首只，不白屏');
-    global.fetch = realFetch;
-    delete window.__STATIC__;
+    // 还原清单还没就绪（data.json 未落地）时不许去请求 recon/undefined.json
+    const before = asked.length;
+    __T.getCat().reconstruct = [];
+    __T.setPayload({ reconstruct: { available: [], current: null } });
+    __T.STATE.ids = ['sh000300']; __T.STATE.rcEtf = '';
+    return Promise.resolve(__T.loadReconstruct()).then(function(){
+      ok(asked.length === before, '还原清单未就绪时不发 recon/undefined.json 请求');
+      global.fetch = realFetch;
+      delete window.__STATIC__;
+    });
   });
 }
 
