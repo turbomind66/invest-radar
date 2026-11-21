@@ -182,34 +182,61 @@ def series(ids, dfrom=None, dto=None, path=db.DB_PATH):
     return out
 
 
+def _rows_in_window(asset_id, dfrom=None, dto=None, path=db.DB_PATH):
+    """按起止日裁剪的日线（两端都可缺省）。空窗口返回 []。"""
+    rows = db.get_daily(asset_id, path)
+    if dfrom:
+        rows = [r for r in rows if r[0] >= dfrom]
+    if dto:
+        rows = [r for r in rows if r[0] <= dto]
+    return rows
+
+
 def table(asset_id, gran="day", dfrom=None, dto=None, path=db.DB_PATH):
     if asset_id not in C.BY_ID:
         return {"error": "unknown_asset"}
     if gran not in C.GRANULARITIES:
         gran = "day"
     metrics = db.get_metrics(asset_id, dfrom, dto, path)
+    # 窗口口径：峰值从窗口第一根起算（用户选了区间，就该看到区间内的高点）。
+    # 与上面 metrics 的「历史最高收盘」口径并存，两套回撤同时给前端。
+    rows = _rows_in_window(asset_id, dfrom, dto, path)
+    wmetrics, _ = engine.compute_metrics(rows)
+    win_map = {m[0]: {"date": m[0], "peak": m[2], "peak_date": m[3], "dd": m[4]}
+               for m in wmetrics}
     daily = [{"date": m["date"], "close": m["close"], "peak": m["peak"],
               "peak_date": m["peak_date"], "dd_pct": m["dd_pct"],
-              "days_since_peak": m["days_since_peak"], "state": m["state"]}
+              "days_since_peak": m["days_since_peak"], "state": m["state"],
+              "wpeak": win_map.get(m["date"], {}).get("peak"),
+              "wpeak_date": win_map.get(m["date"], {}).get("peak_date"),
+              "wdd_pct": win_map.get(m["date"], {}).get("dd")}
              for m in metrics]
     # 回撤事件用「波段识别」而非 dd_events：后者锚定历史最高收盘，
     # 高点长期未收复时会把 2015/2018/2021 的大跌并进同一段（事件只有寥寥几条）。
-    rows = db.get_daily(asset_id, path)
-    if dfrom:
-        rows = [r for r in rows if r[0] >= dfrom]
-    if dto:
-        rows = [r for r in rows if r[0] <= dto]
-    episodes = [{"peak_date": e["peak_date"], "trough_date": e["trough_date"],
+    episodes = [{"peak_date": e["peak_date"], "peak": e["peak"],
+                 "trough_date": e["trough_date"], "trough": e["trough"],
                  "recover_date": e["recover_date"], "drop_pct": e["drop_pct"],
                  "rebound_pct": e.get("rebound_pct"),
+                 "days_down": e.get("days_down"),
                  "recover_days": e["recover_days"], "ongoing": e["ongoing"]}
                 for e in engine.compute_episodes(rows, 10.0)]
     episodes.sort(key=lambda x: x["peak_date"], reverse=True)
+    window = engine.window_summary(rows)
+    if window:
+        # 与「历史最高收盘」对齐：metrics 的 peak 是**截至当日的滚动最高**，
+        # 取窗口最后一根得到的就是「本轮行情走到这里为止的历史高点」。
+        gpeak = metrics[-1]["peak"] if metrics else None
+        gdate = metrics[-1]["peak_date"] if metrics else None
+        window["history_peak"] = gpeak
+        window["history_peak_date"] = gdate
+        window["is_global_peak"] = 1 if (gpeak is not None
+                                         and window["peak"] >= gpeak - 1e-9) else 0
     return {
         "id": asset_id,
         "name": C.BY_ID[asset_id]["name"],
         "gran": gran,
-        "periods": engine.aggregate(metrics, gran),
+        "window": window,
+        "periods": engine.aggregate(metrics, gran, win_map),
         "daily": daily,
         "events": db.get_events(asset_id, path),
         "episodes": episodes,
@@ -217,8 +244,10 @@ def table(asset_id, gran="day", dfrom=None, dto=None, path=db.DB_PATH):
     }
 
 
-def signals(ids, path=db.DB_PATH):
+def signals(ids, dfrom=None, dto=None, path=db.DB_PATH):
+    """今日信号。给了起止日则附「所选区间」区块（区间高点/区间回撤/区间修复）。"""
     ids = [i for i in (ids or []) if i in C.BY_ID] or list(C.DEFAULT_IDS)
+    has_window = bool(dfrom or dto)
     out = []
     for aid in ids:
         metrics = db.get_metrics(aid, path=path)
@@ -228,6 +257,14 @@ def signals(ids, path=db.DB_PATH):
             s["id"] = aid
             s["name"] = C.BY_ID[aid]["name"]
             s["kind"] = C.BY_ID[aid]["kind"]
+            if has_window:
+                w = engine.window_summary(_rows_in_window(aid, dfrom, dto, path))
+                if w:
+                    # 区间高点是否就是历史高点：前端据此决定要不要合并展示
+                    w["is_global_peak"] = 1 if w["peak"] >= s["peak"] - 1e-9 else 0
+                    w["history_peak"] = s["peak"]
+                    w["history_peak_date"] = s["peak_date"]
+                s["window"] = w
             out.append(s)
     return {"signals": out}
 
@@ -253,6 +290,14 @@ def export_static(out_dir, path=db.DB_PATH):
     import json
     import os
     payload = build_payload(path=path)
+    # 静态快照瘦身：区间口径的 w* 列在前端由 staticTable() 按所选起止日现算，
+    # 快照里没有窗口概念，存 3 列 × 8595 根日线只会让 data.json 从 4.2MB 涨到 5.7MB。
+    _t = payload.get("table") or {}
+    _t.pop("window", None)
+    for _k in ("daily", "periods"):
+        if _t.get(_k):
+            _t[_k] = [{k: v for k, v in r.items() if not k.startswith("w")}
+                      for r in _t[_k]]
     os.makedirs(out_dir, exist_ok=True)
     # data.json（原子写）
     data_file = os.path.join(out_dir, "data.json")

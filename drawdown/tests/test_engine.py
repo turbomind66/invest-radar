@@ -70,6 +70,105 @@ class TestAggregate(unittest.TestCase):
         self.assertEqual(year[1]["deepest_pct"], 0)
 
 
+class TestWindowSummary(unittest.TestCase):
+    """区间口径：峰值从窗口第一根起算（用户选了区间就该看区间内的高点）。"""
+
+    ROWS = [("2015-01-05", 100.0), ("2015-06-08", 150.0),
+            ("2015-08-26", 85.0), ("2015-12-31", 110.0)]
+
+    def test_peak_is_window_high_not_history_high(self):
+        w = engine.window_summary(self.ROWS)
+        self.assertEqual(w["peak"], 150.0)
+        self.assertEqual(w["peak_date"], "2015-06-08")
+        self.assertEqual(w["from"], "2015-01-05")
+        self.assertEqual(w["to"], "2015-12-31")
+        self.assertEqual(w["points"], 4)
+        self.assertEqual(w["peak_is_start"], 0)
+
+    def test_deepest_and_ongoing(self):
+        w = engine.window_summary(self.ROWS)
+        self.assertAlmostEqual(w["deepest_pct"], -43.3333, places=3)
+        self.assertEqual(w["deepest_date"], "2015-08-26")
+        self.assertEqual(w["trough"], 85.0)
+        self.assertEqual(w["days_down"], 1)
+        self.assertEqual(w["ongoing"], 1)
+        self.assertIsNone(w["recover_date"])
+        # 未收复时给「峰→窗口末」的交易日数（2 根）
+        self.assertEqual(w["recover_days"], 2)
+        self.assertAlmostEqual(w["dd_pct"], -26.6667, places=3)
+        self.assertAlmostEqual(w["rebound_pct"], 29.4118, places=3)
+
+    def test_recovered_window(self):
+        # 收复 = 收盘重新站上峰值（== 也算，与 engine.compute_metrics 同口径）
+        rows = [("2020-01-01", 100.0), ("2020-02-03", 120.0),
+                ("2020-03-02", 90.0), ("2020-04-01", 120.0)]
+        w = engine.window_summary(rows)
+        self.assertEqual(w["peak"], 120.0)
+        self.assertEqual(w["ongoing"], 0)
+        self.assertEqual(w["recover_date"], "2020-04-01")
+        self.assertEqual(w["recover_days"], 2)
+        self.assertEqual(w["days_down"], 1)
+
+    def test_peak_at_window_end_means_no_drawdown(self):
+        """区间最高收盘就是最后一天时，区间回撤必然是 0（不是 bug）。"""
+        rows = [("2020-01-01", 100.0), ("2020-03-02", 105.0)]
+        w = engine.window_summary(rows)
+        self.assertEqual(w["peak_date"], "2020-03-02")
+        self.assertAlmostEqual(w["dd_pct"], 0.0, places=4)
+        self.assertAlmostEqual(w["deepest_pct"], 0.0, places=4)
+
+    def test_empty_and_invalid(self):
+        self.assertIsNone(engine.window_summary([]))
+        self.assertIsNone(engine.window_summary([("2020-01-01", 0)]))
+        self.assertIsNone(engine.window_summary([("2020-01-01", None)]))
+
+    def test_peak_at_window_start(self):
+        rows = [("2020-01-01", 100.0), ("2020-02-03", 80.0)]
+        w = engine.window_summary(rows)
+        self.assertEqual(w["peak_is_start"], 1)
+        self.assertEqual(w["days_down"], 1)
+
+
+class TestWindowAggregate(unittest.TestCase):
+    """aggregate 带窗口映射时必须额外给出区间列，且不改动全历史列。"""
+
+    def test_window_columns(self):
+        metrics = [
+            dict(date="2015-01-05", close=3641, peak=5877.2, peak_date="2007-10-16",
+                 dd_pct=-38.0, days_since_peak=1, state="drawdown"),
+            dict(date="2015-01-30", close=3434.39, peak=5877.2, peak_date="2007-10-16",
+                 dd_pct=-41.56, days_since_peak=2, state="drawdown"),
+            dict(date="2015-02-27", close=3572.84, peak=5877.2, peak_date="2007-10-16",
+                 dd_pct=-39.21, days_since_peak=3, state="drawdown"),
+        ]
+        win = {
+            "2015-01-05": {"date": "2015-01-05", "peak": 3643.79,
+                           "peak_date": "2015-01-05", "dd": -0.08},
+            "2015-01-30": {"date": "2015-01-30", "peak": 3643.79,
+                           "peak_date": "2015-01-05", "dd": -5.75},
+            "2015-02-27": {"date": "2015-02-27", "peak": 3643.79,
+                           "peak_date": "2015-01-05", "dd": -1.95},
+        }
+        out = engine.aggregate(metrics, "month", win)
+        self.assertEqual(len(out), 2)
+        jan = out[0]
+        self.assertEqual(jan["period"], "2015-01")
+        self.assertEqual(jan["start"], "2015-01-05")
+        self.assertEqual(jan["end"], "2015-01-30")   # 起止不再同一天
+        self.assertEqual(jan["wpeak"], 3643.79)
+        self.assertAlmostEqual(jan["wdd_pct"], -5.75, places=2)
+        self.assertAlmostEqual(jan["wdeepest_pct"], -5.75, places=2)
+        # 全历史口径保持不变
+        self.assertEqual(jan["peak"], 5877.2)
+        self.assertAlmostEqual(jan["dd_pct"], -41.56, places=2)
+
+    def test_without_window_map_has_no_window_columns(self):
+        metrics = [dict(date="2015-01-05", close=1, peak=1, peak_date="2015-01-05",
+                        dd_pct=0, days_since_peak=0, state="new_high")]
+        out = engine.aggregate(metrics, "month")
+        self.assertNotIn("wpeak", out[0])
+
+
 class TestSignal(unittest.TestCase):
     def test_rank_and_hint(self):
         metrics = []
@@ -197,6 +296,77 @@ class TestDBAndAPI(unittest.TestCase):
         self.assertIn("signals", p)
         self.assertIn("table", p)
         self.assertEqual(p["series"]["series"][0]["points"], 2)
+
+    def _seed_window(self):
+        """三段行情：先创新高、再落、再反弹但未收复 → 全历史与区间口径必然不同。"""
+        rows = [("2020-01-02", 100.0), ("2020-02-03", 200.0),   # 历史高点 200
+                ("2020-03-02", 120.0),                          # -40%
+                ("2020-06-01", 160.0),                          # 反弹
+                ("2020-09-01", 140.0)]
+        db.upsert_daily("sh000001", rows, self.tmp)
+        engine.rebuild_asset("sh000001", self.tmp)
+
+    def test_table_reports_window_peak(self):
+        self._seed_window()
+        t = api.table("sh000001", "month", "2020-06-01", "2020-09-01", path=self.tmp)
+        w = t["window"]
+        self.assertEqual(w["peak"], 160.0)          # 区间高点，不是历史 200
+        self.assertEqual(w["peak_date"], "2020-06-01")
+        self.assertEqual(w["from"], "2020-06-01")
+        self.assertTrue(w["ongoing"])
+        self.assertEqual(len(t["periods"]), 2)      # 6 月 / 9 月
+        first = t["periods"][0]
+        self.assertEqual(first["start"], "2020-06-01")
+        self.assertEqual(first["end"], "2020-06-01")
+        self.assertEqual(first["wpeak"], 160.0)     # 区间峰值列
+        self.assertEqual(first["peak"], 200.0)      # 历史峰值列仍为全历史
+        self.assertIn("wdd_pct", first)
+
+    def test_table_daily_carries_window_columns(self):
+        self._seed_window()
+        t = api.table("sh000001", "day", "2020-09-01", "2020-09-01", path=self.tmp)
+        row = t["daily"][0]
+        self.assertEqual(row["peak"], 200.0)
+        self.assertEqual(row["wpeak"], 140.0)       # 单日窗口，峰值=当日收盘
+        self.assertAlmostEqual(row["wdd_pct"], 0.0, places=4)
+
+    def test_table_granularity_actually_changes_rows(self):
+        """用户报的「周期汇总每行都是一天」：粒度必须真的生效。
+
+        同一个月里放两根日线 —— 日粒度必须是 2 行一天，月粒度必须是 1 行
+        「起 01-02 ~ 止 01-20」；这正是原先 <select id=gran> 没接监听时的症状。
+        """
+        rows = [("2020-01-02", 100.0), ("2020-01-20", 120.0),
+                ("2020-02-03", 110.0), ("2020-03-02", 90.0)]
+        db.upsert_daily("sh000300", rows, self.tmp)
+        engine.rebuild_asset("sh000300", self.tmp)
+
+        day = api.table("sh000300", "day", path=self.tmp)
+        month = api.table("sh000300", "month", path=self.tmp)
+        year = api.table("sh000300", "year", path=self.tmp)
+        self.assertEqual(len(day["periods"]), 4)
+        self.assertEqual(len(month["periods"]), 3)
+        self.assertEqual(len(year["periods"]), 1)
+        self.assertEqual(month["periods"][0]["start"], "2020-01-02")
+        self.assertEqual(month["periods"][0]["end"], "2020-01-20")
+        self.assertNotEqual(month["periods"][0]["start"], month["periods"][0]["end"])
+        self.assertEqual(month["gran"], "month")
+        self.assertEqual(day["periods"][0]["start"], day["periods"][0]["end"])
+
+    def test_signals_window_block(self):
+        self._seed_window()
+        s = api.signals(["sh000001"], "2020-06-01", "2020-09-01", path=self.tmp)["signals"][0]
+        self.assertIn("window", s)
+        w = s["window"]
+        self.assertEqual(w["peak"], 160.0)
+        self.assertEqual(w["history_peak"], 200.0)
+        self.assertEqual(w["is_global_peak"], 0)
+        self.assertAlmostEqual(s["dd_pct"], (140 / 200 - 1) * 100, places=3)  # 全历史口径不变
+
+    def test_signals_without_window_has_no_block(self):
+        self._seed_window()
+        s = api.signals(["sh000001"], path=self.tmp)["signals"][0]
+        self.assertNotIn("window", s)
 
 
 if __name__ == "__main__":

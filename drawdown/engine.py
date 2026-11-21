@@ -161,6 +161,74 @@ def compute_episodes(rows, min_drop=10.0):
     return eps
 
 
+def window_summary(rows):
+    """区间口径统计：峰值的起点是**窗口第一根**，不是全历史最高收盘。
+
+    页面同时给出两套口径，回答的是两个不同问题：
+    - compute_metrics / dd_pct（既有口径）：距**历史最高收盘**跌了多少 —— 免责声明的
+      「收盘价 vs 历史最高收盘价」说的就是它；
+    - window_summary：在**所选起止日**这段里，高点是多少、从该高点最深跌了多少、
+      后来有没有修复 —— 用户选了 2015 年，就该看到 2015 年的高点，而不是 2007 年的。
+
+    rows 必须已按窗口裁剪且升序（[(date, close)]）；窗口为空返回 None。
+    天数按**交易日**计（与 compute_episodes 的 days_down 一致）。
+    """
+    data = [(d, c) for d, c in rows if c is not None and c > 0]
+    if not data:
+        return None
+    peak = data[0][1]
+    peak_date = data[0][0]
+    peak_i = 0
+    deepest = 0.0
+    deepest_date = data[0][0]
+    for i, (d, c) in enumerate(data):
+        if c > peak:
+            peak, peak_date, peak_i = c, d, i
+        dd = (c / peak - 1.0) * 100.0
+        if dd < deepest:
+            deepest, deepest_date = dd, d
+
+    tail = data[peak_i:]
+    trough_i = min(range(len(tail)), key=lambda i: tail[i][1])
+    trough_date, trough = tail[trough_i]
+    rec_date = None
+    rec_i = None
+    for j in range(trough_i + 1, len(tail)):
+        if tail[j][1] >= peak:
+            rec_date, rec_i = tail[j][0], j
+            break
+
+    last_date, last_close = data[-1]
+    ongoing = 0 if rec_date else 1
+    try:
+        days_since = (datetime.date.fromisoformat(last_date)
+                      - datetime.date.fromisoformat(peak_date)).days
+    except ValueError:
+        days_since = None
+    return {
+        "from": data[0][0],
+        "to": last_date,
+        "points": len(data),
+        "peak": round(peak, 4),
+        "peak_date": peak_date,
+        "peak_is_start": 1 if peak_i == 0 else 0,
+        "last": round(last_close, 4),
+        "last_date": last_date,
+        "dd_pct": round((last_close / peak - 1.0) * 100.0, 4),
+        "days_since_peak": days_since,
+        "deepest_pct": round(deepest, 4),
+        "deepest_date": deepest_date,
+        "trough": round(trough, 4),
+        "trough_date": trough_date,
+        "days_down": trough_i,
+        "recover_date": rec_date,
+        # 未修复时给「峰→窗口末」的交易日数，前端按 ongoing 标注「至今未收复」
+        "recover_days": rec_i if rec_i is not None else (len(tail) - 1),
+        "ongoing": ongoing,
+        "rebound_pct": round((last_close / trough - 1.0) * 100.0, 4),
+    }
+
+
 def _period_key(date, gran):
     d = datetime.date.fromisoformat(date)
     if gran == "day":
@@ -177,8 +245,13 @@ def _period_key(date, gran):
     return date
 
 
-def aggregate(metrics, gran="day"):
+def aggregate(metrics, gran="day", win=None):
     """按周期聚合：每个周期取期末收盘/期末回撤/区间最深回撤/区间峰值。
+
+    win：{date: {peak, peak_date, dd_pct}} —— 窗口口径映射（用 compute_metrics 对
+    **已裁剪的 rows** 算出来的），给了就附加 wpeak / wpeak_date / wdd_pct /
+    wdeepest_pct / wdeepest_date 五列，页面因此能同时给出「相对历史高点」与
+    「相对所选区间高点」两套回撤，而不是永远挂着全历史峰值。
 
     返回明细行列表（dict），供三视图表格展示。
     """
@@ -195,7 +268,7 @@ def aggregate(metrics, gran="day"):
         arr = buckets[key]
         last = arr[-1]
         deepest = min(arr, key=lambda x: x["dd_pct"] if x["dd_pct"] is not None else 0)
-        out.append({
+        row = {
             "period": key,
             "start": arr[0]["date"],
             "end": last["date"],
@@ -206,7 +279,20 @@ def aggregate(metrics, gran="day"):
             "peak": last["peak"],
             "peak_date": last["peak_date"],
             "days_since_peak": last["days_since_peak"],
-        })
+        }
+        if win:
+            wl = win.get(last["date"])
+            rows_w = [win[m["date"]] for m in arr if m["date"] in win]
+            wdeep = min(rows_w, key=lambda x: x["dd"] if x["dd"] is not None else 0) \
+                if rows_w else None
+            row.update({
+                "wpeak": wl["peak"] if wl else None,
+                "wpeak_date": wl["peak_date"] if wl else None,
+                "wdd_pct": wl["dd"] if wl else None,
+                "wdeepest_pct": wdeep["dd"] if wdeep else None,
+                "wdeepest_date": wdeep["date"] if wdeep else None,
+            })
+        out.append(row)
     return out
 
 

@@ -98,7 +98,7 @@ global.fetch = async () => ({
   ok: true, json: async () => ({ series: { series: [], events: [] }, signals: [], table: {} }),
 });
 
-const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt, applyTable, gotoPage, pageCount, setTable: function(t){TABLE=t;}, getRows: function(){return ROWS;}, renderReconstruct, renderReconMany, clipPct, reconSeriesOne, reconSeriesMany, unbindChart, getRAW: function(){return RC_RAW;}, getChart: function(){return CHART;} };`;
+const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt, applyTable, gotoPage, pageCount, setTable: function(t){TABLE=t;}, getTable: function(){return TABLE;}, getRows: function(){return ROWS;}, renderReconstruct, renderReconMany, clipPct, reconSeriesOne, reconSeriesMany, unbindChart, getRAW: function(){return RC_RAW;}, getChart: function(){return CHART;}, renderSignals, winSummary, winMap, aggPeriods, periodKey, staticTable, staticSignals, COLS, setPayload: function(p){PAYLOAD=p;} };`;
 eval(extractScript(HTML_TEXT) + EXPORTER);
 
 // ---------- 断言 ----------
@@ -420,6 +420,118 @@ const manyRes = opt.series.filter(s => /还原%/.test(s.name));
 ok(manyRes.length === 2 && manyRes.every(s => s.data[0][1] === 0),
    '叠加还原设起点后各线仍从 0% 起（起点早于某只的 t0 时取该只 t0）');
 ok(__T.getRAW() && __T.getRAW().mode === 'many', '叠加还原缓存了原始曲线供缩放重算');
+
+// ---- 区间口径（所选起止日）----
+// 用户报的「周期汇总每行都是一天」根因：<select id=gran> 没接监听，STATE.gran 恒为 day。
+(function testGran(){
+  els.gran.value = 'quarter';
+  els.gran.onchange.call({ value: 'quarter' });
+  ok(__T.STATE.gran === 'quarter', '周期下拉变化后 STATE.gran 跟着变（原先是死控件）');
+  ok(__T.periodKey('2015-06-08', 'quarter') === '2015-Q2', '季粒度键 2015-Q2');
+  ok(__T.periodKey('2015-06-08', 'month') === '2015-06', '月粒度键 2015-06');
+  ok(__T.periodKey('2015-06-08', 'year') === '2015', '年粒度键 2015');
+  ok(/^2015-W\d\d$/.test(__T.periodKey('2015-06-08', 'week')), '周粒度键按 ISO 周：' + __T.periodKey('2015-06-08', 'week'));
+  ok(/id="gran"/.test(HTML_TEXT) && /value="month" selected/.test(HTML_TEXT),
+     '周期默认「月」（日粒度会让周期汇总与日明细完全重复）');
+})();
+
+// 区间高点：峰值从窗口第一根起算，而不是历史最高收盘
+const WIN_ROWS = [
+  { date: '2015-01-05', close: 100 }, { date: '2015-06-08', close: 150 },
+  { date: '2015-08-26', close: 85 }, { date: '2015-12-31', close: 110 },
+];
+const ws = __T.winSummary(WIN_ROWS);
+ok(ws && ws.peak === 150 && ws.peak_date === '2015-06-08', '区间高点取窗口内最高收盘 150（不是历史高点）');
+ok(Math.abs(ws.deepest_pct - ((85 / 150 - 1) * 100)) < 1e-3, '区间最深回撤以区间高点为基准（-43.33%）');
+ok(ws.trough === 85 && ws.trough_date === '2015-08-26', '区间高点后的谷底 85');
+ok(ws.ongoing === 1 && ws.recover_date === null, '窗口末未收复区间高点 → ongoing');
+ok(Math.abs(ws.dd_pct - ((110 / 150 - 1) * 100)) < 1e-3, '区间回撤（末值）同样以区间高点为基准');
+ok(__T.winSummary([]) === null, '空窗口返回 null（前端提示「区间内无数据」）');
+const winMapOne = __T.winMap(WIN_ROWS);
+ok(winMapOne['2015-08-26'].wpeak === 150 && winMapOne['2015-08-26'].wdd < -43,
+   'winMap 给出逐日区间峰值与区间回撤');
+
+// 周期聚合：月粒度必须真的按月起止（不再是「起=止=当天」）
+const WS_DAILY = [];
+['2015-01-05', '2015-01-30', '2015-02-02', '2015-02-27'].forEach((d, i) => {
+  WS_DAILY.push({ date: d, close: 100 + i, dd_pct: 0, peak: 200, peak_date: '2007-10-16',
+                  days_since_peak: 1, state: 'drawdown' });
+});
+const aggM = __T.aggPeriods(WS_DAILY, 'month', __T.winMap(WS_DAILY));
+ok(aggM.length === 2, '月粒度把 4 个交易日聚成 2 行');
+ok(aggM[0].start === '2015-01-05' && aggM[0].end === '2015-01-30', '首行区间 2015-01-05 ~ 2015-01-30（起止不同天）');
+ok(aggM[0].wpeak != null && aggM[0].wdd_pct != null, '聚合行同时带区间峰值与区间回撤');
+ok(aggM[0].peak === 200 && aggM[0].peak_date === '2007-10-16', '历史峰值列仍保留全历史口径');
+
+// 信号卡：给了 window 才追加「所选区间」块
+__T.renderSignals([{
+  id: 'sh000300', name: '沪深300', close: 3731, peak: 5877.2, peak_date: '2007-10-16',
+  dd_pct: -32.71, dd_rank_pct: 30, days_since_peak: 6975, recover_days_median: 244,
+  hint: '当前回撤分位 30%', window: {
+    from: '2015-01-05', to: '2015-12-31', points: 244, peak: 5353.75, peak_date: '2015-06-08',
+    dd_pct: -30.31, deepest_pct: -43.48, deepest_date: '2015-08-26', trough: 3025.69,
+    trough_date: '2015-08-26', days_down: 56, rebound_pct: 23.31, recover_date: null,
+    recover_days: 140, ongoing: 1, days_since_peak: 206, is_global_peak: 0,
+    history_peak: 5877.2, history_peak_date: '2007-10-16',
+  },
+}]);
+const sigBox = document.getElementById('signals');
+const sigHtml = sigBox.children[0].innerHTML;
+ok(sigHtml.indexOf('所选区间') >= 0 && sigHtml.indexOf('5353.75') >= 0,
+   '信号卡展示所选区间的区间高点（5353.75）');
+ok(sigHtml.indexOf('历史高点') >= 0 && sigHtml.indexOf('5877.20') >= 0,
+   '信号卡同时保留全历史高点（5877.20）');
+ok(sigHtml.indexOf('未收复') >= 0, '区间高点未修复时明确写「未收复」');
+ok(sigHtml.indexOf('区间高点=历史高点') < 0, '区间高点≠历史高点时不加「=历史高点」标');
+
+__T.STATE.dfrom = ''; __T.STATE.dto = '';
+__T.renderSignals([{ id: 'sh000300', name: '沪深300', close: 1, peak: 2, dd_pct: -1, hint: '' }]);
+const sigKids = document.getElementById('signals').children;
+ok(sigKids[sigKids.length - 1].innerHTML.indexOf('winsig') < 0,
+   '未设起止日时不渲染区间块（避免与全历史口径重复）');
+
+// 表格：区间列存在，且按窗口口径渲染
+__T.setTable({
+  id: 'sh000300', name: '沪深300', gran: 'month',
+  window: { from: '2015-01-05', to: '2015-12-31', peak: 5353.75, peak_date: '2015-06-08', is_global_peak: 0 },
+  periods: [{ period: '2015-01', start: '2015-01-05', end: '2015-01-30', close: 3434.39,
+              wpeak: 3643.79, wpeak_date: '2015-01-26', wdd_pct: -5.75,
+              wdeepest_pct: -7.92, wdeepest_date: '2015-01-19',
+              peak: 5877.2, dd_pct: -41.56, days_since_peak: 6975 }],
+  daily: [], episodes: [], events: [], total: 244,
+});
+__T.STATE.view = 'period';
+__T.applyTable();
+const rowObj = __T.getRows()[0];
+ok(rowObj.wpeak === 3643.79, '表格行带区间峰值');
+const theadHtml = document.getElementById('q_#tbl thead').innerHTML;
+ok(theadHtml.indexOf('区间峰值') >= 0 && theadHtml.indexOf('区间回撤%') >= 0,
+   '表头出现「区间峰值 / 区间回撤%」列');
+ok(theadHtml.indexOf('历史峰值') >= 0 && theadHtml.indexOf('历史回撤%') >= 0,
+   '表头同时保留「历史峰值 / 历史回撤%」列');
+ok(document.getElementById('tableHint').textContent.indexOf('区间高点') >= 0,
+   '表头提示写明本次区间高点与起止日');
+
+// 静态快照：按起止日裁剪 + 区间重算 + 周期聚合（无服务端接口时的兜底）
+__T.setPayload({ table: {
+  id: 'sh000300', name: '沪深300',
+  daily: [
+    { date: '2014-12-31', close: 3533, peak: 5877.2, peak_date: '2007-10-16', dd_pct: -39.9, days_since_peak: 1, state: 'drawdown' },
+    { date: '2015-01-05', close: 3641, peak: 5877.2, peak_date: '2007-10-16', dd_pct: -38.0, days_since_peak: 2, state: 'drawdown' },
+    { date: '2015-06-08', close: 5354, peak: 5877.2, peak_date: '2007-10-16', dd_pct: -8.9, days_since_peak: 3, state: 'drawdown' },
+    { date: '2015-08-26', close: 3026, peak: 5877.2, peak_date: '2007-10-16', dd_pct: -48.5, days_since_peak: 4, state: 'drawdown' },
+  ],
+  events: [],
+} });
+const st = __T.staticTable('2015-01-01', '2015-12-31', 'month');
+ok(st && st.daily.length === 3, '静态版按起止日裁剪（2014 年那根被剔除）');
+ok(st.window && st.window.peak === 5354 && st.window.peak_date === '2015-06-08',
+   '静态版区间高点 = 窗口内最高收盘 5354');
+ok(st.periods.length === 3 && st.periods[0].start === '2015-01-05'
+   && st.periods[0].end === '2015-01-05',
+   '静态版周期聚合按起止日重新算（3 个自然月 3 行）');
+ok(st.episodes.length >= 1 && st.episodes[0].drop_pct <= -10,
+   '静态版回撤事件按窗口重算（峰→谷≥10%）');
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);
