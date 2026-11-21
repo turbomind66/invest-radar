@@ -381,10 +381,27 @@ def loop():
 
 
 def start():
-    """启动首启补数 + 周期刷新（各一个后台线程）。"""
+    """启动回撤种子恢复 + 首启补数 + 周期刷新（各一个后台线程）。
+
+    dd 种子恢复独立成一个**先行线程**：它纯本地解压 gzip（秒级、不联网），
+    绝不能排在 bootstrap 的最后一步——bootstrap 的份额/二级明细/当日抓取
+    可能耗时数分钟甚至卡住，若等它走完才恢复种子，服务端 /dd 会一直空库
+    （周末 loop 不触发 dd 增量，更没人补）。种子恢复幂等 + 文件锁，与
+    bootstrap 末尾的 _dd_incremental 并发安全。
+    """
     import threading
 
     _state(enabled=True, started_at=bj_now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    def _seed_dd():
+        try:
+            from drawdown import seed as dd_seed
+            dd_seed.ensure(log=_log)
+        except Exception as e:  # noqa: BLE001
+            _log_exc("回撤全景种子恢复", e)
+
+    t0 = threading.Thread(target=_seed_dd, daemon=True)
+    t0.start()
 
     def _boot():
         try:
@@ -396,7 +413,7 @@ def start():
     t.start()
     t2 = threading.Thread(target=loop, daemon=True)
     t2.start()
-    return t, t2
+    return t0, t, t2
 
 
 if __name__ == "__main__":

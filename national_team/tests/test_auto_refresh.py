@@ -145,6 +145,36 @@ class TestAutoRefreshGating(unittest.TestCase):
         finally:
             staticsite.restore_missing_from_days_file = orig
 
+    def test_start_spawns_dedicated_dd_seed_thread(self):
+        """start() 必须起一个独立线程先恢复 dd 种子，不等 bootstrap 联网步骤。
+
+        回归：种子恢复曾排在 bootstrap 最后一步，联网补数卡住时服务端 /dd
+        一直空库。这里 mock 掉三个线程目标，断言 start 调用顺序与线程数。
+        """
+        import threading
+        from unittest import mock
+
+        created = []
+
+        class _FakeThread:
+            def __init__(self, target, *a, **k):
+                self.target = target
+
+            def start(self):
+                created.append(getattr(self.target, "__name__", "loop"))
+
+        # mock 掉线程让目标体不真正执行；_seed_dd 里 import drawdown.seed，
+        # 但线程被替换后不会运行，故不触碰真实库。
+        with mock.patch.object(threading, "Thread", _FakeThread), \
+             mock.patch.object(auto_refresh, "bootstrap"), \
+             mock.patch.object(auto_refresh, "loop"):
+            threads = auto_refresh.start()
+
+        self.assertEqual(len(threads), 3, "应有 seed + bootstrap + loop 三个线程")
+        self.assertEqual(created[0], "_seed_dd", "必须先起 dd 种子恢复线程")
+        self.assertIn("_boot", created)
+        self.assertIn("loop", created)
+
 
 if __name__ == "__main__":
     unittest.main()
