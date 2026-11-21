@@ -141,8 +141,27 @@ def _days_between(d1, d2):
 
 
 def events_for(asset_id, path=db.DB_PATH):
-    """单标的事件：策展事件 + 自动识别波段（同名/邻近的自动事件不重复标注）。"""
-    curated = [dict(e) for e in C.EVENTS if e["target"] == asset_id]
+    """单标的事件：策展事件 + 自动识别波段（同名/邻近的自动事件不重复标注）。
+
+    场内 ETF 继承其跟踪指数的策展事件（target 改写成该 ETF），
+    否则只选「纳指ETF国泰」时看不到指数层面的 2015/2020 这些大事件。
+    """
+    meta = C.BY_ID.get(asset_id, {})
+    track = meta.get("track")
+    targets = [asset_id]
+    if track and track in C.BY_ID and track != asset_id:
+        targets.append(track)
+    curated, seen = [], set()
+    for e in C.EVENTS:
+        if e["target"] not in targets:
+            continue
+        key = (e["date"], e["title"])
+        if key in seen:
+            continue
+        seen.add(key)
+        row = dict(e)
+        row["target"] = asset_id      # 前端按 target 找曲线，继承来的事件要落在本标的上
+        curated.append(row)
     auto = []
     for e in _auto_events(asset_id, path):
         if any(a["side"] == e["side"] and _days_between(a["date"], e["date"]) <= 45
