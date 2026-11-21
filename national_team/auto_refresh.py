@@ -271,7 +271,11 @@ def _dd_incremental():
     drawdown 包导入失败（如未部署）只记日志，绝不阻断主面板刷新。
     """
     try:
+        from drawdown import seed as dd_seed
         from drawdown import updater as dd_updater
+        # dd.db 不随单应用包上传（46MB 超阈值）：空库时先从 gzip 种子恢复全历史，
+        # 再走增量。已有数据则幂等跳过，绝不覆盖真实库。
+        dd_seed.ensure(log=_log)
         res = dd_updater.incremental()
         changed = res.get("_changed") or []
         summary = "%d 标的变更" % len(changed)

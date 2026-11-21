@@ -281,6 +281,7 @@ else
         -e GATEWAY_PORT=38881 \
         -e PORT=5000 \
         -e NT_DB_PATH=/app/data/data.db \
+        -e NT_DD_DB_PATH=/app/data/dd.db \
         -e QDII_PORT=5001 \
         -e NT_QDII_DB_PATH=/app/data/qdii.db \
         -p "${GATEWAY_HOST_PORT}:38881" \

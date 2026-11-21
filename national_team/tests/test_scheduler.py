@@ -225,6 +225,33 @@ class TestRunTask(unittest.TestCase):
         self.assertIn("--mode=tick", cmd)
         self.assertTrue(any(str(x).endswith("staticsite.py") for x in cmd))
 
+    def test_dd_mode_uses_module_and_root_cwd(self):
+        """dd 模式走 -m drawdown.daily 且 cwd=ROOT（子进程不继承 sys.path）。"""
+        seen = {}
+
+        class _Proc(object):
+            returncode = 0
+
+        def _spy(cmd, **k):
+            seen["cmd"] = cmd
+            seen["cwd"] = k.get("cwd")
+            return _Proc()
+
+        old_run = scheduler.subprocess.run
+        old_acquire = _lock_mod.FileLock.acquire
+        _lock_mod.FileLock.acquire = lambda self: True
+        scheduler.subprocess.run = _spy
+        try:
+            scheduler.run_task("dd")
+        finally:
+            scheduler.subprocess.run = old_run
+            _lock_mod.FileLock.acquire = old_acquire
+        cmd = seen.get("cmd") or []
+        self.assertIn("-m", cmd)
+        self.assertIn("drawdown.daily", cmd)
+        self.assertFalse(any(str(x).endswith("staticsite.py") for x in cmd))
+        self.assertEqual(seen.get("cwd"), scheduler.ROOT)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -36,6 +36,7 @@ STATICSITE = os.path.join(BASE, "staticsite.py")
 # 默认时间点（Asia/Shanghai）。可用环境变量覆盖，见 .env.example。
 DEFAULT_FULL = "06:00,17:10"                 # 完整同步（收盘后 + 次日清晨重刷）
 DEFAULT_TICK = "09:30,10:00,10:30,11:00,11:30,13:00,13:30,14:00,14:30,14:50"  # 盘中逐笔大单采样（交易时段，约每30分钟一次，保留尾盘14:50）
+DEFAULT_DD = "17:30"                         # 回撤全景每日增量（晚于 full 17:10，独立 dd.db）
 
 from common.lock import FileLock  # noqa: E402
 
@@ -74,13 +75,19 @@ def _log(msg):
 
 
 def run_task(mode, lock_path=None, timeout=None):
-    """执行一次任务。mode: full | tick。"""
-    args = [sys.executable, "-u", STATICSITE]
-    if mode == "tick":
-        args += ["--mode=tick"]
-    elif mode == "news":
-        args += ["--mode=news"]
-    lock = FileLock(lock_path or os.path.join(BASE, ".sync.lock"))
+    """执行一次任务。mode: full | tick | news | dd（dd=回撤全景增量，独立库）。"""
+    if mode == "dd":
+        # 回撤全景：独立 dd.db，走 drawdown.daily（内含种子恢复 + 日线/净值增量）
+        args = [sys.executable, "-u", "-m", "drawdown.daily"]
+        # 用独立锁，避免与 NT 主库 full/tick 的 .sync.lock 互相排队（两库互不干扰）
+        lock = FileLock(lock_path + ".dd" if lock_path else os.path.join(BASE, ".dd.lock"))
+    else:
+        args = [sys.executable, "-u", STATICSITE]
+        if mode == "tick":
+            args += ["--mode=tick"]
+        elif mode == "news":
+            args += ["--mode=news"]
+        lock = FileLock(lock_path or os.path.join(BASE, ".sync.lock"))
     if not lock.acquire():
         _log("跳过 %s：已有同步任务在运行（文件锁占用）" % mode)
         return False
@@ -89,7 +96,9 @@ def run_task(mode, lock_path=None, timeout=None):
     try:
         # 2026-10-30 修：旧实现丢弃 subprocess.run 的 returncode，
         # staticsite 崩溃/非零退出仍会被记成「完成」，日志看不出失败。
-        proc = subprocess.run(args, cwd=BASE, timeout=timeout)
+        # dd 走 ROOT（drawdown 包在仓库根），其余 staticsite 在 BASE；
+        # 子进程不继承父进程 sys.path，cwd 必须选对否则 -m drawdown.daily 找不到包。
+        proc = subprocess.run(args, cwd=(ROOT if mode == "dd" else BASE), timeout=timeout)
         cost = time.time() - t0
         if proc.returncode == 0:
             _log("完成 %s，耗时 %.1fs" % (mode, cost))
@@ -111,16 +120,18 @@ def main():
 
     full_times = parse_times(os.environ.get("SCHED_FULL_TIMES") or DEFAULT_FULL)
     tick_times = parse_times(os.environ.get("SCHED_TICK_TIMES") or DEFAULT_TICK)
+    dd_times = parse_times(os.environ.get("SCHED_DD_TIMES") or DEFAULT_DD)
     timeout = int(os.environ.get("SCHED_TIMEOUT") or 1800)
     lock_path = os.environ.get("SCHED_LOCK_PATH") or os.path.join(BASE, ".sync.lock")
     weekday_only = _env_bool("SCHED_FULL_WEEKDAY_ONLY", "1")
     run_on_start = _env_bool("SCHED_RUN_ON_START", "1")
 
     db.init_db()
-    _log("调度器启动 | 时区 %s(%s) | full=%s | tick=%s | 超时 %ss"
+    _log("调度器启动 | 时区 %s(%s) | full=%s | tick=%s | dd=%s | 超时 %ss"
          % (os.environ.get("TZ") or "(系统默认)", time.strftime("%Z"),
             ["%02d:%02d" % t for t in full_times],
-            ["%02d:%02d" % t for t in tick_times], timeout))
+            ["%02d:%02d" % t for t in tick_times],
+            ["%02d:%02d" % t for t in dd_times], timeout))
 
     if run_on_start:
         def _first():
@@ -132,6 +143,9 @@ def main():
             if (9, 0) <= (now.hour, now.minute) <= (15, 10):
                 _log("启动即补跑一次盘中逐笔大单采样（tick）")
                 run_task("tick", lock_path, timeout)
+            # 回撤全景：首启补一次（空库从 gzip 种子恢复全历史 + 当日增量），
+            # 独立 dd.db 与主库互不干扰，失败也不影响主面板。
+            run_task("dd", lock_path, timeout)
         threading.Thread(target=_first, daemon=True).start()
 
     done = set()  # 防重：同一天同一分钟同一任务只跑一次
@@ -144,6 +158,7 @@ def main():
 
         jobs = [(t, "full") for t in full_times]
         jobs += [(t, "tick") for t in tick_times]
+        jobs += [(t, "dd") for t in dd_times]
         for (h, m), mode in jobs:
             if not due(now, [(h, m)]):
                 continue

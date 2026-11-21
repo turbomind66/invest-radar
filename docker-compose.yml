@@ -61,6 +61,8 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       PORT: ${PORT:-5000}
       NT_DB_PATH: /app/data/data.db
+      # 回撤全景 /dd：独立库放共享卷（cron 写入、web 读取同一份）
+      NT_DD_DB_PATH: /app/data/dd.db
       # 抓取交给 cron 容器：避免重复请求，也避免两个容器争抢同一个 SQLite 写锁
       NT_AUTO_ENSURE: "0"
       # 对端面板地址（页头选项卡互跳）：同域不同路径时可直接写相对路径（/qdii/），
@@ -99,6 +101,9 @@ services:
       NT_DB_PATH: /app/data/data.db
       SCHED_FULL_TIMES: ${SCHED_FULL_TIMES:-06:00,17:10}
       SCHED_TICK_TIMES: ${SCHED_TICK_TIMES:-09:30,10:00,10:30,11:00,11:30,13:00,13:30,14:00,14:30,14:50}
+      # 回撤全景每日增量（收盘后，独立 dd.db；首启从 dd.db.gz 种子恢复全历史）
+      NT_DD_DB_PATH: /app/data/dd.db
+      SCHED_DD_TIMES: ${SCHED_DD_TIMES:-17:30}
       SCHED_RUN_ON_START: ${SCHED_RUN_ON_START:-1}
       SCHED_FULL_WEEKDAY_ONLY: ${SCHED_FULL_WEEKDAY_ONLY:-1}
       SCHED_TIMEOUT: ${SCHED_TIMEOUT:-1800}

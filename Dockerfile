@@ -34,6 +34,11 @@ COPY --chown=appuser:appuser qdii/*.py ./qdii/
 COPY --chown=appuser:appuser qdii/templates ./qdii/templates
 # 跨模块共用层（http / lock 等）
 COPY --chown=appuser:appuser common ./common
+# 回撤全景模块（/dd）：服务端 API 依赖 drawdown 包 + 独立 dd.db
+COPY --chown=appuser:appuser drawdown ./drawdown
+# dd.db.gz 是回撤全景种子（9.8MB）：dd.db 全历史 46MB 不适合进镜像，
+# 首启由 scheduler 的 dd 任务 / auto_refresh 从该 gzip 原子解压恢复。
+COPY --chown=appuser:appuser dd.db.gz ./dd.db.gz
 # docs/data.json 是"种子数据"：空库首启会自动从中恢复最近 90 天历史，无需重新回补
 COPY --chown=appuser:appuser docs ./docs
 # 单端口入口：把 / 与 /qdii/ 分发到两个看板（对外只暴露 38881）

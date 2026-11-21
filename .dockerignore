@@ -15,6 +15,12 @@ data.db
 data.db-journal
 data.db-wal
 data.db-shm
+# 回撤全景：dd.db（46MB）不进镜像，但 dd.db.gz 种子（9.8MB）必须进
+dd.db
+dd.db-journal
+dd.db-wal
+dd.db-shm
+!dd.db.gz
 *.log
 *.tmp
 *.baiduyun.uploading.cfg
