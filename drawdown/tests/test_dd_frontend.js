@@ -19,7 +19,7 @@ function extractScript(html) {
   const blocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
   const m = blocks[blocks.length - 1];
   if (!m) throw new Error('未定位到内联脚本');
-  return m[1].replace(/\nboot\(\);\s*$/, '\n');
+  return m[1].replace(/\n(?:initRefreshBtn\(\);\s*\n)?boot\(\);\s*$/, '\n');
 }
 
 // ---------- 桩件 ----------
@@ -116,7 +116,7 @@ const GRAN_BTNS = ['day', 'week', 'month', 'quarter', 'year'].map(g => {
 els.granBar = mkEl('granBar');
 els.granBar._qs = { '.gbtn': GRAN_BTNS };
 
-const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt, applyTable, gotoPage, pageCount, setTable: function(t){TABLE=t;}, getTable: function(){return TABLE;}, getRows: function(){return ROWS;}, renderReconstruct, renderReconMany, loadReconstruct, getRECON: function(){return RECON;}, clipPct, reconSeriesOne, reconSeriesMany, unbindChart, getRAW: function(){return RC_RAW;}, getChart: function(){return CHART;}, renderSignals, winSummary, winMap, aggPeriods, periodKey, staticTable, staticSignals, COLS, setPayload: function(p){PAYLOAD=p;}, getCat: function(){return CATALOG;}, setGran: setGran, switchView: switchView, paintGran: paintGran };`;
+const EXPORTER = `;global.__T = { renderChart, renderGroups, showEvt, STATE, reconHits, noHitNote, nearestEvt, applyTable, gotoPage, pageCount, setTable: function(t){TABLE=t;}, getTable: function(){return TABLE;}, getRows: function(){return ROWS;}, renderReconstruct, renderReconMany, loadReconstruct, getRECON: function(){return RECON;}, clipPct, reconSeriesOne, reconSeriesMany, unbindChart, getRAW: function(){return RC_RAW;}, getChart: function(){return CHART;}, renderSignals, winSummary, winMap, aggPeriods, periodKey, staticTable, staticSignals, COLS, setPayload: function(p){PAYLOAD=p;}, getCat: function(){return CATALOG;}, setGran: setGran, switchView: switchView, paintGran: paintGran, initRefreshBtn: initRefreshBtn, ddUpdate: ddUpdate };`;
 eval(extractScript(HTML_TEXT) + EXPORTER);
 
 // ---------- 断言 ----------
@@ -661,10 +661,53 @@ function testStaticReconOnDemand(){
   });
 }
 
+// ---- 本地一键更新（服务端模式；静态站只读，按钮隐藏）----
+(function testRefreshBtnVisible(){
+  delete window.__STATIC__;
+  __T.initRefreshBtn();                 // 元素由桩件 getElementById 惰性创建
+  const b = els.ddRefresh;
+  ok(typeof b.onclick === 'function', '服务端模式「更新数据」按钮绑定点击');
+  ok(b.style.display !== 'none', '服务端模式按钮可见（本地/VPS 可直接抓）');
+  window.__STATIC__ = { data_base: '' };
+  __T.initRefreshBtn();
+  ok(b.style.display === 'none', '静态站隐藏「更新数据」按钮（data.json 只能由 Actions 产出）');
+  delete window.__STATIC__;
+  __T.initRefreshBtn();
+})();
+
+// 点击 → 轮询进度 → 完成后重载；按钮进行中禁用，避免重复触发后台任务
+function testRefreshFlow(){
+  const realFetch = global.fetch, realST = global.setTimeout;
+  const seq = [
+    { status: 'started' },
+    { running: true, log: ['10:00:01 sh000001(sh000001) +1 根 2026-11-20~2026-11-20'] },
+    { running: false, ok: true, msg: '更新完成：1 只有新增日线 / 净值 2 只，耗时 12.0s' },
+  ];
+  const urls = [];
+  let reloaded = 0;
+  global.fetch = async (u) => { urls.push(String(u)); return { json: async () => seq.shift() || { running: false, ok: true } }; };
+  global.setTimeout = (fn) => { fn(); return 0; };       // 轮询间隔立即触发
+  global.location = { reload(){ reloaded++; } };
+  delete window.__STATIC__;
+  __T.initRefreshBtn();
+  const b = els.ddRefresh;
+  const f = document.getElementById('freshness');   // 桩件惰性创建
+  return __T.ddUpdate().then(function(){
+    ok(urls[0] === 'api/dd/refresh', '点击先请求 api/dd/refresh：' + urls[0]);
+    ok(urls.filter(u => u === 'api/dd/refresh_status').length === 2,
+       '随后轮询 refresh_status 直到 running=false');
+    ok(b.disabled === true, '更新过程中按钮禁用（防重复触发）');
+    ok(String(f.textContent).indexOf('更新完成') >= 0, '完成后水位栏显示结果：' + f.textContent);
+    ok(reloaded === 1, '完成后重载页面（拿到重算后的数据）');
+    global.fetch = realFetch; global.setTimeout = realST; delete global.location;
+  });
+}
+
 function finish(){
   console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
   process.exit(fail ? 1 : 0);
 }
 Promise.resolve().then(testStaticReconInline).then(testStaticReconOnDemand)
+  .then(testRefreshFlow)
   .then(finish, function(e){ ok(false, '静态还原异步用例异常：' + e); finish(); });
 

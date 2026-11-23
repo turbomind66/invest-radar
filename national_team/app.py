@@ -297,6 +297,164 @@ def do_fetch():
     return res
 
 
+# ---------------- 回撤全景：本地一键更新（不依赖 GitHub Actions / cron） ----------------
+# 为什么单独做：本地 Win11 直接 `python national_team/app.py` 时既没有容器里的
+# scheduler（dd 任务默认 17:30），也没有 WorkBuddy 的 NT_AUTO_REFRESH=1，
+# 于是 dd.db 只能等 GitHub Actions 导出静态快照、或手工 `python -m drawdown.daily`
+# 才更新 —— 页面上的「抓取/重算」时间永远停在上一次，看起来就是「必须去 Actions 点一下」。
+# 这里补两件事：① /api/dd/refresh 一键更新（后台线程 + 前端轮询）；
+# ② 本地形态启动后自动补一次（落后于最近收盘交易日才抓，容器/WorkBuddy 不重复跑）。
+_DD_LOCK = threading.Lock()
+_DD_TASK = {"running": False, "start": None, "done": None,
+            "ok": None, "msg": "", "changed": [], "nav": 0, "log": []}
+
+
+def _dd_log(msg):
+    """收进环形缓冲区供前端轮询（同时打到 stdout，便于看服务端日志）。"""
+    line = "%s %s" % (datetime.datetime.now().strftime("%H:%M:%S"), msg)
+    with _DD_LOCK:
+        _DD_TASK["log"].append(line)
+        if len(_DD_TASK["log"]) > 8:
+            del _DD_TASK["log"][:-8]
+    print("[dd-refresh] " + str(msg), flush=True)
+
+
+def _dd_water():
+    """回撤库水位：用上证日线代表全库最新日期。返回 (latest_date, last_fetch)。"""
+    try:
+        from drawdown import db as dd_db
+        return dd_db.latest_date("sh000001"), dd_db.get_meta("last_fetch", None)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def last_closed_trading_day(now=None):
+    """最近一个「已收盘」的交易日（15:05 前把今天排除，避免盘中误判滞后）。"""
+    now = now or datetime.datetime.now()
+    d = now.date()
+    if (now.hour, now.minute) < (15, 5):
+        d -= datetime.timedelta(days=1)
+    for _ in range(12):
+        try:
+            ok = fetcher.is_trading_day(d)
+        except Exception:  # noqa: BLE001  日历缺失时退回周末判断
+            ok = d.weekday() < 5
+        if ok:
+            return d.isoformat()
+        d -= datetime.timedelta(days=1)
+    return None
+
+
+def _dd_stale(latest=None):
+    """库内最新日期是否落后于最近收盘交易日（空库也算滞后）。"""
+    if not latest:
+        return True
+    tgt = last_closed_trading_day()
+    return bool(tgt and latest < tgt)
+
+
+def _dd_refresh_bg():
+    """后台跑一次完整增量。
+
+    与 scheduler 的 dd 任务用**同一个**文件锁（SCHED_LOCK_PATH + ".dd"），
+    避免本地/容器同时抓同一个 dd.db；拿不到锁就如实告知，不并发写。
+    """
+    from common.lock import FileLock
+    lock_path = (os.environ.get("SCHED_LOCK_PATH")
+                 or os.path.join(BASE, ".sync.lock")) + ".dd"
+    lk = FileLock(lock_path)
+    if not lk.acquire():
+        with _DD_LOCK:
+            _DD_TASK.update(running=False, done=datetime.datetime.now().strftime("%H:%M:%S"),
+                            ok=False, msg="已有回撤更新在运行（定时任务或其他窗口），请稍后重试")
+        _dd_log("跳过：文件锁被占用 %s" % lock_path)
+        return
+    try:
+        from drawdown import updater as dd_updater
+        res = dd_updater.refresh(log=_dd_log)
+        if res.get("changed_n"):
+            msg = ("更新完成：%d 只有新增日线 / 净值 %d 只，耗时 %.1fs"
+                   % (res.get("changed_n", 0), res.get("nav", 0), res.get("cost", 0)))
+        else:
+            msg = ("已是最新：无新增日线（净值补 %d 只），耗时 %.1fs"
+                   % (res.get("nav", 0), res.get("cost", 0)))
+        with _DD_LOCK:
+            _DD_TASK.update(ok=True,
+                            changed=list(res.get("changed") or []),
+                            nav=res.get("nav") or 0,
+                            msg=msg)
+    except Exception as e:  # noqa: BLE001
+        with _DD_LOCK:
+            _DD_TASK.update(ok=False, msg="更新失败：%s: %s" % (type(e).__name__, e))
+        _dd_log("失败：%s: %s" % (type(e).__name__, e))
+    finally:
+        with _DD_LOCK:
+            _DD_TASK.update(running=False,
+                            done=datetime.datetime.now().strftime("%H:%M:%S"))
+        lk.release()
+
+
+def trigger_dd_refresh():
+    with _DD_LOCK:
+        if _DD_TASK["running"]:
+            return {"status": "running", "start": _DD_TASK["start"]}
+        _DD_TASK.update(running=True, msg="", changed=[], nav=0, log=[],
+                        ok=None,
+                        start=datetime.datetime.now().strftime("%H:%M:%S"),
+                        done=None)
+    threading.Thread(target=_dd_refresh_bg, daemon=True).start()
+    return {"status": "started"}
+
+
+def dd_refresh_status():
+    with _DD_LOCK:
+        out = dict(_DD_TASK)
+        out["log"] = list(_DD_TASK["log"])
+        out["changed"] = list(_DD_TASK["changed"])
+    latest, last_fetch = _dd_water()
+    out["latest"] = latest            # 库内最新交易日（上证）
+    out["last_fetch"] = last_fetch    # 最近一次成功抓取时间
+    out["stale"] = _dd_stale(latest)
+    out["target"] = last_closed_trading_day()
+    return out
+
+
+def dd_auto_enabled():
+    """本地形态是否自己补 dd 数据。
+
+    显式 NT_DD_AUTO 优先；未设置时只在「既非容器（APP_ROLE）、也非 WorkBuddy
+    （NT_AUTO_REFRESH）」的本地直跑场景返回 True —— 容器由 scheduler 的 dd 任务
+    负责、WorkBuddy 由 auto_refresh._dd_incremental 负责，都不重复抓。
+    """
+    v = os.environ.get("NT_DD_AUTO")
+    if v is not None and v.strip() != "":
+        return v.strip().lower() not in ("0", "false", "no", "off")
+    if os.environ.get("APP_ROLE"):
+        return False
+    try:
+        import auto_refresh
+        if auto_refresh.enabled():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
+def dd_auto_loop(first_delay=25, interval=1800):
+    """启动后先让首屏出来，再检查水位；之后每 30 分钟兜一次。"""
+    time.sleep(first_delay)
+    while True:
+        try:
+            latest, _ = _dd_water()
+            if _dd_stale(latest) and not _DD_TASK["running"]:
+                _dd_log("库内最新 %s，落后于最近收盘交易日，开始自动增量"
+                        % (latest or "（空库）"))
+                _dd_refresh_bg()
+        except Exception as e:  # noqa: BLE001
+            print("[dd-auto] %s: %s" % (type(e).__name__, e), flush=True)
+        time.sleep(interval)
+
+
 # ---------------- 定时调度：收盘后自动抓取 ----------------
 _scheduler_last_run_date = None  # 记住最近一次自动抓的日期，防 16:00 之后每小时重抓
 
@@ -502,6 +660,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = json.dumps({"error": "dd_frontend_missing", "msg": str(e)[:200]},
                                   ensure_ascii=False).encode("utf-8")
                 self._send(503, body, head_only=head_only)
+            return
+        # 回撤全景「一键更新」：必须排在 "/api/dd/" 前缀分发之前，
+        # 否则会被当成 drawdown.api 的子路径（/refresh 不存在）→ 404。
+        if path in ("/api/dd/refresh", "/api/dd/refresh_status"):
+            data = (dd_refresh_status() if path.endswith("_status")
+                    else trigger_dd_refresh())
+            self._send(200, json.dumps(data, ensure_ascii=False).encode("utf-8"),
+                       head_only=head_only)
             return
         if path.startswith("/api/dd/"):
             dd = _dd_module()
@@ -717,6 +883,13 @@ def main():
             print("NT_AUTO_REFRESH=1：已启动首启补数 + 周期刷新")
     except Exception as e:  # noqa: BLE001
         print("NT_AUTO_REFRESH 启动失败（不影响展示）：%s: %s" % (type(e).__name__, e))
+    # 回撤全景（/dd）在本地直跑时没人更新：容器有 scheduler 的 dd 任务、
+    # WorkBuddy 有 auto_refresh._dd_incremental，本地 app.py 两样都没有，
+    # dd.db 会一直停在旧日期（只能等 Actions 导出静态快照）。
+    # 这里只补「本地直跑」这一种形态，落后于最近收盘交易日才抓，不空转。
+    if dd_auto_enabled():
+        threading.Thread(target=dd_auto_loop, daemon=True).start()
+        print("NT_DD_AUTO：回撤全景本地增量已启用（落后于最近收盘交易日才抓）")
     # 监听地址：默认 0.0.0.0（Docker 容器内网 / 裸机部署对外服务）；
     # combo_app 作为 WorkBuddy 单应用启动子进程时会注入 NT_BIND=127.0.0.1，
     # 让 5000 只在本机回环可达（父进程通过网关对外，内部端口不落到宿主 LAN）。

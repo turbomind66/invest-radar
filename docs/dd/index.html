@@ -17,6 +17,10 @@
   .tab{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--sub);text-decoration:none;font-size:13px}
   .tab:hover{border-color:var(--accent);color:var(--accent)}
   .tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  /* 页头右侧：水位文字 + 本地一键更新（静态站隐藏按钮） */
+  .meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+  .meta .mini{padding:4px 10px;font-size:12px;border-radius:8px;white-space:nowrap}
+  .meta .mini:disabled{opacity:.6;cursor:default}
   .disclaimer-bar{background:#fff7e6;border:1px solid #ffe0a3;color:#8a5b00;padding:8px 12px;border-radius:8px;margin-bottom:14px;font-size:12px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
   .card h2{font-size:15px;margin:0 0 12px;font-weight:600}
@@ -99,7 +103,11 @@
         <a class="tab" href="../qdii/" title="QDII 定投面板">📈 全球 QDII 定投</a>
       </nav>
     </div>
-    <div class="meta"><div class="muted" id="freshness">数据载入中…</div></div>
+    <div class="meta">
+      <div class="muted" id="freshness">数据载入中…</div>
+      <button type="button" class="mini" id="ddRefresh"
+              title="从行情源抓取最新日线并重算指标（本地/服务端模式，不依赖 GitHub Actions）">🔄 更新数据</button>
+    </div>
   </header>
 
   <div class="disclaimer-bar" role="note">⚠️ 风险提示与免责声明：本页历史回撤按<b>收盘价 vs 历史最高收盘价</b>计算，仅为客观复盘参考，<b>不构成任何投资建议</b>；数据来自公开行情接口、可能存在缺失或延迟，据此操作，风险自担。</div>
@@ -1234,6 +1242,43 @@ function refreshAll(){
   loadTable(true);
 }
 
+// ---------- 服务端模式：一键本地更新（不依赖 GitHub Actions） ----------
+// 静态站点（GitHub Pages）是只读快照，data.json 只能由 Actions 产出 → 按钮隐藏。
+// 本地 `python national_team/app.py` 与 VPS 走 /api/dd/refresh：后台真抓最新日线、
+// 重算指标、补 QDII 净值，前端轮询进度，完成后重载页面。
+async function ddUpdate(){
+  var b=document.getElementById("ddRefresh");
+  var f=document.getElementById("freshness");
+  if(!b||b.disabled) return;
+  b.disabled=true; b.textContent="更新中…";
+  if(f) f.textContent="正在抓取最新日线并重算指标，通常 30–90 秒…";
+  try{
+    var st=await (await fetch(api("refresh"),{cache:"no-store"})).json();
+    // trigger 只回 status；后续状态在 refresh_status 里，两种都要能识别
+    var running=!!(st&&(st.status==="started"||st.status==="running"||st.running));
+    while(running){
+      await new Promise(function(s){ setTimeout(s,1200); });
+      st=await (await fetch(api("refresh_status"),{cache:"no-store"})).json();
+      running=!!(st&&st.running);
+      if(st&&st.log&&st.log.length&&b){
+        b.textContent="更新中… "+String(st.log[st.log.length-1]).slice(0,24);
+      }
+    }
+    var ok=!(st&&st.ok===false);
+    if(f) f.textContent=(st&&st.msg?st.msg:(ok?"更新完成":"更新未完成"))+" · 正在重新载入…";
+    setTimeout(function(){ location.reload(); },1000);
+  }catch(e){
+    b.disabled=false; b.textContent="🔄 更新数据";
+    if(f) f.textContent="更新失败："+e;
+  }
+}
+function initRefreshBtn(){
+  var b=document.getElementById("ddRefresh");
+  if(!b) return;
+  if(window.__STATIC__){ b.style.display="none"; return; }   // 静态站没有抓取能力
+  b.onclick=ddUpdate;
+}
+
 function boot(){
   fetch(api("payload")).then(function(r){return r.json()}).then(function(d){
     PAYLOAD=d;
@@ -1248,7 +1293,15 @@ function boot(){
     document.getElementById("chartHint").textContent =
       hintText("", _n, _ss.length === 1, _ss.length);   // 首屏就把口径写清楚，别留占位文案
     loadTable(true);                 // 首屏表格按 STATE.gran 重新取（payload 里是默认粒度）
-    document.getElementById("freshness").textContent="抓取："+(d.catalog.last_fetch||"—")+" · 重算："+(d.catalog.last_rebuild||"—");
+    var _sh=d.catalog.assets.find(function(a){return a.id==="sh000001"});
+    // 水位三件事分开写：数据截至（用户真正关心）、抓取（有新增才变）、
+    // 检查（每次点「更新数据」都会变）—— 否则 0 新增时会以为按钮没生效。
+    var _f=(d.catalog.last_fetch||"—").slice(0,16);
+    // 静态快照没有「检查」概念（时间是导出瞬间，会冻结）→ 只在服务端模式显示
+    var _c=window.__STATIC__?"":(d.catalog.last_check||"").slice(0,16);
+    document.getElementById("freshness").textContent=
+      (_sh&&_sh.actual_to?("数据截至 "+_sh.actual_to+" · "):"")
+      +"抓取 "+_f+(_c?(" · 检查 "+_c):"");
     // 「起」输入框不预填（否则会误以为已按该日起算），只用 placeholder 提示首只标的最早数据日
     var _f=d.catalog.assets.find(function(a){return a.id===STATE.ids[0]});
     var _in=document.getElementById("dfrom");
@@ -1341,6 +1394,7 @@ document.getElementById("rcSel").onchange=function(){
   loadOneRecon(STATE.rcEtf, noHitNote());
 };
 
+initRefreshBtn();
 boot();
 </script>
 </body>

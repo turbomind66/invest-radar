@@ -289,6 +289,8 @@ class TestDBAndAPI(unittest.TestCase):
         db.upsert_daily("sh000001", [("2020-01-01", 100.0), ("2020-01-02", 110.0)], self.tmp)
         engine.rebuild_asset("sh000001", self.tmp)
         cat = api.catalog(self.tmp)
+        self.assertIn("last_check", cat,
+                      "catalog 要带最近检查时间（0 新增时前端才看得出按钮生效）")
         sh = [a for a in cat["assets"] if a["id"] == "sh000001"][0]
         self.assertTrue(sh["ready"])
         self.assertEqual(sh["points"], 2)
@@ -398,6 +400,90 @@ class TestDBAndAPI(unittest.TestCase):
         self._seed_window()
         s = api.signals(["sh000001"], path=self.tmp)["signals"][0]
         self.assertNotIn("window", s)
+
+
+class TestRefreshHelper(unittest.TestCase):
+    """updater.refresh：服务端「更新数据」与本地自动增量共用的一站式入口。
+
+    这里不联网：把 incremental / fetch_nav / seed.ensure 全部换成假实现，
+    只验证组合顺序、摘要数字与「单路失败不影响其余」的容错契约。
+    """
+
+    def _patch(self, mocks):
+        from unittest import mock
+        from drawdown import seed as dd_seed
+        from drawdown import updater
+        # set_meta 也要挡住：refresh 会写 last_check，不能落到真实 dd.db
+        stack = [mock.patch.object(updater, "incremental", mocks["inc"]),
+                 mock.patch.object(updater, "fetch_nav", mocks["nav"]),
+                 mock.patch.object(dd_seed, "ensure", mocks["seed"]),
+                 mock.patch.object(updater.db, "set_meta",
+                                   lambda *a, **k: mocks["meta"].append(a))]
+        for ctx in stack:
+            ctx.start()
+            self.addCleanup(ctx.stop)
+
+    def test_composes_three_steps(self):
+        calls = []
+        self._patch({
+            "meta": [], "seed": lambda **kw: calls.append("seed"),
+            "inc": lambda **kw: (calls.append("inc"),
+                                 {"sh000001": 1, "sh000300": 0, "_changed": ["sh000001"]})[1],
+            "nav": lambda **kw: (calls.append("nav"), {"513100": 5, "513500": 0})[1],
+        })
+        from drawdown import updater
+        out = updater.refresh(log=lambda *a: None)
+        self.assertEqual(calls, ["seed", "inc", "nav"], "顺序：先补种子库，再日线，最后净值")
+        self.assertEqual(out["changed"], ["sh000001"])
+        self.assertEqual(out["changed_n"], 1)
+        self.assertEqual(out["rows"], 1)          # 只统计成功行，不含 _changed
+        self.assertEqual(out["nav"], 1)           # 0 只不算「更新」
+        self.assertGreaterEqual(out["cost"], 0)
+
+    def test_seed_failure_does_not_block(self):
+        def boom(**kw):
+            raise OSError("gzip 坏了")
+
+        self._patch({"meta": [], "seed": boom,
+                     "inc": lambda **kw: {"_changed": []},
+                     "nav": lambda **kw: {}})
+        from drawdown import updater
+        out = updater.refresh(log=lambda *a: None)
+        self.assertEqual(out["changed_n"], 0)
+
+    def test_nav_failure_keeps_daily_result(self):
+        def boom(**kw):
+            raise RuntimeError("api.fund 超时")
+
+        self._patch({"meta": [], "seed": lambda **kw: None,
+                     "inc": lambda **kw: {"sh000001": 2, "_changed": ["sh000001"]},
+                     "nav": boom})
+        from drawdown import updater
+        out = updater.refresh(log=lambda *a: None)
+        self.assertEqual(out["rows"], 2, "净值失败不能把日线结果一起丢掉")
+        self.assertEqual(out["nav"], 0)
+
+    def test_always_records_last_check(self):
+        """0 新增也要写 last_check：否则点完按钮「抓取时间」不变，像没跑。"""
+        metas = []
+        self._patch({"meta": metas,
+                     "seed": lambda **kw: None,
+                     "inc": lambda **kw: {"_changed": []},
+                     "nav": lambda **kw: {}})
+        from drawdown import updater
+        updater.refresh(log=lambda *a: None)
+        self.assertTrue(any(a and a[0] == "last_check" for a in metas),
+                        "last_check 必须每次都写：%r" % (metas,))
+
+    def test_nav_can_be_skipped(self):
+        called = []
+        self._patch({"meta": [], "seed": lambda **kw: None,
+                     "inc": lambda **kw: {"_changed": []},
+                     "nav": lambda **kw: called.append(1) or {}})
+        from drawdown import updater
+        out = updater.refresh(nav=False, log=lambda *a: None)
+        self.assertEqual(called, [], "nav=False 时不该去抓净值")
+        self.assertEqual(out["nav"], 0)
 
 
 if __name__ == "__main__":

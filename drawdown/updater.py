@@ -56,6 +56,47 @@ def fetch_nav(force=False, only=None, log=print, pause=0.12):
     return result
 
 
+def refresh(nav=True, log=print):
+    """一站式更新：种子恢复（空库）→ 已有标的日线增量 → QDII 净值增量。
+
+    供服务端「🔄 更新数据」按钮与本地自动增量共用；容器里的 daily.py、
+    WorkBuddy 的 auto_refresh._dd_incremental 仍走各自原路径（本函数只是把
+    同一批 updater 串起来，口径完全一致，不新增抓取源）。
+
+    单路失败只记日志、绝不写假数据，也不阻断其余步骤。
+    返回摘要：{"changed": [...], "changed_n": n, "rows": n, "nav": n, "cost": 秒}
+    """
+    t0 = time.time()
+    try:                          # 空库（首次本地起服务 / 新容器）先恢复全历史
+        from . import seed as _seed
+        _seed.ensure(log=log)
+    except Exception as e:  # noqa: BLE001
+        _ok("种子恢复跳过：%s: %s" % (type(e).__name__, e), log)
+    res = incremental(log=log)
+    changed = res.get("_changed") or []
+    rows = sum(v for k, v in res.items()
+               if k != "_changed" and isinstance(v, int))
+    nav_n = 0
+    if nav:
+        try:
+            nav_res = fetch_nav(log=log)
+            nav_n = sum(1 for v in nav_res.values() if v)
+        except Exception as e:  # noqa: BLE001
+            _ok("净值增量失败：%s: %s" % (type(e).__name__, e), log)
+    out = {"changed": changed, "changed_n": len(changed), "rows": rows,
+           "nav": nav_n, "cost": round(time.time() - t0, 1)}
+    # 与 last_fetch 分开：last_fetch 只在真有新增日线时更新（水位标记，
+    # 供 backfill/断点续传判断），0 新增时前端会以为「没点成功」。
+    # last_check 每次调用都写，页面据此显示「最近检查时间」。
+    try:
+        db.set_meta("last_check", time.strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception:  # noqa: BLE001
+        pass
+    _ok("本次更新完成：%d 标的 / %d 根日线 / 净值 %d 只，耗时 %.1fs"
+        % (out["changed_n"], rows, nav_n, out["cost"]), log)
+    return out
+
+
 def incremental(path=db.DB_PATH, sleep=0.4, only=None, log=print):
     """增量抓取 + 重算。返回 {id: 新增行数}（含 0 行的失败标的）。
 

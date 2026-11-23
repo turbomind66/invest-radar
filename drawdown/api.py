@@ -28,6 +28,7 @@ def catalog(path=db.DB_PATH):
         assets.append(row)
     last_fetch = db.get_meta("last_fetch", None, path)
     last_rebuild = db.get_meta("last_rebuild", None, path)
+    last_check = db.get_meta("last_check", None, path)
     return {
         "assets": assets,
         "groups": [
@@ -42,6 +43,8 @@ def catalog(path=db.DB_PATH):
         "reconstruct": C.RECONSTRUCT,
         "last_fetch": last_fetch,
         "last_rebuild": last_rebuild,
+        # 最近一次「检查/更新」时间（0 新增也会写）——页面用它证明按钮真的跑过
+        "last_check": last_check,
     }
 
 

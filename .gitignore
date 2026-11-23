@@ -48,4 +48,6 @@ Thumbs.db
 
 # ---- 运行时锁文件（跨进程互斥用，本地产物）----
 *.sync.lock
+# 回撤全景的 dd 任务用 .sync.lock.dd（scheduler 与 /api/dd/refresh 共用）
+*.sync.lock.dd
 .qdii.lock
