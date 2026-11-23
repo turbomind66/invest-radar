@@ -1273,8 +1273,26 @@ async function ddUpdate(){
 }
 function initRefreshBtn(){
   var b=document.getElementById("ddRefresh");
+  var f=document.getElementById("freshness");
   if(!b) return;
-  if(window.__STATIC__){ b.style.display="none"; return; }   // 静态站没有抓取能力
+  if(window.__STATIC__){
+    // 静态站：GitHub Pages 无后端 → 默认隐藏；本地 `python serve_docs.py` 起的站
+    // 同源有 /api/local/*，probe 成功就把按钮放出来，点一下原地抓取（不用去 Actions）。
+    b.style.display="none";
+    if(typeof StaticRefresh!=="undefined"&&StaticRefresh.probe){
+      StaticRefresh.probe().then(function(has){
+        if(!has) return;
+        b.style.display="";
+        b.onclick=function(){
+          StaticRefresh.localRefresh("dd", {
+            btn:b,
+            onMsg:function(m){ if(f) f.textContent=m; }
+          });
+        };
+      });
+    }
+    return;
+  }
   b.onclick=ddUpdate;
 }
 
@@ -1393,6 +1411,11 @@ document.getElementById("rcSel").onchange=function(){
   loadOneRecon(STATE.rcEtf, noHitNote());
 };
 
+// 静态站共享刷新能力（serve_docs.py 提供 /api/local/*）；本页在 dd/ 子目录，
+// localBase 指回站点根，Pages 上探测失败自动退化为隐藏按钮。
+if(window.__STATIC__ && typeof StaticRefresh !== "undefined" && StaticRefresh.configure){
+  StaticRefresh.configure({ module: "dd", localBase: "../" });
+}
 initRefreshBtn();
 boot();
 </script>

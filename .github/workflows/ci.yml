@@ -38,7 +38,7 @@ jobs:
             drawdown/constants.py drawdown/db.py drawdown/fetcher.py \
             drawdown/engine.py drawdown/api.py drawdown/backfill.py \
             drawdown/updater.py drawdown/reconstruct.py \
-            docker/healthcheck.py gateway.py combo_app.py
+            docker/healthcheck.py gateway.py combo_app.py serve_docs.py
 
       - name: QDII 静态导出（同时验证 allow_nan=False / 空覆盖保护可用）
         run: python qdii/staticsite.py --allow-empty

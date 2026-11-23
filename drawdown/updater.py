@@ -142,9 +142,25 @@ def incremental(path=db.DB_PATH, sleep=0.4, only=None, log=print):
 
 
 if __name__ == "__main__":
-    import sys
-    only = [a for a in sys.argv[1:] if not a.startswith("--")] or None
-    res = incremental(only=only)
-    changed = res.pop("_changed", [])
-    print("[dd-update] 更新 %d 标的，变更 %d：%s"
-          % (len(res), len(changed), ", ".join(changed) or "无新数据"))
+    # 本地静态站（serve_docs.py）与人工排查用：增量抓完可直接导出 docs/dd/，
+    # 等于把 backfill 的「全历史回补 + 导出」换成日常增量版。
+    import argparse
+    import json as _json
+
+    ap = argparse.ArgumentParser(description="回撤全景每日增量更新")
+    ap.add_argument("--export", action="store_true", help="更新完导出 docs/dd/ 静态快照")
+    ap.add_argument("--no-nav", action="store_true", help="跳过 QDII 净值增量")
+    ap.add_argument("--out", default="", help="导出目录（默认 docs/dd）")
+    _a = ap.parse_args()
+
+    db.init_db()
+    _res = refresh(nav=not _a.no_nav)
+    print("[dd-update] %s" % _json.dumps(
+        {"changed_n": _res["changed_n"], "rows": _res["rows"],
+         "nav": _res["nav"], "cost": _res["cost"]}, ensure_ascii=False))
+    if _a.export:
+        from . import api as _api
+        _out = _a.out or os.path.join(C.ROOT, "docs", "dd")
+        _info = _api.export_static(_out)
+        print("[dd-update] 静态快照：%s/ (data.json %d bytes)"
+              % (_out, _info["bytes"]))

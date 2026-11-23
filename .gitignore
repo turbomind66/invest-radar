@@ -28,6 +28,8 @@ venv/
 
 # ---- 本地截图 / 临时产物 ----
 outputs/
+# 本地静态站工作目录（serve_docs.py 抓取产物；docs/ 是 Pages 发布目录，不能被本地库覆盖）
+.local_docs/
 
 # ---- 本地开发脚本（数据源探测 / 调试，不入库）----
 dev_scripts/

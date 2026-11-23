@@ -1853,11 +1853,28 @@ function ntOnToday(d){
   loadData();
 }
 
-// 静态模式：按 worker_url 决定刷新行为（未配置时保持旧“去 Actions”行为，兼容静态测试）
+// 静态模式：刷新入口三态 —— ① Worker（线上托管）② 本地刷新服务 ③ Actions 链接
 if(STATIC){
   var __w = (window.__STATIC__ && window.__STATIC__.worker_url) || "";
   var __a = (window.__STATIC__ && window.__STATIC__.actions_url) || "";
   if(typeof StaticRefresh !== "undefined") StaticRefresh.configure({ workerUrl: __w, actionsUrl: __a, module: "nt" });
+  initStaticRefresh();
+}
+// 本地用 `python serve_docs.py` 起静态站时，同源存在 /api/local/* → 按钮可原地抓取；
+// GitHub Pages 上没有该接口，probe 失败后仍回到「去 Actions 手动更新」，行为不变。
+async function initStaticRefresh(){
+  var btn = document.getElementById("refresh-btn");
+  var note = document.querySelector(".note");
+  var local = false;
+  if(typeof StaticRefresh !== "undefined" && StaticRefresh.probe){
+    local = await StaticRefresh.probe();
+  }
+  if(local && btn){
+    btn.textContent = "🔄 更新数据";
+    btn.onclick = function(){ StaticRefresh.localRefresh("nt", { btn: btn }); };
+    if(note) note.innerHTML += " <b>已连接本地数据服务</b>：点「更新数据」在本机直接抓取并重建静态页，无需等 GitHub Actions。";
+    return;
+  }
   if(__w){
     var rb = document.getElementById("refresh-btn");
     if(rb){ rb.textContent = "🔄 全量更新"; rb.onclick = function(){ StaticRefresh.fullUpdate(); }; }
@@ -1869,7 +1886,6 @@ if(STATIC){
     a.textContent = "⚙️ 去 Actions 手动更新";
     if(b) b.parentNode.replaceChild(a, b);
   }
-  var note = document.querySelector(".note");
   if(note) note.innerHTML += " <b>本站为静态托管版</b>：数据由定时任务抓取；点「刷新当日行情」可浏览器直连拉取当天实时价与资金流（需上游可达），点「全量更新」触发后台重算（配置 Worker 后）。";
 }
 // 服务端模式(VPS 跑 app.py)：「刷新当日行情」与「立即刷新」调用同一后端，隐藏冗余按钮

@@ -700,12 +700,28 @@ async function refreshToday(){
   await StaticRefresh.refreshToday({ btn: document.getElementById('refresh-today-btn'), onToday: applyQdiiData });
 }
 
-// 静态模式：按 worker_url 决定刷新行为（未配置 Worker 时，QDII 实时抓取不可得，隐藏当日按钮、全量更新退回 Actions 链接）
+// 静态模式：刷新入口三态 —— ① Worker（线上托管）② 本地刷新服务 ③ Actions 链接
 if(STATIC){
   var __w = (window.__STATIC__ && window.__STATIC__.worker_url) || "";
   var __a = (window.__STATIC__ && window.__STATIC__.actions_url) || "";
-  if(typeof StaticRefresh !== "undefined") StaticRefresh.configure({ workerUrl: __w, actionsUrl: __a, module: "qdii" });
+  if(typeof StaticRefresh !== "undefined") StaticRefresh.configure({ workerUrl: __w, actionsUrl: __a, module: "qdii", localBase: "../" });
+  initStaticRefresh();
+  var tb = document.getElementById("refresh-today-btn");
+  if(tb && !__w) tb.style.display = "none";
+}
+// 本地 `python serve_docs.py` 起的静态站带 /api/local/*，点按钮即可本地抓取；
+// Pages 上 probe 失败 → 回退「去 Actions 手动更新」，行为不变。
+async function initStaticRefresh(){
   var rb = document.getElementById("refresh-btn");
+  var local = false;
+  if(typeof StaticRefresh !== "undefined" && StaticRefresh.probe){
+    local = await StaticRefresh.probe();
+  }
+  if(local && rb){
+    rb.textContent = "🔄 更新数据";
+    rb.onclick = function(){ StaticRefresh.localRefresh("qdii", { btn: rb }); };
+    return;
+  }
   if(__w){
     if(rb){ rb.textContent = "🔄 全量更新"; rb.onclick = function(){ StaticRefresh.fullUpdate(); }; }
   } else {
@@ -714,8 +730,6 @@ if(STATIC){
     a.textContent = "⚙️ 去 Actions 手动更新"; a.style.cssText = "background:#fff;color:#0f172a;border:1px solid #cbd5e1;padding:6px 12px;border-radius:8px;font-size:13px;cursor:pointer;text-decoration:none";
     if(rb) rb.parentNode.replaceChild(a, rb);
   }
-  var tb = document.getElementById("refresh-today-btn");
-  if(tb && !__w) tb.style.display = "none";
 }
 
 // 服务端模式(VPS 跑 app.py)：「刷新当日行情」与「立即刷新」调用同一后端，隐藏冗余按钮

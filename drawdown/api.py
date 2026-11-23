@@ -285,6 +285,36 @@ def build_payload(ids=None, gran="day", dfrom=None, dto=None, path=db.DB_PATH):
     }
 
 
+def render_index(payload=None):
+    """把 DD 模板转成静态页 HTML（注入 __STATIC__ 标记 + 共享刷新脚本 + 版本号）。
+
+    单独抽出来是为了「只重导页面、不动 data.json」——模板哪怕只改一行样式，
+    也不必重算 4MB 快照（重跑 export_static 会把本地库数据灌进 Pages 快照）。
+    """
+    import json
+    import os
+    tpl = os.path.join(C.BASE, "templates", "index.html")
+    with open(tpl, encoding="utf-8") as f:
+        html = f.read()
+    version = os.environ.get("DD_STATIC_VERSION", "v2.9.1-nt")
+    html = html.replace("__APP_VERSION__", version)
+    flag = {"data_base": "", "static": True}
+    inject = ("<script>window.__STATIC__=%s;</script>\n"
+              % json.dumps(flag, ensure_ascii=False))
+    # 本地静态站（python serve_docs.py）用这套共享脚本触发 /api/local/refresh；
+    # Pages 上 probe 失败 → 按钮保持隐藏，行为不变。
+    js_path = os.path.join(C.ROOT, "common", "static_refresh.js")
+    try:
+        with open(js_path, encoding="utf-8") as f:
+            js = f.read()
+        if js:
+            inject += "<script>%s</script>\n" % js
+    except Exception:  # noqa: BLE001
+        pass
+    inject += "</head>"
+    return html.replace("</head>", inject, 1)
+
+
 def export_static(out_dir, path=db.DB_PATH):
     """导出 docs/dd/（data.json + index.html），与服务端同源口径。
 
@@ -326,20 +356,10 @@ def export_static(out_dir, path=db.DB_PATH):
                   separators=(",", ":"))
     os.replace(tmp, data_file)
     # index.html：模板注入静态标记（前端走 data.json）+ 版本号
-    from . import constants as _C
-    tpl = os.path.join(_C.BASE, "templates", "index.html")
-    with open(tpl, encoding="utf-8") as f:
-        html = f.read()
-    version = os.environ.get("DD_STATIC_VERSION", "v2.9.1-nt")
-    html = html.replace("__APP_VERSION__", version)
-    flag = {"data_base": "", "static": True}
-    inject = ("<script>window.__STATIC__=%s;</script>\n</head>"
-              % json.dumps(flag, ensure_ascii=False))
-    html = html.replace("</head>", inject, 1)
     html_file = os.path.join(out_dir, "index.html")
     tmp2 = html_file + ".tmp"
     with open(tmp2, "w", encoding="utf-8") as f:
-        f.write(html)
+        f.write(render_index(payload))
     os.replace(tmp2, html_file)
     return {"bytes": os.path.getsize(data_file), "html_bytes": os.path.getsize(html_file),
             "generated_at": payload["generated_at"]}

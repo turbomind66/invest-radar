@@ -703,11 +703,48 @@ function testRefreshFlow(){
   });
 }
 
+// ---- 静态站 + 本地刷新服务（python serve_docs.py）：按钮应放出来并走 /api/local ----
+function testStaticLocalRefresh(){
+  window.__STATIC__ = { data_base: '' };
+  // 模板里是裸标识符 StaticRefresh（浏览器里即 window.StaticRefresh），
+  // Node 桩件必须挂到 global 才等价，挂 window 上模板看不到。
+  global.StaticRefresh = window.StaticRefresh = {
+    configure() {},
+    probe: function () { return Promise.resolve(true); },
+    localRefresh: function (page, opts) { window.__rc = { page: page, opts: opts }; },
+  };
+  __T.initRefreshBtn();
+  const b = els.ddRefresh;
+  return new Promise(function (r) { setTimeout(r, 0); }).then(function () {
+    ok(b.style.display !== 'none', '静态站探测到本地服务 → 显示「更新数据」按钮');
+    ok(typeof b.onclick === 'function', '静态站探测到本地服务 → 按钮可点击');
+    b.onclick();
+    ok(window.__rc && window.__rc.page === 'dd', '点击走本地刷新且 page=dd：' +
+       JSON.stringify(window.__rc && window.__rc.page));
+    // probe 失败（GitHub Pages）→ 保持隐藏，不能给死按钮
+    global.StaticRefresh.probe = window.StaticRefresh.probe =
+      function () { return Promise.resolve(false); };
+    els.ddRefresh = undefined;
+    delete els.ddRefresh;
+    __T.initRefreshBtn();
+    const b2 = document.getElementById('ddRefresh');
+    return new Promise(function (r) { setTimeout(r, 0); }).then(function () {
+      ok(b2.style.display === 'none', '静态站无本地服务（Pages）→ 按钮隐藏');
+      delete global.StaticRefresh;
+      delete window.StaticRefresh;
+      delete window.__STATIC__;
+      delete window.__rc;
+      __T.initRefreshBtn();
+    });
+  });
+}
+
 function finish(){
   console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
   process.exit(fail ? 1 : 0);
 }
 Promise.resolve().then(testStaticReconInline).then(testStaticReconOnDemand)
+  .then(testStaticLocalRefresh)
   .then(testRefreshFlow)
   .then(finish, function(e){ ok(false, '静态还原异步用例异常：' + e); finish(); });
 
