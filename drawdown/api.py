@@ -94,34 +94,61 @@ def _num(v):
     return ("%.2f" if abs(v) >= 100 else "%.4f") % v
 
 
-def _auto_events(asset_id, path=db.DB_PATH, min_drop=20.0, top=6):
+def _auto_events(asset_id, path=db.DB_PATH, min_drop=20.0, top=6, live_drop=12.0):
     """数据自动识别的「深度回撤 / 触底反弹」标注（每标的最多取最深的 top 次）。
 
     人工策展事件覆盖不到的长尾（尤其 2015/2018/2021 这类嵌套大跌）由这里补齐，
     标题直接来自真实峰谷，不会编造历史。按 (库, 标的, 最新日期) 缓存，日更后自动失效。
+
+    「进行中」的回撤单独兜底（live_drop，默认 12%）：
+    - 不走 top 截断 —— 否则历史深跌段一多，当前这一波就被挤掉（沪深300 2026 段
+      -21.8% 排历史第 11，中证500 排第 7，日经排第 18，全都被吃掉）；
+    - 门槛单独放宽 —— 纳指 2026-10 高点以来跌 18%~19.8%，差一点没到 20% 确认线，
+      用 20% 算连「这一段下跌」都不成立，页面上就完全看不到。
+    谷底未确认时只标 crash，不臆造反弹。
     """
     latest = db.latest_date(asset_id, path)
     if not latest:
         return []
-    key = (path, asset_id, latest, min_drop, top)
+    key = (path, asset_id, latest, min_drop, top, live_drop)
     if key in _EVT_CACHE:
         return _EVT_CACHE[key]
-    eps = engine.compute_episodes(db.get_daily(asset_id, path), min_drop)
+    rows = db.get_daily(asset_id, path)
+    eps = engine.compute_episodes(rows, min_drop)
     picked = sorted(eps, key=lambda e: e["drop_pct"])[:top]
+    # 进行中的回撤（还没收复前峰）：低门槛重算一次，取最后一段
+    live = None
+    for e in reversed(engine.compute_episodes(rows, live_drop)):
+        if e.get("ongoing"):
+            live = e
+            break
+    live_peak = live["peak_date"] if live else None
+    if live and not any(e["peak_date"] == live_peak for e in picked):
+        picked.append(live)
     out = []
     for e in picked:
-        if e.get("recover_date"):
-            rec = "已在 %s 收复前峰（累计 %d 个交易日）" % (
-                e["recover_date"], e["recover_days"] or 0)
+        is_live = bool(live_peak and e["peak_date"] == live_peak
+                       and e.get("ongoing"))
+        if is_live:
+            desc = ("自 %s 高点 %s 跌至 %s 低点 %s，已回撤 %.2f%%，历时 %d 个交易日；"
+                    "尚未收复前峰，谷底未确认（截至 %s）。"
+                    % (e["peak_date"], _num(e["peak"]), e["trough_date"],
+                       _num(e["trough"]), e["drop_pct"], e["days_down"], latest))
+            title = "进行中回撤 %.1f%%" % e["drop_pct"]
         else:
-            rec = "至今未收复前峰"
+            if e.get("recover_date"):
+                rec = "已在 %s 收复前峰（累计 %d 个交易日）" % (
+                    e["recover_date"], e["recover_days"] or 0)
+            else:
+                rec = "至今未收复前峰"
+            desc = ("自 %s 高点 %s 跌至 %s 低点 %s，最大回撤 %.2f%%，历时 %d 个交易日；%s。"
+                    % (e["peak_date"], _num(e["peak"]), e["trough_date"],
+                       _num(e["trough"]), e["drop_pct"], e["days_down"], rec))
+            title = "深度回撤 %.1f%%" % e["drop_pct"]
         out.append(dict(
             date=e["peak_date"], target=asset_id, side="crash",
-            title="深度回撤 %.1f%%" % e["drop_pct"],
-            desc="自 %s 高点 %s 跌至 %s 低点 %s，最大回撤 %.2f%%，历时 %d 个交易日；%s。" % (
-                e["peak_date"], _num(e["peak"]), e["trough_date"],
-                _num(e["trough"]), e["drop_pct"], e["days_down"], rec),
-            auto=True))
+            title=title, desc=desc, auto=True,
+            ongoing=1 if is_live else 0))
         if e.get("rebound_pct") is not None:
             out.append(dict(
                 date=e["trough_date"], target=asset_id, side="rally",

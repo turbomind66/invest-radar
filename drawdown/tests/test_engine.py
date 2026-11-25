@@ -259,6 +259,71 @@ class TestEventsFor(unittest.TestCase):
         self.assertEqual(dates, sorted(dates))
         self.assertTrue(all("title" in e and "desc" in e for e in evs))
 
+    @staticmethod
+    def _zigzag(deep_n=8, last_drop=0.18):
+        """造 deep_n 段 -30% 深跌（每段都收复），末尾再跌 last_drop 且不收复。"""
+        import datetime
+        rows, d, price = [], datetime.date(2000, 1, 3), 100.0
+
+        def add(p):
+            nonlocal d
+            rows.append((d.isoformat(), round(p, 2)))
+            d += datetime.timedelta(days=1)
+
+        add(100.0)
+        for _ in range(deep_n):
+            add(70.0)    # -30%，过 20% 确认线
+            add(100.0)   # 完全收复，波段结束
+        add(round(100.0 * (1 - last_drop), 2))
+        return rows
+
+    def test_live_drawdown_kept_beyond_top_n(self):
+        """进行中的回撤必须保留：历史深跌段多于 6 段时也不许被截断。
+
+        这是「2026 年这波没有事件点」的回归测试 —— 沪深300 的 2026 段 -21.8%
+        在历史里排第 11，中证500 排第 7，只取最深 6 段就全被吃掉了。
+        """
+        db.upsert_daily("test_deep", self._zigzag(deep_n=8, last_drop=0.18), self.tmp)
+        evs = api._auto_events("test_deep", self.tmp)
+        crash = [e for e in evs if e["side"] == "crash"]
+        self.assertEqual(len(crash), 7, "6 段最深 + 1 段进行中")
+        live = [e for e in crash if e.get("ongoing")]
+        self.assertEqual(len(live), 1, "进行中的回撤应有且仅有一条")
+        self.assertEqual(live[0]["date"], crash[-1]["date"], "进行中是最新一段")
+        self.assertTrue(live[0]["title"].startswith("进行中回撤"),
+                        "标题要写明进行中：%s" % live[0]["title"])
+        self.assertIn("谷底未确认", live[0]["desc"])
+        # 进行中不臆造反弹事件（谷底还没确认，反弹无从谈起）；
+        # 历史那 6 段收复型波段的反弹事件不受影响。
+        self.assertEqual([e for e in evs
+                          if e["side"] == "rally" and e["date"] >= live[0]["date"]], [])
+
+    def test_live_drawdown_uses_lower_threshold(self):
+        """跌 18%：不到 20% 确认线，但仍应作为「进行中回撤」标注。"""
+        db.upsert_daily("test_live18", [("2026-10-06", 100.0),
+                                        ("2026-11-20", 82.0)], self.tmp)
+        evs = api._auto_events("test_live18", self.tmp)
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]["side"], "crash")
+        self.assertEqual(evs[0]["ongoing"], 1)
+        self.assertIn("-18.0", evs[0]["title"])
+
+    def test_shallow_dropped_and_recovered_not_live(self):
+        """低于 live 门槛（12%）不标；已收复前峰的不算进行中。"""
+        db.upsert_daily("test_shallow", [("2020-01-01", 100.0),
+                                         ("2020-01-03", 91.0)], self.tmp)
+        self.assertEqual(api._auto_events("test_shallow", self.tmp), [])
+
+        db.upsert_daily("test_recovered", [("2020-01-01", 100.0),
+                                           ("2020-01-03", 70.0),
+                                           ("2020-01-06", 110.0)], self.tmp)
+        evs = api._auto_events("test_recovered", self.tmp)
+        crash = [e for e in evs if e["side"] == "crash"]
+        self.assertEqual(len(crash), 1)
+        self.assertEqual(crash[0]["ongoing"], 0)
+        self.assertFalse(crash[0]["title"].startswith("进行中"),
+                         "已收复的段不能叫进行中")
+
 
 class TestDBAndAPI(unittest.TestCase):
     def setUp(self):
